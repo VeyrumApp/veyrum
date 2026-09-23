@@ -120,6 +120,26 @@ describe('unobservable channels', () => {
     expect(Object.values(sandbox.actions())).toEqual(['run', 'run'])
   })
 
+  test('forcing isolation makes an isolate: false project reusable', () => {
+    sandbox = new Sandbox('force-isolate')
+      .write(
+        'vitest.config.ts',
+        "import { defineConfig } from 'vitest/config'\nexport default defineConfig({ test: { isolate: false } })\n",
+      )
+      .write('src/a.ts', 'export const a = 1\n')
+      .write(
+        'test/a.test.ts',
+        "import { expect, test } from 'vitest'\nimport { a } from '../src/a'\ntest('a', () => expect(a).toBe(1))\n",
+      )
+      .write('test/b.test.ts', PLAIN_TEST)
+    expect(sandbox.cli(['run', '--full', '--isolate']).code).toBe(0)
+    const actions = () =>
+      Object.fromEntries(sandbox!.cli(['plan', '--isolate']).decisions.map((d) => [d.check.path, d.action]))
+    expect(actions()).toEqual({ 'test/a.test.ts': 'skip', 'test/b.test.ts': 'skip' })
+    sandbox.edit('src/a.ts', '1', '2')
+    expect(actions()).toEqual({ 'test/a.test.ts': 'run', 'test/b.test.ts': 'skip' })
+  })
+
   test('the threads pool isolates files and is reusable', () => {
     sandbox = new Sandbox('threads')
       .write(

@@ -46,6 +46,11 @@ export interface VitestRunOptions {
   readonly only?: readonly string[]
   /** Keep worker payloads and module code after the run (for debugging). */
   readonly keepScratch?: boolean
+  /**
+   * Run every test file in its own isolate even if the project disables isolation. Evidence from a
+   * shared isolate is never reused, so projects with `isolate: false` only benefit with this on.
+   */
+  readonly forceIsolation?: boolean
 }
 
 export interface VitestRunResult {
@@ -246,7 +251,10 @@ export async function runVitest(options: VitestRunOptions): Promise<VitestRunRes
       }
       if (!config.execArgv.includes(preloadUrl)) config.execArgv.push('--import', preloadUrl)
       if (!config.setupFiles.includes(setupPath)) config.setupFiles.unshift(setupPath)
-      if (config.isolate === false) sharedWorkerProjects.add(project.name)
+      if (config.isolate === false) {
+        if (options.forceIsolation) config.isolate = true
+        else sharedWorkerProjects.add(project.name)
+      }
     }
 
     const configFiles = new Set<string>()

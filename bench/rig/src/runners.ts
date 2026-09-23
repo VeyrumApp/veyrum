@@ -33,6 +33,7 @@ function veyrum(corpus: Corpus, repo: string, store: string, args: readonly stri
       '--json',
       json,
       ...projectArgs(corpus),
+      ...(corpus.forceIsolation ? ['--isolate'] : []),
     ],
     { cwd: repo, env: childEnv() },
   )
@@ -104,6 +105,7 @@ export function plainRun(
       '--reporter=json',
       `--outputFile=${json}`,
       '--passWithNoTests',
+      ...(corpus.forceIsolation ? ['--isolate'] : []),
       ...files,
     ],
     { cwd: repo, env: childEnv(), ...(timeoutMs ? { timeoutMs } : {}) },

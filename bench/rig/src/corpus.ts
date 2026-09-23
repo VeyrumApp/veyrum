@@ -18,6 +18,8 @@ export interface Corpus {
   /** Extra Vitest arguments (for example project filters). */
   readonly vitestArgs: readonly string[]
   readonly maxWorkers: number
+  /** Force per-file isolation (for projects that set isolate: false). Applied to every selector. */
+  readonly forceIsolation: boolean
   /** Regular expressions (on repository paths) of source files eligible for mutation. */
   readonly mutationSources: readonly string[]
   /** Mutants per sampled commit, and how often to sample (every Nth commit). */
@@ -32,6 +34,7 @@ export function loadCorpus(file: string): Corpus {
   return {
     vitestArgs: [],
     maxWorkers: 2,
+    forceIsolation: false,
     mutationSources: [],
     mutantsPerCommit: 0,
     mutationEvery: 5,
