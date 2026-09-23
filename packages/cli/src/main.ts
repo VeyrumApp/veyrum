@@ -4,6 +4,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { parseArgs } from 'node:util'
 import { type Decision, makePolicy, type RunMode, type RunResult, Store } from '@veyrum/core'
+import { markdownSummary } from './summary.ts'
 
 const HELP = `veyrum - run only the tests whose evidence is no longer valid
 
@@ -23,6 +24,7 @@ Options:
   --project <name>     Project filter (repeatable; Vitest allows wildcards, Jest matches
                        display names)
   --json <file>        Write decisions and records as JSON
+  --summary <file>     Append a Markdown report (for example to $GITHUB_STEP_SUMMARY)
   --explain            Print the reason for every decision
   --quiet              Do not print the runner's test output
   --audit              With --full: also report files the plan would have reused that fail
@@ -44,6 +46,7 @@ interface Args {
   maxWorkers: number | undefined
   projects: string[]
   json: string | undefined
+  summary: string | undefined
   explain: boolean
   quiet: boolean
   full: boolean
@@ -66,6 +69,7 @@ function parse(argv: string[]): Args | null {
       'max-workers': { type: 'string' },
       project: { type: 'string', multiple: true },
       json: { type: 'string' },
+      summary: { type: 'string' },
       explain: { type: 'boolean', default: false },
       quiet: { type: 'boolean', default: false },
       full: { type: 'boolean', default: false },
@@ -94,6 +98,7 @@ function parse(argv: string[]): Args | null {
     maxWorkers: maxWorkers && Number.isFinite(maxWorkers) ? maxWorkers : undefined,
     projects: values.project ?? [],
     json: values.json,
+    summary: values.summary,
     explain: values.explain,
     quiet: values.quiet,
     full: values.full,
@@ -264,6 +269,7 @@ async function main(argv: string[]): Promise<number> {
         )
       }
     }
+    if (args.summary) fs.appendFileSync(args.summary, markdownSummary(result, { mode, audit: args.audit }))
     if (args.json) {
       fs.writeFileSync(
         args.json,

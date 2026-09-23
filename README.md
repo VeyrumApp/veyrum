@@ -58,6 +58,7 @@ project's configuration; `--runner vitest|jest` overrides it.
 | `bench/rig` | Replay benchmark against baseline selectors, with a mutation oracle |
 | `bench/corpora` | Repositories to replay |
 | `docs/design` | Soundness model and assumptions |
+| `docs/github-actions.md` | Shadow mode and pull-request skipping in GitHub Actions |
 
 ## Development
 
