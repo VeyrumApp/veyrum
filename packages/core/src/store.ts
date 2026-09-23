@@ -195,7 +195,8 @@ export class Store {
     let verified = 0
     let escapes = 0
     for (const r of rows) {
-      const k = (byKind[r.kind] ??= { verified: 0, escapes: 0 })
+      const k = byKind[r.kind] ?? { verified: 0, escapes: 0 }
+      byKind[r.kind] = k
       k.verified += r.n
       verified += r.n
       if (r.outcome === 'fail') {
