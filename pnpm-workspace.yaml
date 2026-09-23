@@ -2,5 +2,6 @@ packages:
   - packages/*
   - bench/*
 allowBuilds:
-  '@parcel/watcher': set this to true or false
-  unrs-resolver: set this to true or false
+  # Neither needs its install script: Jest ships prebuilt resolver bindings and never watches here.
+  '@parcel/watcher': false
+  unrs-resolver: false
