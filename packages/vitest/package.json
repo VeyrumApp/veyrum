@@ -1,0 +1,32 @@
+{
+  "name": "@veyrum/vitest",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Veyrum adapter for Vitest: capture, planning and selective execution",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./preload": {
+      "default": "./dist/preload.js"
+    },
+    "./setup": {
+      "default": "./dist/setup.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "dependencies": {
+    "@veyrum/capture": "workspace:*",
+    "@veyrum/core": "workspace:*"
+  },
+  "peerDependencies": {
+    "vitest": ">=5.0.0"
+  },
+  "devDependencies": {
+    "vitest": "5.0.1"
+  }
+}

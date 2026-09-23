@@ -1,0 +1,10 @@
+{
+  "files": [],
+  "references": [
+    { "path": "packages/core" },
+    { "path": "packages/capture" },
+    { "path": "packages/vitest" },
+    { "path": "packages/cli" },
+    { "path": "bench/rig" }
+  ]
+}

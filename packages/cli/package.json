@@ -1,0 +1,23 @@
+{
+  "name": "veyrum",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Veyrum CLI: run only the tests whose evidence is no longer valid",
+  "bin": {
+    "veyrum": "./dist/main.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/main.d.ts",
+      "default": "./dist/main.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "dependencies": {
+    "@veyrum/core": "workspace:*",
+    "@veyrum/vitest": "workspace:*"
+  }
+}

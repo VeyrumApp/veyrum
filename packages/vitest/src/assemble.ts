@@ -1,0 +1,331 @@
+import fs from 'node:fs'
+import path from 'node:path'
+import type { MainObservations, RawFs, WorkerPayload } from '@veyrum/capture'
+import {
+  type ClosureEntry,
+  CurrentState,
+  type Digest,
+  digest,
+  type EvidenceRecord,
+  FLAGS,
+  fingerprintModule,
+  type ModuleUnits,
+  OPAQUE_UNIT,
+  type RunInfo,
+  type Store,
+  TOP_UNIT,
+  toRepoPath,
+} from '@veyrum/core'
+import type { ModuleOutcome } from './reporter.ts'
+
+export interface AssembleInput {
+  readonly root: string
+  readonly runId: string
+  readonly runtimeKey: Digest
+  readonly runtime: Readonly<Record<string, string>>
+  readonly revision: string | null
+  readonly createdAt: string
+  readonly outDir: string
+  readonly outcomes: ReadonlyMap<string, ModuleOutcome>
+  readonly main: MainObservations
+  readonly files: readonly string[]
+  readonly store: Store
+  readonly fs: RawFs
+  readonly runner: RunInfo['runner']
+  /** Projects whose configuration disables per-file isolation. */
+  readonly sharedWorkerProjects: ReadonlySet<string>
+  /** Absolute path prefixes of Veyrum's own files and scratch space. */
+  readonly ignored: readonly string[]
+  /**
+   * Files every check depends on that the runner reads in native code, invisible to fs hooks
+   * (Vite bundles its config and resolves tsconfig in Rust): config files, their dependencies,
+   * and TypeScript/JavaScript project configs.
+   */
+  readonly configFiles: readonly string[]
+}
+
+export interface Assembled {
+  readonly run: RunInfo
+  readonly records: readonly EvidenceRecord[]
+}
+
+/** A snapshot line such as `src/a.ts:12:3` means the test observes source positions. */
+const POSITION_PATTERN = /\.[cm]?[jt]sx?:\d+:\d+/
+
+export function readPayloads(outDir: string): WorkerPayload[] {
+  const dir = path.join(outDir, 'payloads')
+  let names: string[]
+  try {
+    names = fs.readdirSync(dir)
+  } catch {
+    return []
+  }
+  const out: WorkerPayload[] = []
+  for (const name of names.sort()) {
+    if (!name.endsWith('.json')) continue
+    try {
+      out.push(JSON.parse(fs.readFileSync(path.join(dir, name), 'utf8')) as WorkerPayload)
+    } catch {
+      // A torn payload means capture failed for that file; its record becomes non-reusable.
+    }
+  }
+  return out
+}
+
+export function assemble(input: AssembleInput): Assembled {
+  const { root } = input
+  const state = new CurrentState(root, input.store, process.env, input.fs)
+  const payloads = readPayloads(input.outDir)
+  const byTestFile = new Map<string, WorkerPayload[]>()
+  for (const p of payloads) {
+    const list = byTestFile.get(p.testFile)
+    if (list) list.push(p)
+    else byTestFile.set(p.testFile, [p])
+  }
+
+  const moduleCache = new Map<string, ModuleUnits>()
+  const unitsFor = (codeDigest: string): ModuleUnits => {
+    let m = moduleCache.get(codeDigest)
+    if (!m) {
+      const code = fs.readFileSync(path.join(input.outDir, 'blobs', `${codeDigest}.js`), 'utf8')
+      m = fingerprintModule(code, { root })
+      moduleCache.set(codeDigest, m)
+    }
+    return m
+  }
+  const dynCache = new Map<string, boolean>()
+  const isDynamic = (absolute: string): boolean => {
+    let d = dynCache.get(absolute)
+    if (d === undefined) {
+      try {
+        d = input.fs.readFileSync(absolute, 'utf8').includes('import.meta.glob')
+      } catch {
+        d = false
+      }
+      dynCache.set(absolute, d)
+    }
+    return d
+  }
+  const ignored = (absolute: string): boolean => input.ignored.some((p) => absolute.startsWith(p))
+
+  const allModulePaths = new Set<string>()
+  const records: EvidenceRecord[] = []
+
+  // package.json files govern module format ("type") and resolution ("exports", "imports") for
+  // every file below them. Collected per directory, up to the repository root or package root.
+  const manifestCache = new Map<string, string[]>()
+  const manifestsFor = (absoluteFile: string): string[] => {
+    const dir = path.dirname(absoluteFile)
+    const cached = manifestCache.get(dir)
+    if (cached) return cached
+    const out: string[] = []
+    const candidate = path.join(dir, 'package.json')
+    let exists = false
+    try {
+      exists = input.fs.statSync(candidate, { throwIfNoEntry: false })?.isFile() ?? false
+    } catch {
+      exists = false
+    }
+    if (exists) out.push(candidate)
+    const inDeps = dir.includes(`${path.sep}node_modules${path.sep}`)
+    // Inside node_modules the nearest package.json is the package's own; stop there.
+    const parent = path.dirname(dir)
+    if (!(inDeps && exists) && parent !== dir && (inDeps || parent.startsWith(root)))
+      out.push(...manifestsFor(path.join(parent, 'x')))
+    manifestCache.set(dir, out)
+    return out
+  }
+
+  for (const outcome of input.outcomes.values()) {
+    const check = toRepoPath(root, outcome.moduleId)
+    const flags = new Set<string>()
+    const closure: ClosureEntry[] = []
+    const candidates = byTestFile.get(outcome.moduleId) ?? []
+    // A file can run more than once in a run (repeats); the last payload describes the final attempt.
+    const payload = candidates[candidates.length - 1]
+    if (!payload) flags.add(FLAGS.captureIncomplete)
+    if (candidates.length > 1) flags.add(FLAGS.sharedWorker)
+
+    if (payload) {
+      if (payload.captureErrors.length > 0) flags.add(FLAGS.captureIncomplete)
+      if (payload.isolateReused || input.sharedWorkerProjects.has(outcome.project))
+        flags.add(FLAGS.sharedWorker)
+      if (payload.sourceObserved) flags.add(FLAGS.sourceObserved)
+      if (payload.envEnumerated) flags.add(FLAGS.envEnumerated)
+      if (payload.evalScripts > 0) flags.add(FLAGS.evalCode)
+      if (payload.spawns.length > 0) flags.add(FLAGS.spawn)
+      if (payload.dlopen.length > 0) flags.add(FLAGS.native)
+      for (const n of payload.net) flags.add(n.local ? FLAGS.netLocal : FLAGS.netRemote)
+      if (payload.snapshot.added > 0 || payload.snapshot.updated > 0) flags.add(FLAGS.snapshotWritten)
+      if (payload.writes.some((w) => !ignored(w))) flags.add(FLAGS.writesFs)
+
+      const seen = new Set<string>()
+      const add = (key: string, entry: ClosureEntry): void => {
+        if (seen.has(key)) return
+        seen.add(key)
+        closure.push(entry)
+      }
+
+      const modulesByPath = new Map<string, { code: string; executed: (readonly [number, number])[] }[]>()
+      for (const mod of payload.modules) {
+        const list = modulesByPath.get(mod.path)
+        const item = { code: mod.code, executed: [...mod.executed] }
+        if (list) list.push(item)
+        else modulesByPath.set(mod.path, [item])
+      }
+      for (const [absolute, versions] of modulesByPath) {
+        allModulePaths.add(absolute)
+        const repoPath = toRepoPath(root, absolute)
+        const src = state.fileDigest(repoPath)
+        if (src === null) {
+          flags.add(FLAGS.captureIncomplete)
+          continue
+        }
+        const units: Record<string, Digest> = {}
+        for (const version of versions) {
+          const m = unitsFor(version.code)
+          const top = m.opaque ? OPAQUE_UNIT : TOP_UNIT
+          units[top] = m.units.get(top)!.fp
+          for (const [start, end] of version.executed) {
+            const unit = m.locate(start, end)
+            units[unit] = m.units.get(unit)!.fp
+          }
+        }
+        add(`mod:${repoPath}`, {
+          k: 'mod',
+          p: repoPath,
+          src,
+          units,
+          env: outcome.env,
+          ...(isDynamic(absolute) ? { dyn: true as const } : {}),
+        })
+      }
+      for (const absolute of [...payload.natives, ...payload.dlopen]) {
+        if (ignored(absolute)) continue
+        const p = toRepoPath(root, absolute)
+        add(`dep:${p}`, { k: 'dep', p, h: state.fileDigest(p) })
+        for (const manifest of manifestsFor(absolute)) {
+          const mp = toRepoPath(root, manifest)
+          add(`dep:${mp}`, { k: 'dep', p: mp, h: state.fileDigest(mp) })
+        }
+      }
+      for (const absolute of modulesByPath.keys()) {
+        for (const manifest of manifestsFor(absolute)) {
+          const mp = toRepoPath(root, manifest)
+          add(`file:${mp}`, { k: 'file', p: mp, h: state.fileDigest(mp) })
+        }
+      }
+      for (const obs of payload.paths) {
+        if (ignored(obs.p)) continue
+        const p = toRepoPath(root, obs.p)
+        if (obs.kind === 'dir') {
+          add(`dir:${p}`, { k: 'dir', p, h: obs.type === 'dir' ? state.dirDigest(p) : null })
+        } else if (obs.kind === 'read' && (obs.type === 'file' || obs.type === 'absent')) {
+          add(`file:${p}`, { k: 'file', p, h: obs.type === 'absent' ? null : state.fileDigest(p) })
+        } else {
+          add(`stat:${p}`, { k: 'stat', p, t: obs.type })
+        }
+      }
+      for (const e of payload.env) add(`env:${e.n}`, { k: 'env', n: e.n, h: e.h })
+
+      // Snapshots that embed source positions make formatting-only edits observable.
+      for (const entry of closure) {
+        if (entry.k !== 'file' || entry.h === null) continue
+        if (!entry.p.endsWith('.snap') && entry.p !== check) continue
+        try {
+          if (POSITION_PATTERN.test(input.fs.readFileSync(path.join(root, entry.p), 'utf8'))) {
+            flags.add(FLAGS.positionsObserved)
+            break
+          }
+        } catch {
+          // Unreadable snapshot: nothing to scan.
+        }
+      }
+    }
+
+    if (outcome.retries > 0) flags.add(FLAGS.flakySuspect)
+    const verdict = outcome.state === 'passed' || outcome.state === 'skipped' ? 'pass' : 'fail'
+    const reusable =
+      verdict === 'pass' &&
+      !flags.has(FLAGS.flakySuspect) &&
+      !flags.has(FLAGS.snapshotWritten) &&
+      !flags.has(FLAGS.captureIncomplete)
+    closure.sort((a, b) => entryKey(a).localeCompare(entryKey(b)))
+    records.push({
+      id: digest(`${input.runId}\u0000${outcome.project}\u0000${check}`),
+      check,
+      project: outcome.project,
+      runId: input.runId,
+      runtimeKey: input.runtimeKey,
+      verdict,
+      reusable,
+      flags: [...flags].sort(),
+      tests: outcome.tests,
+      durationMs: outcome.durationMs,
+      closure,
+      createdAt: input.createdAt,
+      revision: input.revision,
+    })
+  }
+
+  // Shared inputs: what the main process read, minus the modules checks already track precisely.
+  // Directory listings in the main process are test discovery (handled by the planner, since a new
+  // test file simply has no evidence) or import.meta.glob (handled by re-transforming `dyn` modules).
+  const shared: ClosureEntry[] = []
+  const sharedSeen = new Set<string>()
+  const testFiles = new Set([...input.outcomes.values()].map((o) => o.moduleId))
+  for (const obs of input.main.paths) {
+    if (ignored(obs.p) || allModulePaths.has(obs.p) || obs.kind === 'dir') continue
+    if (testFiles.has(obs.p)) continue
+    const p = toRepoPath(root, obs.p)
+    let entry: ClosureEntry
+    if (obs.kind === 'read' && (obs.type === 'file' || obs.type === 'absent')) {
+      entry = { k: 'file', p, h: obs.type === 'absent' ? null : state.fileDigest(p) }
+    } else {
+      entry = { k: 'stat', p, t: obs.type }
+    }
+    const key = entryKey(entry)
+    if (sharedSeen.has(key)) continue
+    sharedSeen.add(key)
+    shared.push(entry)
+  }
+  for (const absolute of input.configFiles) {
+    const p = toRepoPath(root, absolute)
+    const entry: ClosureEntry = { k: 'file', p, h: state.fileDigest(p) }
+    const key = entryKey(entry)
+    if (sharedSeen.has(key)) continue
+    sharedSeen.add(key)
+    shared.push(entry)
+  }
+  for (const e of input.main.env) shared.push({ k: 'env', n: e.n, h: e.h })
+  shared.sort((a, b) => entryKey(a).localeCompare(entryKey(b)))
+
+  // Variables the runner injects into workers, with the values workers saw.
+  const injected: Record<string, Digest | null> = {}
+  const conflicting = new Set<string>()
+  for (const p of payloads) {
+    for (const [n, h] of Object.entries(p.envBaseline)) {
+      if (input.main.envBaseline[n] === h) continue
+      if (Object.hasOwn(injected, n) && injected[n] !== h) conflicting.add(n)
+      injected[n] = h
+    }
+  }
+  for (const n of conflicting) delete injected[n]
+
+  const run: RunInfo = {
+    id: input.runId,
+    createdAt: input.createdAt,
+    revision: input.revision,
+    runtimeKey: input.runtimeKey,
+    runtime: input.runtime,
+    shared,
+    injectedEnv: injected,
+    files: input.files,
+    runner: input.runner,
+  }
+  return { run, records }
+}
+
+function entryKey(e: ClosureEntry): string {
+  return e.k === 'env' ? `env:${e.n}` : `${e.k}:${e.p}`
+}

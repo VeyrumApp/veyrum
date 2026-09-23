@@ -1,0 +1,31 @@
+{
+  "name": "@veyrum/core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Evidence records, fingerprints, store and planner for Veyrum",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./hash": {
+      "types": "./dist/hash.d.ts",
+      "default": "./dist/hash.js"
+    },
+    "./paths": {
+      "types": "./dist/paths.d.ts",
+      "default": "./dist/paths.js"
+    },
+    "./state": {
+      "types": "./dist/state.d.ts",
+      "default": "./dist/state.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "dependencies": {
+    "oxc-parser": "0.151.0"
+  }
+}

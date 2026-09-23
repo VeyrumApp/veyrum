@@ -1,0 +1,23 @@
+{
+  "name": "@veyrum/capture",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Runner-agnostic input capture: fs, env, network, process and V8 coverage hooks",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./worker": {
+      "types": "./dist/worker.d.ts",
+      "default": "./dist/worker.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "dependencies": {
+    "@veyrum/core": "workspace:*"
+  }
+}
