@@ -81,21 +81,22 @@ describe('fingerprint sensitivity', () => {
     expect(next[TOP_UNIT]).toBe(base[TOP_UNIT])
   })
 
-  test('an arity change is visible to the enclosing unit', () => {
-    const next = units('function f(a, b) { return a + 1 }\nfunction g() { return 2 }')
-    expect(next[TOP_UNIT]).not.toBe(base[TOP_UNIT])
+  test('an arity change of a function that escapes is visible to the enclosing unit', () => {
+    const a = units('export function f(a) { return a + 1 }')
+    const b = units('export function f(a, b) { return a + 1 }')
+    expect(b[TOP_UNIT]).not.toBe(a[TOP_UNIT])
   })
 
   test('a default parameter changes fn.length and so the enclosing unit', () => {
-    const a = units('function f(a, b) {}')
-    const b = units('function f(a, b = 1) {}')
+    const a = units('function f(a, b) {}\nexport default f')
+    const b = units('function f(a, b = 1) {}\nexport default f')
     expect(b[TOP_UNIT]).not.toBe(a[TOP_UNIT])
   })
 
   test('async-ness and generator-ness are part of the signature', () => {
-    const a = units('const f = () => 1')
-    expect(units('const f = async () => 1')[TOP_UNIT]).not.toBe(a[TOP_UNIT])
-    expect(units('function* g() {}')[TOP_UNIT]).not.toBe(units('function g() {}')[TOP_UNIT])
+    const a = units('const f = () => 1\nexports.f = f')
+    expect(units('const f = async () => 1\nexports.f = f')[TOP_UNIT]).not.toBe(a[TOP_UNIT])
+    expect(units('function* g() {}\nuse(g)')[TOP_UNIT]).not.toBe(units('function g() {}\nuse(g)')[TOP_UNIT])
   })
 
   test('a module constant change invalidates the top level', () => {
@@ -138,6 +139,68 @@ describe('fingerprint sensitivity', () => {
     expect(m.opaque).toBe(true)
     expect([...m.units.keys()]).toEqual([OPAQUE_UNIT])
     expect(m.locate(0, 3)).toBe(OPAQUE_UNIT)
+  })
+})
+
+describe('private functions and bindings', () => {
+  const helper = (params: string, extra = '') =>
+    `function helper(${params}) { return 1 }\n${extra}export function api(x) { return helper(x) }`
+
+  test("a private helper's signature does not reach the top level", () => {
+    const a = units(helper('a'))
+    const b = units(helper('a, b'))
+    expect(b[TOP_UNIT]).toBe(a[TOP_UNIT])
+    expect(b['@top/fn:api#0']).toBe(a['@top/fn:api#0'])
+    expect(b['@top/fn:helper#0']).not.toBe(a['@top/fn:helper#0'])
+  })
+
+  test('adding a private helper changes only the units that mention its name', () => {
+    const a = units(helper('a'))
+    const b = units(helper('a', 'function other() { return 2 }\n'))
+    expect(b[TOP_UNIT]).toBe(a[TOP_UNIT])
+    expect(b['@top/fn:api#0']).toBe(a['@top/fn:api#0'])
+  })
+
+  test('a new module binding changes units that mentioned the name as a global', () => {
+    const a = units('export function api() { return format(1) }')
+    const b = units('function format(x) { return x }\nexport function api() { return format(1) }')
+    expect(b['@top/fn:api#0']).not.toBe(a['@top/fn:api#0'])
+  })
+
+  test('a function used as a value, with new, as a tag or exported escapes', () => {
+    for (const use of [
+      'register(helper)',
+      'new helper()',
+      'helper`x`',
+      'export { helper }',
+      'typeof helper',
+    ]) {
+      const a = units(`function helper(a) {}\n${use}`)
+      const b = units(`function helper(a, b) {}\n${use}`)
+      expect(b[TOP_UNIT], use).not.toBe(a[TOP_UNIT])
+    }
+  })
+
+  test('eval makes every function escape', () => {
+    const a = units('function helper(a) {}\neval("helper.length")')
+    const b = units('function helper(a, b) {}\neval("helper.length")')
+    expect(b[TOP_UNIT]).not.toBe(a[TOP_UNIT])
+  })
+
+  test('a same-named declaration in a nested block stays in the top level', () => {
+    const a = units('function helper() {}\nhelper()\n{ const helper = 1; use(helper) }')
+    const b = units('function helper() {}\nhelper()\n{ const helper = 2; use(helper) }')
+    expect(b[TOP_UNIT]).not.toBe(a[TOP_UNIT])
+  })
+
+  test("Vite's imported names are left out for repository modules, kept for dependencies", () => {
+    const ssr = (spec: string, names: string) =>
+      units(
+        `const __vite_ssr_import_0__ = await __vite_ssr_import__(${JSON.stringify(spec)}, {importedNames:[${names}]})`,
+      )[TOP_UNIT]
+    expect(ssr('/src/general.ts', '"isMap"')).toBe(ssr('/src/general.ts', '"isMap","isSet"'))
+    expect(ssr('/node_modules/pkg/index.js', '"a"')).not.toBe(ssr('/node_modules/pkg/index.js', '"a","b"'))
+    expect(ssr('/src/general.ts', '"a"')).not.toBe(ssr('/src/other.ts', '"a"'))
   })
 })
 

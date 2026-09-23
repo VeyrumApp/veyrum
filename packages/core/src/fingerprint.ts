@@ -16,7 +16,20 @@ import { type Digest, digest } from './hash.ts'
  *   compares raw source instead;
  * - class field initializers and static blocks belong to the enclosing unit, because V8 runs them
  *   as part of the class definition.
+ *
+ * Two refinements keep private helpers from invalidating every importer of a module:
+ *
+ * - a module-level function that never escapes (every reference to it is a direct call, it is not
+ *   exported, and the module uses no `eval` or `with`) is left out of the top level entirely. Its
+ *   length, name and kind can only be observed by calling it, which executes it, so its own unit
+ *   covers every test that could notice a change;
+ * - every unit records what each name it mentions resolves to at module level (a function, a
+ *   variable, an import, or nothing, meaning a global). Adding, removing or retyping a module-level
+ *   binding therefore changes exactly the units that mention its name.
  */
+
+/** Bump when unit naming or canonicalization changes: fingerprints of different versions never match. */
+export const FINGERPRINT_VERSION = '2'
 
 export const TOP_UNIT = '@top'
 export const OPAQUE_UNIT = '@opaque'
@@ -85,6 +98,26 @@ export function fingerprintModule(code: string, options: FingerprintOptions = {}
     const spec = aliases.get(name)
     return spec === undefined ? name : `import(${normSpec(spec)})`
   }
+
+  const bindings = moduleBindings(program)
+  const private_ = nonEscapingFunctions(program, bindings)
+  // The top-level declarations left out of the top-level unit (see the module comment): only the
+  // module's own statements, never a same-named declaration in a nested block.
+  const omittedNodes = new Set<AstNode>()
+  for (const stmt of program.body as AstNode[]) {
+    if (stmt.type === 'FunctionDeclaration') {
+      const id = stmt.id as AstNode | null
+      if (id?.type === 'Identifier' && private_.has(id.name as string)) omittedNodes.add(stmt)
+    } else if (stmt.type === 'VariableDeclaration' && stmt.kind === 'const') {
+      const declarations = stmt.declarations as AstNode[]
+      for (const d of declarations) {
+        const id = d.id as AstNode
+        if (id.type === 'Identifier' && private_.has(id.name as string)) omittedNodes.add(d)
+      }
+      if (declarations.every((d) => omittedNodes.has(d))) omittedNodes.add(stmt)
+    }
+  }
+  const omitted = (node: AstNode): boolean => omittedNodes.has(node)
 
   // Pass 1: find function nodes and give each a stable unit path.
   const functions: { node: AstNode; path: string }[] = []
@@ -156,6 +189,7 @@ export function fingerprintModule(code: string, options: FingerprintOptions = {}
   // Pass 2: canonical serialization per unit.
   const serialize = (self: AstNode | null, rootNode: AstNode): string => {
     const out: string[] = []
+    const mentioned = new Set<string>()
     const write = (v: unknown): void => {
       if (v === null || v === undefined) {
         out.push('_')
@@ -168,6 +202,8 @@ export function fingerprintModule(code: string, options: FingerprintOptions = {}
       if (Array.isArray(v)) {
         out.push('[')
         for (const item of v) {
+          // Omitted declarations leave no trace, not even a slot in the list.
+          if (self === null && isNode(item) && omitted(item)) continue
           write(item)
           out.push(',')
         }
@@ -189,7 +225,13 @@ export function fingerprintModule(code: string, options: FingerprintOptions = {}
         return
       }
       if (v.type === 'Identifier') {
-        out.push('I(', normIdent(v.name as string), ')')
+        const name = v.name as string
+        if (!aliases.has(name)) mentioned.add(name)
+        out.push('I(', normIdent(name), ')')
+        return
+      }
+      if (v.type === 'CallExpression' && isSsrImport(v)) {
+        out.push('{SsrImport ', ssrImportText(v, normSpec), '}')
         return
       }
       if (v.type === 'Literal') {
@@ -205,6 +247,9 @@ export function fingerprintModule(code: string, options: FingerprintOptions = {}
       out.push('}')
     }
     write(rootNode)
+    // What each mentioned name resolves to at module level.
+    out.push('|')
+    for (const name of [...mentioned].sort()) out.push(name, '=', bindings.get(name) ?? 'global', ';')
     return out.join('')
   }
 
@@ -300,6 +345,181 @@ function collectImportAliases(program: AstNode): Map<string, string> {
     }
   }
   return aliases
+}
+
+/** Names declared at module level and what they are (`fn`, `class`, `var`, `let`, `const`, `import`). */
+function moduleBindings(program: AstNode): Map<string, string> {
+  const out = new Map<string, string>()
+  const declare = (node: AstNode | null | undefined): void => {
+    if (!node) return
+    switch (node.type) {
+      case 'FunctionDeclaration':
+      case 'ClassDeclaration': {
+        const id = node.id as AstNode | null
+        if (id?.type === 'Identifier')
+          out.set(id.name as string, node.type === 'FunctionDeclaration' ? 'fn' : 'class')
+        return
+      }
+      case 'VariableDeclaration':
+        for (const d of node.declarations as AstNode[])
+          for (const name of patternNames(d.id as AstNode)) out.set(name, node.kind as string)
+        return
+      case 'ImportDeclaration':
+        for (const spec of (node.specifiers as AstNode[]) ?? []) {
+          const local = spec.local as AstNode
+          if (local?.type === 'Identifier') out.set(local.name as string, 'import')
+        }
+        return
+      case 'ExportNamedDeclaration':
+      case 'ExportDefaultDeclaration':
+        declare(node.declaration as AstNode | null)
+        return
+    }
+  }
+  for (const stmt of program.body as AstNode[]) declare(stmt)
+  return out
+}
+
+function patternNames(pattern: AstNode | null | undefined): string[] {
+  if (!pattern) return []
+  switch (pattern.type) {
+    case 'Identifier':
+      return [pattern.name as string]
+    case 'ObjectPattern':
+      return (pattern.properties as AstNode[]).flatMap((p) =>
+        p.type === 'RestElement' ? patternNames(p.argument as AstNode) : patternNames(p.value as AstNode),
+      )
+    case 'ArrayPattern':
+      return (pattern.elements as (AstNode | null)[]).flatMap((e) => patternNames(e))
+    case 'RestElement':
+      return patternNames(pattern.argument as AstNode)
+    case 'AssignmentPattern':
+      return patternNames(pattern.left as AstNode)
+    default:
+      return []
+  }
+}
+
+/**
+ * Module-level functions (declarations, and `const` bindings initialized with a function) whose every
+ * mention anywhere in the module is the callee of a plain call. A function that is exported, passed,
+ * stored, constructed with `new`, used as a tag, or mentioned any other way escapes. Mentions are
+ * counted by name, ignoring scopes: a shadowing local mentioned in another way also counts, which
+ * only errs toward escaping. Modules using `eval` or `with` have no private functions.
+ */
+function nonEscapingFunctions(program: AstNode, bindings: ReadonlyMap<string, string>): Set<string> {
+  const candidates = new Set<string>()
+  for (const stmt of program.body as AstNode[]) {
+    if (stmt.type === 'FunctionDeclaration') {
+      const id = stmt.id as AstNode | null
+      if (id?.type === 'Identifier') candidates.add(id.name as string)
+    } else if (stmt.type === 'VariableDeclaration' && stmt.kind === 'const') {
+      for (const d of stmt.declarations as AstNode[]) {
+        const id = d.id as AstNode
+        const init = d.init as AstNode | null
+        if (
+          id.type === 'Identifier' &&
+          init &&
+          (init.type === 'FunctionExpression' || init.type === 'ArrowFunctionExpression')
+        )
+          candidates.add(id.name as string)
+      }
+    }
+  }
+  // A name declared twice at module level (a function and a variable) is left alone.
+  for (const name of candidates)
+    if (bindings.get(name) !== 'fn' && bindings.get(name) !== 'const') candidates.delete(name)
+  if (candidates.size === 0) return candidates
+  const escaped = new Set<string>()
+  let dynamicScope = false
+  const visit = (node: AstNode, parent: AstNode | undefined, key: string | undefined): void => {
+    if (node.type === 'WithStatement') dynamicScope = true
+    if (node.type === 'Identifier') {
+      const name = node.name as string
+      if (name === 'eval') dynamicScope = true
+      if (
+        candidates.has(name) &&
+        !notAReference(parent, key) &&
+        !(parent?.type === 'CallExpression' && key === 'callee')
+      )
+        escaped.add(name)
+      return
+    }
+    for (const k in node) {
+      if (SKIP_KEYS.has(k)) continue
+      const v = node[k]
+      if (Array.isArray(v)) {
+        for (const item of v) if (isNode(item)) visit(item, node, k)
+      } else if (isNode(v)) {
+        visit(v, node, k)
+      }
+    }
+  }
+  visit(program, undefined, undefined)
+  if (dynamicScope) return new Set()
+  for (const name of escaped) candidates.delete(name)
+  return candidates
+}
+
+/** Identifier positions that name something other than a variable reference, or declare one. */
+function notAReference(parent: AstNode | undefined, key: string | undefined): boolean {
+  if (!parent) return false
+  switch (parent.type) {
+    case 'MemberExpression':
+      return key === 'property' && !parent.computed
+    case 'Property':
+      return key === 'key' && !parent.computed && !parent.shorthand
+    case 'MethodDefinition':
+    case 'PropertyDefinition':
+      return key === 'key' && !parent.computed
+    case 'LabeledStatement':
+    case 'BreakStatement':
+    case 'ContinueStatement':
+      return key === 'label'
+    case 'FunctionDeclaration':
+    case 'FunctionExpression':
+    case 'ClassDeclaration':
+    case 'ClassExpression':
+      return key === 'id'
+    case 'VariableDeclarator':
+      return key === 'id'
+    case 'MetaProperty':
+      return true
+    default:
+      return false
+  }
+}
+
+function isSsrImport(call: AstNode): boolean {
+  const callee = call.callee as AstNode
+  return callee.type === 'Identifier' && callee.name === SSR_IMPORT
+}
+
+/**
+ * Vite's SSR import with its metadata. The names a module imports are checked against the imported
+ * module only when that module is an externalized dependency (a CommonJS package can lack a named
+ * export); for repository modules the list has no effect, so it is left out.
+ */
+function ssrImportText(call: AstNode, normSpec: (s: string) => string): string {
+  const [spec, meta] = call.arguments as AstNode[]
+  const value = spec?.type === 'Literal' && typeof spec.value === 'string' ? spec.value : null
+  const external =
+    value === null || value.includes('/node_modules/') || !(value.startsWith('/') || value.startsWith('.'))
+  let names = ''
+  if (external && meta?.type === 'ObjectExpression') {
+    for (const p of meta.properties as AstNode[]) {
+      const k = p.key as AstNode | undefined
+      if (p.type === 'Property' && k?.type === 'Identifier' && k.name === 'importedNames') {
+        const arr = p.value as AstNode
+        if (arr.type === 'ArrayExpression')
+          names = (arr.elements as AstNode[])
+            .map((e) => (e?.type === 'Literal' ? String(e.value) : '?'))
+            .join(',')
+        else names = '?'
+      }
+    }
+  }
+  return `${value === null ? '?' : normSpec(value)} [${names}]`
 }
 
 function signature(fn: AstNode, normIdent: (s: string) => string): string {

@@ -7,6 +7,7 @@ import {
   deserializeUnits,
   digest,
   type EvidenceRecord,
+  FINGERPRINT_VERSION,
   FLAGS,
   fingerprintModule,
   isInside,
@@ -69,9 +70,6 @@ export interface Assembled {
   readonly records: readonly EvidenceRecord[]
 }
 
-/** Bump when unit naming or canonicalization changes, so cached fingerprints are not reused. */
-const UNIT_FORMAT = '1'
-
 /** A snapshot line such as `src/a.ts:12:3` means the test observes source positions. */
 const POSITION_PATTERN = /\.[cm]?[jt]sx?:\d+:\d+/
 
@@ -112,7 +110,7 @@ export function assemble(input: AssembleInput): Assembled {
   const unitsFor = (codeDigest: string): ModuleUnits => {
     let m = moduleCache.get(codeDigest)
     if (!m) {
-      const key = `code\u0000${UNIT_FORMAT}\u0000${codeDigest}`
+      const key = `code\u0000${FINGERPRINT_VERSION}\u0000${codeDigest}`
       const cached = input.store.getCached(key)
       if (cached) {
         m = deserializeUnits(cached)

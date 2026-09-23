@@ -55,6 +55,57 @@ describe('code edits', () => {
     expect(plan['test/limit.test.ts']?.action).toBe('skip')
   })
 
+  test('changing a private helper reruns only the files that executed it', () => {
+    sandbox = new Sandbox('private-helper')
+      .write(
+        'src/eq.ts',
+        'function compareArrays(a: unknown[], b: unknown[]) { return a.length === b.length }\n' +
+          'export function equal(a: unknown, b: unknown) { return Array.isArray(a) && Array.isArray(b) ? compareArrays(a, b) : a === b }\n' +
+          'export function same(a: unknown, b: unknown) { return Object.is(a, b) }\n',
+      )
+      .write(
+        'test/equal.test.ts',
+        "import { expect, test } from 'vitest'\nimport { equal } from '../src/eq'\ntest('arrays', () => expect(equal([1], [2])).toBe(true))\n",
+      )
+      .write(
+        'test/same.test.ts',
+        "import { expect, test } from 'vitest'\nimport { same } from '../src/eq'\ntest('same', () => expect(same(1, 1)).toBe(true))\n",
+      )
+    sandbox.capture()
+    // A new parameter on the private helper, and a new private helper: only callers are affected.
+    sandbox.edit(
+      'src/eq.ts',
+      'function compareArrays(a: unknown[], b: unknown[]) {',
+      'function compareArrays(a: unknown[], b: unknown[], depth = 0) {',
+    )
+    sandbox.edit('src/eq.ts', 'export function same', 'function unused() { return 0 }\nexport function same')
+    expect(sandbox.actions()).toEqual({ 'test/equal.test.ts': 'run', 'test/same.test.ts': 'skip' })
+  })
+
+  test('a new module binding that captures a global name reruns the files using that name', () => {
+    sandbox = new Sandbox('captured-global')
+      .write(
+        'src/util.ts',
+        'export function describeIt() { return String(JSON.stringify({ a: 1 })) }\nexport function other() { return 2 }\n',
+      )
+      .write(
+        'test/describe.test.ts',
+        "import { expect, test } from 'vitest'\nimport { describeIt } from '../src/util'\ntest('d', () => expect(describeIt()).toBe('{\"a\":1}'))\n",
+      )
+      .write(
+        'test/other.test.ts',
+        "import { expect, test } from 'vitest'\nimport { other } from '../src/util'\ntest('o', () => expect(other()).toBe(2))\n",
+      )
+    sandbox.capture()
+    // `String` now resolves to a module function instead of the global.
+    sandbox.edit(
+      'src/util.ts',
+      'export function describeIt',
+      'function String(x: unknown) { return `wrapped:${x}` }\nexport function describeIt',
+    )
+    expect(sandbox.actions()).toEqual({ 'test/describe.test.ts': 'run', 'test/other.test.ts': 'skip' })
+  })
+
   test('comments and formatting never invalidate', () => {
     const sb = mathProject('formatting')
     sb.edit(

@@ -52,6 +52,23 @@ Fingerprinting transform output has three consequences:
 Import aliases (`__vite_ssr_import_N__`) are renamed to their specifier, and install paths are
 stripped, so fingerprints are stable across machines.
 
+Two refinements keep a private helper from invalidating every importer of its module:
+
+- **Private functions are left out of the top level.** A module-level function (a declaration,
+  or a `const` initialized with a function) is private when every mention of its name anywhere in
+  the module is the callee of a plain call: it is not exported, passed, stored, constructed with
+  `new` or used as a tag, and the module uses no `eval` or `with`. Its length, name and kind can
+  only be observed by calling it, which executes it, so its own unit covers every test that could
+  notice a change. Mentions are counted by name across scopes, which only errs toward escaping.
+- **Every unit records how the names it mentions resolve.** For each name, the unit's fingerprint
+  includes what the name is bound to at module level (function, class, variable, import) or that
+  it is not bound there (a global). Adding, removing or retyping a module-level binding therefore
+  changes exactly the units that mention its name, including units whose global reference is now
+  captured by a new module binding.
+
+Vite's list of imported names is left out for repository modules: it is only checked for
+externalized dependencies, where a CommonJS package can lack a named export.
+
 ## Flags
 
 Flags record channels the closure cannot fully observe.

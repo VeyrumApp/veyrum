@@ -1,8 +1,9 @@
 import os from 'node:os'
+import { FINGERPRINT_VERSION } from './fingerprint.ts'
 import { type Digest, digestParts } from './hash.ts'
 
 /** Version of the capture format. Bump when closure semantics change so old evidence is not reused. */
-export const CAPTURE_VERSION = '1'
+export const CAPTURE_VERSION = `2.${FINGERPRINT_VERSION}`
 
 /**
  * Facts every check can observe without reading them through a hooked API. A change to any of

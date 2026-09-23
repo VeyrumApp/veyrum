@@ -1,6 +1,7 @@
 export { isConfigLike, listRepoFiles } from './files.ts'
 export {
   deserializeUnits,
+  FINGERPRINT_VERSION,
   type FingerprintOptions,
   fingerprintModule,
   type ModuleUnits,
