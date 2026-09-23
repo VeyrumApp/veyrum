@@ -113,6 +113,53 @@ export function resolveTargetVitest(root: string): TargetVitest {
   }
 }
 
+const BUILTIN_ENVIRONMENTS = new Set(['node', 'jsdom', 'happy-dom', 'edge-runtime'])
+
+/**
+ * Whether capture must start when the worker starts rather than in Veyrum's setup file (the first
+ * setup file). Before setup files, a Vitest worker runs project code only for a custom environment,
+ * snapshot serializers, a diff configuration module or a custom runner. Without those, starting in
+ * the setup file observes everything the project runs, and Vitest's own start-up runs without
+ * coverage, which is measurably cheaper.
+ */
+function startsBeforeSetupFiles(config: {
+  environment?: string
+  snapshotSerializers?: string[]
+  diff?: unknown
+  runner?: string
+}): boolean {
+  return (
+    !BUILTIN_ENVIRONMENTS.has(config.environment ?? 'node') ||
+    (config.snapshotSerializers?.length ?? 0) > 0 ||
+    config.diff !== undefined ||
+    config.runner !== undefined
+  )
+}
+
+interface ServerEnvironments {
+  environments?: Record<string, { moduleGraph?: { idToModuleMap: Map<string, { file: string | null }> } }>
+}
+
+/**
+ * Files Vitest ran through its `__vitest__` Vite environment: custom test environments (loaded in
+ * workers by a separate module runner whose modules coverage cannot attribute), global setup files
+ * and the VCS provider. Each of them can affect every test file, so they are shared inputs.
+ */
+function runnerEnvironmentFiles(servers: readonly unknown[]): string[] {
+  const out = new Set<string>()
+  for (const server of servers) {
+    const environment = (server as ServerEnvironments).environments?.__vitest__
+    for (const node of environment?.moduleGraph?.idToModuleMap.values() ?? [])
+      if (
+        node.file &&
+        path.isAbsolute(node.file) &&
+        !node.file.includes(`${path.sep}node_modules${path.sep}`)
+      )
+        out.add(node.file)
+  }
+  return [...out]
+}
+
 function checkOf(root: string, spec: TestSpecification): CheckRef {
   return { path: toRepoPath(root, spec.moduleId), project: spec.project.name }
 }
@@ -186,8 +233,13 @@ export async function runVitest(options: VitestRunOptions): Promise<VitestRunRes
         execArgv: string[]
         setupFiles: string[]
         isolate: boolean
+        environment?: string
+        snapshotSerializers?: string[]
+        diff?: unknown
+        runner?: string
       }
-      if (!config.execArgv.includes(preloadUrl)) config.execArgv.push('--import', preloadUrl)
+      if (startsBeforeSetupFiles(config) && !config.execArgv.includes(preloadUrl))
+        config.execArgv.push('--import', preloadUrl)
       if (!config.setupFiles.includes(setupPath)) config.setupFiles.unshift(setupPath)
       if (config.isolate === false) {
         if (options.forceIsolation) config.isolate = true
@@ -263,6 +315,8 @@ export async function runVitest(options: VitestRunOptions): Promise<VitestRunRes
     }
     const runMs = performance.now() - runStarted
     const main = recorder.stop()
+    for (const f of runnerEnvironmentFiles([vitest.vite, ...vitest.projects.map((p) => p.vite)]))
+      configFiles.add(f)
 
     const recordStarted = performance.now()
     const pool = String((vitest.config as unknown as { pool?: string }).pool ?? '')

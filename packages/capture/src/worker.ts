@@ -307,6 +307,7 @@ function recordToolchain(into: Set<string>, files: Set<string>): boolean {
 }
 
 export async function beginWorkerCapture(options: WorkerCaptureOptions): Promise<WorkerCapture> {
+  const beginStarted = performance.now()
   const errors: string[] = []
   prepareWorkerHooks(options)
   const isolate = (globalThis as unknown as Record<symbol, IsolateState>)[ISOLATE_KEY]!
@@ -347,8 +348,10 @@ export async function beginWorkerCapture(options: WorkerCaptureOptions): Promise
   const session = isolate.session
   const state = isolate
 
+  const beginMs = performance.now() - beginStarted
   return {
     async finish(testFile, snapshot, sources) {
+      const finishStarted = performance.now()
       let debuggerEnabled = false
       /** The executed module code and its offset inside the script, or null if not a wrapped module. */
       const moduleCode = async (
@@ -497,6 +500,7 @@ export async function beginWorkerCapture(options: WorkerCaptureOptions): Promise
         toolchain: [...state.toolchain],
         toolchainFiles: [...state.toolchainFiles],
         captureErrors: errors,
+        timings: { beginMs, finishMs: performance.now() - finishStarted },
       }
       if (debuggerEnabled) {
         try {

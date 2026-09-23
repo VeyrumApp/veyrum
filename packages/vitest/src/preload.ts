@@ -15,6 +15,9 @@ if (config) {
     ignoredPrefixes: config.ignored,
     volatileEnv: VOLATILE_ENV,
   })
-  // Surface capture start-up failures when the setup file awaits the promise, not as crashes here.
-  ;(g[PENDING_KEY] as Promise<unknown>).catch(() => {})
+  // Wait until coverage is on before the worker runs anything: Node finishes --import modules
+  // (top-level await included) before the entry point, so a custom environment or snapshot
+  // serializer loaded right after is observed. Start-up failures surface when the setup file
+  // awaits the same promise, not as crashes here.
+  await (g[PENDING_KEY] as Promise<unknown>).catch(() => {})
 }

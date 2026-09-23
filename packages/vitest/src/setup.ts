@@ -59,8 +59,10 @@ if (config) {
   const { VOLATILE_ENV } = nativeRequire(config.captureIndex) as typeof Capture
   const { beginWorkerCapture } = nativeRequire(config.captureWorker) as typeof CaptureWorker
   const g = globalThis as unknown as Record<symbol, Promise<CaptureWorker.WorkerCapture> | undefined>
-  // The preload starts capture for the first file in an isolate. When an isolate runs several
-  // files (isolation off), later files start here; their payloads are marked as reused.
+  // The preload starts capture when project code can run before setup files (custom environment,
+  // snapshot serializers, diff options, custom runner); otherwise capture starts here, before any
+  // project code. When an isolate runs several files (isolation off), later files start here too;
+  // their payloads are marked as reused.
   const pending =
     g[PENDING] ??
     beginWorkerCapture({

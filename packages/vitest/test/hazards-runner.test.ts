@@ -267,3 +267,101 @@ describe('failing open', () => {
     expect(sandbox.actions()['test/a.test.ts']).toBe('skip')
   })
 })
+
+describe('code that runs before setup files', () => {
+  test('a custom environment is captured, with the modules it loads', () => {
+    sandbox = new Sandbox('custom-environment')
+      .write('src/flag.ts', 'export const FLAG = 1\n')
+      .write(
+        'env/custom.ts',
+        "import { FLAG } from '../src/flag'\nexport default { name: 'custom', viteEnvironment: 'ssr', setup() { (globalThis as any).FLAG = FLAG; return { teardown() {} } } }\n",
+      )
+      .write(
+        'vitest.config.ts',
+        "import { defineConfig } from 'vitest/config'\nexport default defineConfig({ test: { environment: './env/custom.ts' } })\n",
+      )
+      .write(
+        'test/a.test.ts',
+        "import { expect, test } from 'vitest'\ntest('flag', () => expect((globalThis as any).FLAG).toBe(1))\n",
+      )
+      // Another test imports the module directly, so it is not a shared input of the run: only
+      // capturing the environment itself can put it in test/a's closure.
+      .write(
+        'test/b.test.ts',
+        "import { expect, test } from 'vitest'\nimport { FLAG } from '../src/flag'\ntest('direct', () => expect(FLAG).toBeGreaterThan(0))\n",
+      )
+    sandbox.capture()
+    expect(sandbox.actions()['test/a.test.ts']).toBe('skip')
+    sandbox.edit('src/flag.ts', 'FLAG = 1', 'FLAG = 2')
+    expect(sandbox.actions()['test/a.test.ts']).toBe('run')
+  })
+
+  test('a file a custom environment reads in its setup is captured', () => {
+    sandbox = new Sandbox('custom-environment-read')
+      .write('fixtures/flag.txt', '1')
+      .write(
+        'env/custom.ts',
+        "import { readFileSync } from 'node:fs'\nexport default { name: 'custom', viteEnvironment: 'ssr', setup() { (globalThis as any).FLAG = readFileSync('fixtures/flag.txt', 'utf8'); return { teardown() {} } } }\n",
+      )
+      .write(
+        'vitest.config.ts',
+        "import { defineConfig } from 'vitest/config'\nexport default defineConfig({ test: { environment: './env/custom.ts' } })\n",
+      )
+      .write(
+        'test/a.test.ts',
+        "import { expect, test } from 'vitest'\ntest('flag', () => expect((globalThis as any).FLAG).toBeTruthy())\n",
+      )
+    sandbox.capture()
+    expect(sandbox.actions()['test/a.test.ts']).toBe('skip')
+    sandbox.edit('fixtures/flag.txt', '1', '2')
+    expect(sandbox.actions()['test/a.test.ts']).toBe('run')
+  })
+
+  test('a snapshot serializer is captured, with the modules it loads', () => {
+    sandbox = new Sandbox('serializer')
+      .write('src/label.ts', "export const LABEL = 'v1'\n")
+      .write(
+        'test/serializer.ts',
+        "import { LABEL } from '../src/label'\nexport default { test: (v: unknown) => typeof v === 'number', serialize: (v: number) => LABEL + ':' + v }\n",
+      )
+      .write(
+        'vitest.config.ts',
+        "import { defineConfig } from 'vitest/config'\nexport default defineConfig({ test: { snapshotSerializers: ['./test/serializer.ts'] } })\n",
+      )
+      .write(
+        'test/a.test.ts',
+        "import { expect, test } from 'vitest'\ntest('snap', () => expect(1).toMatchInlineSnapshot())\n",
+      )
+      .write(
+        'test/b.test.ts',
+        "import { expect, test } from 'vitest'\nimport { LABEL } from '../src/label'\ntest('direct', () => expect(LABEL).toBeTruthy())\n",
+      )
+    sandbox.capture()
+    sandbox.capture({ CI: 'true' })
+    expect(sandbox.actions({ CI: 'true' })['test/a.test.ts']).toBe('skip')
+    sandbox.edit('src/label.ts', "'v1'", "'v2'")
+    expect(sandbox.actions({ CI: 'true' })['test/a.test.ts']).toBe('run')
+  })
+
+  test('a file a snapshot serializer reads while it loads is captured', () => {
+    sandbox = new Sandbox('serializer-read')
+      .write('fixtures/prefix.txt', 'v1')
+      .write(
+        'test/serializer.ts',
+        "import { readFileSync } from 'node:fs'\nconst PREFIX = readFileSync('fixtures/prefix.txt', 'utf8')\nexport default { test: (v: unknown) => typeof v === 'number', serialize: (v: number) => PREFIX + ':' + v }\n",
+      )
+      .write(
+        'vitest.config.ts',
+        "import { defineConfig } from 'vitest/config'\nexport default defineConfig({ test: { snapshotSerializers: ['./test/serializer.ts'] } })\n",
+      )
+      .write(
+        'test/a.test.ts',
+        "import { expect, test } from 'vitest'\ntest('snap', () => expect(1).toMatchInlineSnapshot())\n",
+      )
+    sandbox.capture()
+    sandbox.capture({ CI: 'true' })
+    expect(sandbox.actions({ CI: 'true' })['test/a.test.ts']).toBe('skip')
+    sandbox.edit('fixtures/prefix.txt', 'v1', 'v2')
+    expect(sandbox.actions({ CI: 'true' })['test/a.test.ts']).toBe('run')
+  })
+})

@@ -43,6 +43,8 @@ export interface WorkerPayload {
   readonly toolchainFiles: readonly string[]
   /** Errors inside the capture layer itself; any error makes the record non-reusable. */
   readonly captureErrors: readonly string[]
+  /** Time the capture layer spent in this worker for this file (diagnostics). */
+  readonly timings?: { readonly beginMs: number; readonly finishMs: number }
 }
 
 export interface PayloadModule {

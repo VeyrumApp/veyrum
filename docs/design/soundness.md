@@ -15,7 +15,7 @@ A test file is reused when all of the following hold for some earlier record:
   flags, and runner versions (Vitest and Vite, or Jest);
 - every shared input of the run that produced the record is unchanged: configuration files and
   their dependencies, `tsconfig`/`jsconfig` files, the packages the runner's main process loaded,
-  and variables the main process read;
+  modules of custom Vitest environments and global setup, and variables the main process read;
 - every entry in the file's own closure is unchanged;
 - no newly added file could shadow a module in the closure during resolution, and no new
   configuration-like file appeared;
@@ -88,6 +88,23 @@ Flags record channels the closure cannot fully observe.
 | `native-addon` | native module loaded, binary recorded | allowed |
 | `env-enumerated` | whole environment read, every variable recorded | allowed |
 | `writes-fs` | files written | allowed |
+
+## Vitest
+
+Vitest runs test files in worker processes or threads, each file in a fresh module registry unless
+isolation is off. The capture window opens in Veyrum's setup file, which Veyrum places first, and
+closes after the file's tests finish.
+
+- **Code that runs before setup files moves the window earlier.** A Vitest worker runs project
+  code before setup files only for a custom environment, snapshot serializers, a diff
+  configuration module or a custom runner. A project with any of these starts capture when the
+  worker starts, through a `node --import` preload, so reads they make are recorded. Projects
+  without them skip the preload: Vitest's own start-up then runs without coverage, which is
+  measurably cheaper.
+- **Custom environments are shared inputs.** Vitest loads them through a separate module runner
+  whose code V8 cannot attribute to a file. Every module Vitest serves through its `__vitest__`
+  environment (custom environments, global setup, the VCS provider) is recorded as a shared input
+  by raw source.
 
 ## Jest
 
