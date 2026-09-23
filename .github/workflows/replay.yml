@@ -154,3 +154,39 @@ jobs:
         with:
           name: replay-${{ matrix.corpus }}
           path: ${{ runner.temp }}/bench/${{ matrix.corpus }}
+
+  summary:
+    name: summary
+    needs: merge
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: replay-*
+          path: ${{ runner.temp }}/reports
+      - name: Summary
+        shell: bash
+        env:
+          CORPORA: ${{ join(fromJSON(inputs.corpora), ' ') }}
+        run: |
+          files=()
+          for corpus in $CORPORA; do
+            mkdir -p "$RUNNER_TEMP/bench/$corpus"
+            cp "$RUNNER_TEMP/reports/replay-$corpus/results.jsonl" "$RUNNER_TEMP/bench/$corpus/" && files+=("bench/corpora/$corpus.json")
+          done
+          node bench/rig/dist/main.js summary "${files[@]}" --bench "$RUNNER_TEMP/bench" | tee "$RUNNER_TEMP/summary.md" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: replay-summary
+          path: ${{ runner.temp }}/summary.md

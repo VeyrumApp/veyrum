@@ -85,6 +85,10 @@ node bench/rig/dist/main.js replay bench/corpora/vue-core.json
 node bench/rig/dist/main.js report bench/corpora/vue-core.json
 ```
 
+`summary` takes several corpora and renders one table across them, with a combined 95% bound on
+the escape rate. The `Replay` workflow runs the replays in parallel shards on GitHub Actions and
+ends with that table.
+
 The rig replays first-parent history. At each commit it computes every selector's choice from
 evidence recorded at earlier commits only, then runs the full suite for ground truth. Sampled
 commits also get mutants, whose killing test files are found by a plain full run.

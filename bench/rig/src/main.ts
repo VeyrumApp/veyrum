@@ -8,6 +8,7 @@ import { EXIT_KILLED, KilledError } from './exec.ts'
 import { pathsFor, replay } from './replay.ts'
 import { readLines, renderReport } from './report.ts'
 import { rescoreFileCoverage } from './rescore.ts'
+import { renderSummary } from './summary.ts'
 
 const HELP = `veyrum-bench - replay history and mutants to compare Veyrum with baseline selectors
 
@@ -16,6 +17,7 @@ Usage:
                                      [--shard <i>/<n>] [--mutants-per-commit <n>] [--mutation-every <n>]
   veyrum-bench report <corpus.json> [--bench <dir>]
   veyrum-bench rescore <corpus.json> [--bench <dir>]   Recompute the Datadog-style baseline of a finished replay
+  veyrum-bench summary <corpus.json>... [--bench <dir>] One table across replayed corpora
 
 Corpora live in bench/corpora. Work directories default to <repo>/.bench/<name>.
 `
@@ -42,6 +44,15 @@ async function main(argv: string[]): Promise<number> {
   if (values.help || !command || !corpusFile) {
     process.stdout.write(HELP)
     return values.help ? 0 : 2
+  }
+  if (command === 'summary') {
+    const bench = path.resolve(values.bench ?? DEFAULT_BENCH)
+    const inputs = positionals.slice(1).map((file) => {
+      const corpus = loadCorpus(file)
+      return { name: corpus.name, runner: corpus.runner, lines: readLines(pathsFor(corpus, bench).results) }
+    })
+    process.stdout.write(renderSummary(inputs))
+    return 0
   }
   const loaded = loadCorpus(corpusFile)
   // A shorter or pinned range than the corpus declares (a quick validation, or a reproducible run).
