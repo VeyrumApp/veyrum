@@ -1,0 +1,16 @@
+{
+  "name": "apollo-client",
+  "repo": "https://github.com/apollographql/apollo-client.git",
+  "branch": "main",
+  "commits": 40,
+  "runner": "jest",
+  "config": "config/jest.config.ts",
+  "nodeArgs": ["--expose-gc", "--experimental-import-meta-resolve", "--disable-warning=ExperimentalWarning"],
+  "install": ["npm", "ci", "--no-audit", "--no-fund", "--prefer-offline"],
+  "lockfiles": ["package-lock.json"],
+  "runnerArgs": ["--project", "Core Tests"],
+  "maxWorkers": 2,
+  "mutationSources": ["^src/(?!.*__tests__).+(?<!\\.test)\\.ts$"],
+  "mutantsPerCommit": 6,
+  "mutationEvery": 4
+}

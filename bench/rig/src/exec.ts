@@ -48,7 +48,8 @@ export const VEYRUM_CLI = path.resolve(here, '../../../packages/cli/dist/main.js
 export function childEnv(): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env }
   for (const key of Object.keys(env)) {
-    if (key.startsWith('VITEST') || key === 'NODE_ENV' || key === 'TEST') delete env[key]
+    if (key.startsWith('VITEST') || key.startsWith('JEST') || key === 'NODE_ENV' || key === 'TEST')
+      delete env[key]
   }
   // Snapshots must never be written by benchmark runs.
   env.CI = 'true'

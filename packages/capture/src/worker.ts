@@ -330,7 +330,8 @@ export async function beginWorkerCapture(options: WorkerCaptureOptions): Promise
       }
       setSink(outerSink)
       state.compiled = null
-      if (!state.toolchainObserved) errors.push('module loads cannot be observed (Node lacks module.registerHooks)')
+      if (!state.toolchainObserved)
+        errors.push('module loads cannot be observed (Node lacks module.registerHooks)')
       const modules: PayloadModule[] = []
       const natives = new Set<string>()
       let evalScripts = 0

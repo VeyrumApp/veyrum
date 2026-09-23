@@ -17,8 +17,14 @@ export interface Corpus {
   readonly lockfiles: readonly string[]
   /** Directory (relative to the repository) where the tests run; defaults to the repository root. */
   readonly cwd: string
-  /** Extra Vitest arguments (for example project filters). */
-  readonly vitestArgs: readonly string[]
+  /** The project's test runner. */
+  readonly runner: 'vitest' | 'jest'
+  /** Runner config file, relative to the test root (default: the runner's own lookup). */
+  readonly config?: string
+  /** Node flags the project's test command passes (for example --expose-gc). */
+  readonly nodeArgs: readonly string[]
+  /** Extra runner arguments (for example project filters as --project <name>). */
+  readonly runnerArgs: readonly string[]
   readonly maxWorkers: number
   /** Force per-file isolation (for projects that set isolate: false). Applied to every selector. */
   readonly forceIsolation: boolean
@@ -30,17 +36,20 @@ export interface Corpus {
 }
 
 export function loadCorpus(file: string): Corpus {
-  const raw = JSON.parse(fs.readFileSync(file, 'utf8')) as Partial<Corpus>
+  const raw = JSON.parse(fs.readFileSync(file, 'utf8')) as Partial<Corpus> & { vitestArgs?: string[] }
   const required: (keyof Corpus)[] = ['name', 'repo', 'branch', 'commits', 'install', 'lockfiles']
   for (const key of required) if (raw[key] === undefined) throw new Error(`${file}: missing "${key}"`)
+  const { vitestArgs, ...rest } = raw
   return {
     cwd: '',
-    vitestArgs: [],
+    runner: 'vitest',
+    nodeArgs: [],
+    runnerArgs: vitestArgs ?? [],
     maxWorkers: 2,
     forceIsolation: false,
     mutationSources: [],
     mutantsPerCommit: 0,
     mutationEvery: 5,
-    ...raw,
+    ...rest,
   } as Corpus
 }

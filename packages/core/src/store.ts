@@ -139,6 +139,22 @@ export class Store {
   }
 
   /** Records for a check, newest first. */
+  /**
+   * Deletes every run recorded at a revision, with its records and verifications. Returns the
+   * number of runs deleted. Content-addressed closures are left for garbage collection.
+   */
+  forgetRevision(revision: string): number {
+    let runs = 0
+    this.transaction(() => {
+      this.db
+        .prepare('DELETE FROM verifications WHERE run_id IN (SELECT id FROM runs WHERE revision = ?)')
+        .run(revision)
+      this.db.prepare('DELETE FROM records WHERE revision = ?').run(revision)
+      runs = Number(this.db.prepare('DELETE FROM runs WHERE revision = ?').run(revision).changes)
+    })
+    return runs
+  }
+
   recordsFor(check: CheckRef, limit = 20): EvidenceRecord[] {
     const rows = this.db
       .prepare(

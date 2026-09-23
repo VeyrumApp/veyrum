@@ -254,6 +254,15 @@ describe('store', () => {
     expect(store.stats()).toMatchObject({ records: 2, closures: 1, runs: 2 })
   })
 
+  test('forgets everything recorded at one revision', () => {
+    record([], { revision: 'aaa' }, { revision: 'aaa' })
+    record([], { revision: 'bbb' }, { revision: 'bbb' })
+    expect(store.forgetRevision('bbb')).toBe(1)
+    expect(store.forgetRevision('bbb')).toBe(0)
+    expect(store.stats()).toMatchObject({ records: 1, runs: 1 })
+    expect(store.recordsFor(check)[0]?.revision).toBe('aaa')
+  })
+
   test('round-trips runs and records', () => {
     const rec = record(
       [{ k: 'dir', p: 'fixtures', h: 'x' }],

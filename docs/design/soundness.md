@@ -102,8 +102,15 @@ Jest-specific observation rules, each covered by `packages/jest/test/hazards.tes
 - **Changed modules are re-transformed with the project's own Jest transform**, with the options
   the runtime uses for CommonJS or ECMAScript modules.
 
-Known gap: a test file that selects its own environment with a `@jest-environment` docblock
-bypasses the wrapper. It produces no capture, so it is never reused (it always runs).
+## Files that are never reused
+
+These produce no capture, so they always run. Both are safe and cost little:
+
+- **A Vitest file whose tests are all skipped at collection** (for example
+  `describe.skipIf(!global.gc)`). Vitest runs no file-level hook for it, so capture never
+  finishes. Such a file runs in milliseconds.
+- **A Jest file that selects its own environment** with a `@jest-environment` docblock. It
+  bypasses the environment wrapper.
 
 ## Assumptions
 

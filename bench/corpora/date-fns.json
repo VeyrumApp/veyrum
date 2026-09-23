@@ -6,7 +6,7 @@
   "cwd": "pkgs/core",
   "install": ["pnpm", "install", "--frozen-lockfile", "--prefer-offline"],
   "lockfiles": ["pnpm-lock.yaml"],
-  "vitestArgs": ["--project", "main"],
+  "runnerArgs": ["--project", "main"],
   "maxWorkers": 2,
   "forceIsolation": true,
   "mutationSources": ["^pkgs/core/src/[^/]+/index\\.ts$"],

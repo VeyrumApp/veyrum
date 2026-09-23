@@ -5,7 +5,7 @@
   "commits": 40,
   "install": ["pnpm", "install", "--frozen-lockfile", "--prefer-offline"],
   "lockfiles": ["pnpm-lock.yaml"],
-  "vitestArgs": [],
+  "runnerArgs": [],
   "maxWorkers": 2,
   "mutationSources": ["^packages/(server|client|react-query)/src/.+\\.tsx?$"],
   "mutantsPerCommit": 6,

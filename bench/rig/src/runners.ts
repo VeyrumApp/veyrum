@@ -23,8 +23,12 @@ function veyrum(corpus: Corpus, repo: string, store: string, args: readonly stri
   return exec(
     process.execPath,
     [
+      ...corpus.nodeArgs,
       VEYRUM_CLI,
       ...args,
+      '--runner',
+      corpus.runner,
+      ...(corpus.config ? ['--config', corpus.config] : []),
       '--quiet',
       '--store',
       store,
@@ -39,10 +43,10 @@ function veyrum(corpus: Corpus, repo: string, store: string, args: readonly stri
   )
 }
 
-/** Veyrum's CLI takes project filters as --project; other Vitest args are not passed through. */
+/** Veyrum's CLI takes project filters as --project; other runner args are not passed through. */
 function projectArgs(corpus: Corpus): string[] {
   const out: string[] = []
-  const args = corpus.vitestArgs
+  const args = corpus.runnerArgs
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--project' && args[i + 1]) out.push('--project', args[++i]!)
   }
@@ -90,8 +94,20 @@ export function veyrumPlan(
 }
 
 const VITEST_BIN = ['node_modules', 'vitest', 'vitest.mjs']
+const JEST_BIN = ['node_modules', 'jest', 'bin', 'jest.js']
 
-/** Plain Vitest run (no capture) with per-file results, used for mutant kill sets and overhead. */
+/** Jest takes project filters as --selectProjects. */
+function jestArgs(corpus: Corpus): string[] {
+  const out: string[] = []
+  const args = corpus.runnerArgs
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--project' && args[i + 1]) out.push('--selectProjects', args[++i]!)
+    else out.push(args[i]!)
+  }
+  return [...out, ...(corpus.config ? ['--config', corpus.config] : [])]
+}
+
+/** Plain runner invocation (no capture) with per-file results, for mutant kill sets and overhead. */
 export function plainRun(
   corpus: Corpus,
   repo: string,
@@ -101,24 +117,40 @@ export function plainRun(
 ): { outcomes: Outcomes; wallMs: number } {
   const json = path.join(scratch, 'plain.json')
   fs.rmSync(json, { force: true })
-  const r = exec(
-    process.execPath,
-    [
-      path.join(repo, ...VITEST_BIN),
-      'run',
-      ...corpus.vitestArgs,
-      `--maxWorkers=${corpus.maxWorkers}`,
-      '--reporter=json',
-      `--outputFile=${json}`,
-      '--passWithNoTests',
-      ...(corpus.forceIsolation ? ['--isolate'] : []),
-      ...files,
-    ],
-    { cwd: repo, env: childEnv(), ...(timeoutMs ? { timeoutMs } : {}) },
-  )
+  const args =
+    corpus.runner === 'jest'
+      ? [
+          ...corpus.nodeArgs,
+          path.join(repo, ...JEST_BIN),
+          ...jestArgs(corpus),
+          `--maxWorkers=${corpus.maxWorkers}`,
+          '--ci',
+          '--silent',
+          '--json',
+          `--outputFile=${json}`,
+          '--passWithNoTests',
+          ...(files.length > 0 ? ['--runTestsByPath', ...files] : []),
+        ]
+      : [
+          ...corpus.nodeArgs,
+          path.join(repo, ...VITEST_BIN),
+          'run',
+          ...corpus.runnerArgs,
+          ...(corpus.config ? ['--config', corpus.config] : []),
+          `--maxWorkers=${corpus.maxWorkers}`,
+          '--reporter=json',
+          `--outputFile=${json}`,
+          '--passWithNoTests',
+          ...(corpus.forceIsolation ? ['--isolate'] : []),
+          ...files,
+        ]
+  const r = exec(process.execPath, args, { cwd: repo, env: childEnv(), ...(timeoutMs ? { timeoutMs } : {}) })
   const outcomes: Outcomes = new Map()
   if (!fs.existsSync(json))
-    throw new Error(`plain vitest run produced no JSON:\n${r.stdout.slice(-2000)}\n${r.stderr.slice(-2000)}`)
+    throw new Error(
+      `plain ${corpus.runner} run produced no JSON (exit ${r.code}, signal ${r.signal ?? 'none'}):\n${r.stdout.slice(-2000)}\n${r.stderr.slice(-2000)}`,
+    )
+  // Vitest's JSON reporter follows Jest's format.
   const data = JSON.parse(fs.readFileSync(json, 'utf8')) as {
     testResults: { name: string; status: string; startTime?: number; endTime?: number }[]
   }
@@ -132,21 +164,50 @@ export function plainRun(
   return { outcomes, wallMs: r.ms }
 }
 
-/** Vitest's own --changed selection: test files statically importing a changed file. */
-export function vitestChanged(
+/**
+ * The runner's own changed-files selection: test files whose static import graph reaches a file
+ * changed since `since` (Vitest --changed, Jest --changedSince).
+ */
+export function runnerChanged(
   corpus: Corpus,
   repo: string,
   scratch: string,
   since: string | null,
 ): Set<string> | null {
+  if (corpus.runner === 'jest') {
+    const r = exec(
+      process.execPath,
+      [
+        ...corpus.nodeArgs,
+        path.join(repo, ...JEST_BIN),
+        ...jestArgs(corpus),
+        '--listTests',
+        '--json',
+        since ? `--changedSince=${since}` : '--onlyChanged',
+        '--passWithNoTests',
+      ],
+      { cwd: repo, env: childEnv() },
+    )
+    if (r.code !== 0) return null
+    const line = r.stdout
+      .trim()
+      .split('\n')
+      .filter((l) => l.startsWith('['))
+      .pop()
+    if (!line) return new Set()
+    const files = JSON.parse(line) as string[]
+    return new Set(files.map((f) => path.relative(repo, f).split(path.sep).join('/')))
+  }
   const json = path.join(scratch, 'changed.json')
   fs.rmSync(json, { force: true })
   const r = exec(
     process.execPath,
     [
+      ...corpus.nodeArgs,
       path.join(repo, ...VITEST_BIN),
       'list',
-      ...corpus.vitestArgs,
+      ...corpus.runnerArgs,
+      ...(corpus.config ? ['--config', corpus.config] : []),
       since ? `--changed=${since}` : '--changed',
       '--filesOnly',
       `--json=${json}`,

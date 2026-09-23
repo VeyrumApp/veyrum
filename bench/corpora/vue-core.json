@@ -5,7 +5,7 @@
   "commits": 40,
   "install": ["pnpm", "install", "--frozen-lockfile", "--prefer-offline"],
   "lockfiles": ["pnpm-lock.yaml"],
-  "vitestArgs": ["--project", "unit*"],
+  "runnerArgs": ["--project", "unit*"],
   "maxWorkers": 2,
   "mutationSources": ["^packages/[^/]+/src/.+\\.ts$"],
   "mutantsPerCommit": 6,

@@ -5,12 +5,12 @@ import { type SelectionContext, selectFileClosure, selectFileCoverage, selectNai
 import type { Corpus } from './corpus.ts'
 import { exec, git } from './exec.ts'
 import { applyMutant, type Mutant, mutationSites, rng } from './mutate.ts'
-import { captureRun, type Outcomes, plainRun, veyrumPlan, vitestChanged } from './runners.ts'
+import { captureRun, type Outcomes, plainRun, runnerChanged, veyrumPlan } from './runners.ts'
 
 export const BASELINES = [
   'all',
   'naive',
-  'vitest-changed',
+  'runner-changed',
   'file-coverage',
   'file-closure',
   'veyrum',
@@ -168,7 +168,7 @@ async function selectAll(
   return {
     all: new Set(checks.map((c) => c.path)),
     naive: selectNaive(ctx),
-    'vitest-changed': vitestChanged(corpus, paths.testRoot, paths.scratch, since),
+    'runner-changed': runnerChanged(corpus, paths.testRoot, paths.scratch, since),
     'file-coverage': selectFileCoverage(ctx),
     'file-closure': runtimeKey ? await selectFileClosure(ctx, runtimeKey) : null,
     veyrum: veyrumSelection,
@@ -218,6 +218,10 @@ export async function replay(corpus: Corpus, benchRoot: string, options: ReplayO
     for (const [index, sha] of shas.entries()) {
       if (doneShas.has(sha)) continue
       log(`commit ${index}/${shas.length - 1} ${sha.slice(0, 10)}`)
+      // A replay interrupted after this commit's capture was stored, but before its result line was
+      // written, left evidence from this very commit. Plans must only see earlier commits.
+      const purged = store.forgetRevision(sha)
+      if (purged > 0) log(`  discarded ${purged} run(s) recorded at this commit by an interrupted replay`)
       checkout(paths.repo, sha)
       const lock = lockDigest(paths.repo, corpus.lockfiles)
       if (lock !== installedLock || !fs.existsSync(path.join(paths.repo, 'node_modules'))) {
