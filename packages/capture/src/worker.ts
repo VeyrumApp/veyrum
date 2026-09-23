@@ -177,6 +177,12 @@ function installCompileHooks(compiled: () => Map<string, string[]> | null): void
 
 const ISOLATE_KEY = Symbol.for('veyrum.capture.isolate')
 
+/**
+ * Diagnostics: a directory to write a CPU profile of each test file's capture window into. Runners
+ * end their workers without letting `--cpu-prof` write, so the profile is taken here.
+ */
+const CPU_PROFILE_DIR = process.env.VEYRUM_CPU_PROFILE
+
 class FileRecorder implements HookSink {
   readonly paths = new Map<string, { p: string; kind: PathKind; type: PathType }>()
   /** Files the runner read to load as modules; kept only if they were not compiled (JSON, assets). */
@@ -339,6 +345,7 @@ export async function beginWorkerCapture(options: WorkerCaptureOptions): Promise
     await fresh.post('Profiler.startPreciseCoverage', { callCount: layout === 'jest', detailed: false })
     isolate.session = fresh
   }
+  if (CPU_PROFILE_DIR) await isolate.session.post('Profiler.start')
   isolate.files++
   const reused = isolate.files > 1
   const envBaseline = unobserved(() => {
@@ -509,6 +516,18 @@ export async function beginWorkerCapture(options: WorkerCaptureOptions): Promise
         toolchainFiles: [...state.toolchainFiles],
         captureErrors: errors,
         timings: { beginMs, finishMs: performance.now() - finishStarted },
+      }
+      if (CPU_PROFILE_DIR) {
+        try {
+          const { profile } = await session.post('Profiler.stop')
+          const name = `${digest(testFile)}-${process.pid}-${threadId}-${Date.now()}.cpuprofile`
+          unobserved(() => {
+            fs.mkdirSync(CPU_PROFILE_DIR, { recursive: true })
+            fs.writeFileSync(path.join(CPU_PROFILE_DIR, name), JSON.stringify(profile))
+          })
+        } catch {
+          // Diagnostics only.
+        }
       }
       if (debuggerEnabled) {
         try {
