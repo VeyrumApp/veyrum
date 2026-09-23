@@ -101,7 +101,7 @@ describe('code edits', () => {
     sandbox.edit(
       'src/util.ts',
       'export function describeIt',
-      'function String(x: unknown) { return `wrapped:${x}` }\nexport function describeIt',
+      'function String(x: unknown) { return "wrapped:" + x }\nexport function describeIt',
     )
     expect(sandbox.actions()).toEqual({ 'test/describe.test.ts': 'run', 'test/other.test.ts': 'skip' })
   })
