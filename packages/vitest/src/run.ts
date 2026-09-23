@@ -189,7 +189,12 @@ export async function runVitest(options: VitestRunOptions): Promise<VitestRunRes
   // The setup file must be a project file for Vite; it is copied into the run's scratch directory.
   const setupPath = path.join(scratch, 'veyrum-setup.mjs')
   fs.mkdirSync(scratch, { recursive: true })
-  fs.copyFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), 'setup.js'), setupPath)
+  const setupSource = fs.readFileSync(
+    path.join(path.dirname(fileURLToPath(import.meta.url)), 'setup.js'),
+    'utf8',
+  )
+  // The compiled file points at a source map next to the original; the copy has none.
+  fs.writeFileSync(setupPath, setupSource.replace(/\n\/\/# sourceMappingURL=.*$/m, '\n'))
   const ownRequire = createRequire(import.meta.url)
 
   const captureConfig: CaptureConfig = {

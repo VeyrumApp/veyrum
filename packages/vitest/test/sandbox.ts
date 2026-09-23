@@ -65,6 +65,9 @@ export class Sandbox {
     for (const key of Object.keys(childEnv)) {
       if (key.startsWith('VITEST') || key === 'NODE_ENV' || key === 'TEST') delete childEnv[key]
     }
+    // Scenarios decide snapshot behavior themselves; CI systems set CI=true, which forbids writes.
+    if (!('CI' in env)) delete childEnv.CI
+    if (!('GITHUB_ACTIONS' in env)) delete childEnv.GITHUB_ACTIONS
     const result = spawnSync(
       process.execPath,
       [cli, ...args, '--quiet', '--max-workers', '1', '--json', json],
