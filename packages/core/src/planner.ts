@@ -1,4 +1,4 @@
-import { isConfigLike } from './files.ts'
+import { configScope, isConfigLike } from './files.ts'
 import { TOP_UNIT } from './fingerprint.ts'
 import { type Digest, digest } from './hash.ts'
 import { fromRepoPath, stem } from './paths.ts'
@@ -66,7 +66,7 @@ export async function plan(options: PlanOptions): Promise<Decision[]> {
     }
     if (currentFiles) {
       for (const added of addedFiles(run)) {
-        if (isConfigLike(added)) {
+        if (isConfigLike(added) && configScope(added) === null) {
           changes.push(`new configuration-like file ${added}`)
           if (changes.length >= MAX_DETAILS) break
         }
@@ -74,6 +74,21 @@ export async function plan(options: PlanOptions): Promise<Decision[]> {
     }
     sharedVerdicts.set(run.id, changes)
     return changes
+  }
+
+  /** New configuration-like files that only affect files below their directory, by directory. */
+  const scopedCache = new Map<string, readonly { path: string; dir: string }[]>()
+  const scopedAdditions = (run: RunInfo): readonly { path: string; dir: string }[] => {
+    if (!currentFiles) return []
+    const cached = scopedCache.get(run.id)
+    if (cached) return cached
+    const out: { path: string; dir: string }[] = []
+    for (const added of addedFiles(run)) {
+      const dir = isConfigLike(added) ? configScope(added) : null
+      if (dir !== null) out.push({ path: added, dir })
+    }
+    scopedCache.set(run.id, out)
+    return out
   }
 
   const addedFiles = (run: RunInfo): readonly string[] => {
@@ -119,6 +134,15 @@ export async function plan(options: PlanOptions): Promise<Decision[]> {
     if (!run) return ['run metadata missing']
     changes.push(...sharedChanges(run))
     if (changes.length > 0) return changes
+    const scoped = scopedAdditions(run)
+    if (scoped.length > 0) {
+      const under = (p: string, dir: string): boolean => p === dir || p.startsWith(`${dir}/`)
+      for (const { path: added, dir } of scoped) {
+        if (under(check.path, dir) || record.closure.some((e) => e.k !== 'env' && under(e.p, dir)))
+          changes.push(`new configuration-like file ${added}`)
+      }
+      if (changes.length > 0) return changes
+    }
 
     const strict = record.flags.some((f) => STRICT_SOURCE_FLAGS.has(f))
     const modStems = new Map<string, string>()

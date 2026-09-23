@@ -209,6 +209,23 @@ describe('dependencies and configuration', () => {
     expect(sandbox.actions()).toEqual({ 'test/manifest.test.ts': 'run', 'test/plain.test.ts': 'skip' })
   })
 
+  test('a new configuration file only affects the files below its directory', () => {
+    sandbox = new Sandbox('config-scope')
+      .write('src/lib/value.js', 'export const value = 1\n')
+      .write(
+        'test/value.test.ts',
+        "import { expect, test } from 'vitest'\nimport { value } from '../src/lib/value.js'\ntest('value', () => expect(value).toBe(1))\n",
+      )
+      .write('test/plain.test.ts', PLAIN_TEST)
+    sandbox.capture()
+    // Nothing under tools/ is an input of either test.
+    sandbox.write('tools/tsconfig.json', '{ "compilerOptions": { "strict": true } }\n')
+    expect(sandbox.actions()).toEqual({ 'test/plain.test.ts': 'skip', 'test/value.test.ts': 'skip' })
+    // A manifest next to a module the test executes can change how that module loads.
+    sandbox.write('src/lib/package.json', '{ "type": "commonjs" }\n')
+    expect(sandbox.actions()).toEqual({ 'test/plain.test.ts': 'skip', 'test/value.test.ts': 'run' })
+  })
+
   function depProject(name: string): Sandbox {
     sandbox = new Sandbox(name)
       .write(

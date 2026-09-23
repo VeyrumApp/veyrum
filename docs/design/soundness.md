@@ -18,7 +18,9 @@ A test file is reused when all of the following hold for some earlier record:
   modules of custom Vitest environments and global setup, and variables the main process read;
 - every entry in the file's own closure is unchanged;
 - no newly added file could shadow a module in the closure during resolution, and no new
-  configuration-like file appeared;
+  configuration-like file appeared that can affect the file: a new manifest, tsconfig, runner or
+  Babel configuration, or `__mocks__` file affects the files below its directory; a new `.env`
+  file, install setting, or any configuration-like file at the repository root affects all;
 - the record carries no flag the policy blocks.
 
 If the latest record for a file is a failure, the file always runs.

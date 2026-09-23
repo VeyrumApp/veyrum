@@ -43,3 +43,21 @@ export function isConfigLike(repoPath: string): boolean {
   const base = repoPath.slice(repoPath.lastIndexOf('/') + 1)
   return CONFIG_LIKE.test(base) || MOCKS_DIR.test(repoPath)
 }
+
+/** Configuration-like files whose effect is not limited to the directory they are in. */
+const GLOBAL_CONFIG_LIKE = /^(\.env(\..*)?|\.npmrc|pnpm-workspace\.yaml)$/
+
+/**
+ * The directory a new configuration-like file can affect: a manifest, tsconfig, runner or Babel
+ * configuration applies to the files below its directory, and a `__mocks__` file to its siblings'
+ * directory. Null when it can affect anything: environment files, install settings, and any file
+ * at the repository root.
+ */
+export function configScope(repoPath: string): string | null {
+  const mocks = repoPath.search(MOCKS_DIR)
+  const dir =
+    mocks >= 0 ? repoPath.slice(0, mocks) : repoPath.slice(0, Math.max(0, repoPath.lastIndexOf('/')))
+  const base = repoPath.slice(repoPath.lastIndexOf('/') + 1)
+  if (dir === '' || GLOBAL_CONFIG_LIKE.test(base)) return null
+  return dir
+}
