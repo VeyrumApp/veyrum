@@ -23,6 +23,7 @@ Options:
   --json <file>        Write decisions and records as JSON
   --explain            Print the reason for every decision
   --quiet              Do not print Vitest's test output
+  --keep-scratch       Keep raw worker payloads under .veyrum/tmp (debugging)
   -h, --help           Show this help
 `
 
@@ -37,6 +38,7 @@ interface Args {
   explain: boolean
   quiet: boolean
   full: boolean
+  keepScratch: boolean
 }
 
 function parse(argv: string[]): Args | null {
@@ -52,6 +54,7 @@ function parse(argv: string[]): Args | null {
       explain: { type: 'boolean', default: false },
       quiet: { type: 'boolean', default: false },
       full: { type: 'boolean', default: false },
+      'keep-scratch': { type: 'boolean', default: false },
       help: { type: 'boolean', short: 'h', default: false },
     },
   })
@@ -70,6 +73,7 @@ function parse(argv: string[]): Args | null {
     explain: values.explain,
     quiet: values.quiet,
     full: values.full,
+    keepScratch: values['keep-scratch'],
   }
 }
 
@@ -161,6 +165,7 @@ async function main(argv: string[]): Promise<number> {
       ...(args.config ? { config: args.config } : {}),
       ...(args.maxWorkers ? { vitestOptions: { maxWorkers: args.maxWorkers } } : {}),
       ...(only ? { only } : {}),
+      keepScratch: args.keepScratch,
     })
     if (args.explain || mode === 'plan') {
       for (const d of [...result.decisions].sort((a, b) => a.check.path.localeCompare(b.check.path))) {

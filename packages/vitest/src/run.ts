@@ -193,7 +193,7 @@ export async function runVitest(options: VitestRunOptions): Promise<VitestRunRes
   const captureConfig: CaptureConfig = { root, outDir: scratch, ignored, vitestEntry: target.entryUrl }
   const previousCaptureEnv = process.env[CAPTURE_ENV]
   process.env[CAPTURE_ENV] = JSON.stringify(captureConfig)
-  const recorder = new MainRecorder({ ignoredPrefixes: ignored, volatileEnv: VOLATILE_ENV })
+  const recorder = new MainRecorder({ root, ignoredPrefixes: ignored, volatileEnv: VOLATILE_ENV })
 
   const { createVitest } = (await import(target.nodeUrl)) as typeof import('vitest/node')
   const reporter = new OutcomeReporter()
@@ -234,7 +234,11 @@ export async function runVitest(options: VitestRunOptions): Promise<VitestRunRes
       const viteConfig = project.vite.config as unknown as {
         configFile?: string
         configFileDependencies?: string[]
+        cacheDir?: string
       }
+      // Vite's cache directory holds the runner's own outputs (results, pre-bundled deps). Workers
+      // that execute pre-bundled deps still record those files as dependencies.
+      if (viteConfig.cacheDir) ignored.push(path.resolve(root, viteConfig.cacheDir) + path.sep)
       if (viteConfig.configFile) configFiles.add(path.resolve(viteConfig.configFile))
       for (const dep of viteConfig.configFileDependencies ?? []) configFiles.add(path.resolve(root, dep))
     }

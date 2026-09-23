@@ -98,6 +98,7 @@ export async function beginWorkerCapture(options: WorkerCaptureOptions): Promise
   let isolate = g[ISOLATE_KEY]
   if (!isolate) {
     installHooks({
+      root: options.root,
       ignoredPrefixes: [...options.ignoredPrefixes, path.resolve(options.outDir) + path.sep],
       observeSource: true,
     })

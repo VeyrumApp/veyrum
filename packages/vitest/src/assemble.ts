@@ -276,6 +276,9 @@ export function assemble(input: AssembleInput): Assembled {
   const testFiles = new Set([...input.outcomes.values()].map((o) => o.moduleId))
   for (const obs of input.main.paths) {
     if (ignored(obs.p) || allModulePaths.has(obs.p) || obs.kind === 'dir') continue
+    // Reads inside node_modules are resolution metadata. Each check records the manifests of the
+    // packages it loaded, and the toolchain's own packages are recorded below by module load.
+    if (obs.p.includes(`${path.sep}node_modules${path.sep}`)) continue
     if (testFiles.has(obs.p)) continue
     const p = toRepoPath(root, obs.p)
     let entry: ClosureEntry
@@ -284,6 +287,14 @@ export function assemble(input: AssembleInput): Assembled {
     } else {
       entry = { k: 'stat', p, t: obs.type }
     }
+    const key = entryKey(entry)
+    if (sharedSeen.has(key)) continue
+    sharedSeen.add(key)
+    shared.push(entry)
+  }
+  for (const manifest of input.main.loadedPackages) {
+    const p = toRepoPath(root, manifest)
+    const entry: ClosureEntry = { k: 'dep', p, h: state.fileDigest(p) }
     const key = entryKey(entry)
     if (sharedSeen.has(key)) continue
     sharedSeen.add(key)

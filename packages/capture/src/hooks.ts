@@ -13,7 +13,8 @@ export type PathType = 'file' | 'dir' | 'other' | 'absent'
 export interface HookSink {
   path(absolute: string, kind: PathKind, type: PathType): void
   write(absolute: string): void
-  env(name: string, value: string | undefined): void
+  /** `copying` is true when the read is part of copying the whole environment ({...process.env}). */
+  env(name: string, value: string | undefined, copying: boolean): void
   envEnumerated(): void
   envWrite(name: string): void
   net(host: string, port: number | undefined, local: boolean): void
@@ -47,7 +48,12 @@ interface HookState {
   /** Re-entrancy guard: hooks must not observe the capture layer's own I/O. */
   depth: number
   installed: boolean
+  /** Explicitly ignored prefixes (the capture layer's own files and scratch space). */
   ignoredPrefixes: string[]
+  /** Temporary-directory prefixes: ignored unless inside the repository root. */
+  tempPrefixes: string[]
+  /** Repository root prefix; paths inside it are always observed unless explicitly ignored. */
+  rootPrefix: string | null
 }
 
 const STATE_KEY = Symbol.for('veyrum.capture.hooks')
@@ -61,6 +67,8 @@ function sharedState(): HookState {
     depth: 0,
     installed: false,
     ignoredPrefixes: [],
+    tempPrefixes: [],
+    rootPrefix: null,
   }
   g[STATE_KEY] = created
   return created
@@ -106,6 +114,10 @@ function toAbsolute(p: unknown): string | null {
 
 function ignored(absolute: string): boolean {
   for (const prefix of state.ignoredPrefixes) if (absolute.startsWith(prefix)) return true
+  // Temporary files are assumed to be created by the test itself, but a repository can live under
+  // the temporary directory (some CI systems check out there): its files are always inputs.
+  if (state.rootPrefix && absolute.startsWith(state.rootPrefix)) return false
+  for (const prefix of state.tempPrefixes) if (absolute.startsWith(prefix)) return true
   return false
 }
 
@@ -246,27 +258,38 @@ function installFsHooks(): void {
 function installEnvProxy(): void {
   const real = process.env
   if ((real as any)[STATE_KEY]) return
+  // Spreads and Object.assign enumerate keys, then read every property in the same tick.
+  let copying = false
+  const noteEnumeration = (): void => {
+    if (copying) return
+    copying = true
+    queueMicrotask(() => {
+      copying = false
+    })
+  }
   const proxy = new Proxy(real, {
     get(target, key, receiver) {
       if (key === STATE_KEY) return true
       const value = Reflect.get(target, key, receiver)
       if (typeof key === 'string' && state.depth === 0)
-        state.sink.env(key, typeof value === 'string' ? value : undefined)
+        state.sink.env(key, typeof value === 'string' ? value : undefined, copying)
       return value
     },
     has(target, key) {
       const present = Reflect.has(target, key)
-      if (typeof key === 'string' && state.depth === 0) state.sink.env(key, present ? target[key] : undefined)
+      if (typeof key === 'string' && state.depth === 0)
+        state.sink.env(key, present ? target[key] : undefined, copying)
       return present
     },
     getOwnPropertyDescriptor(target, key) {
       const desc = Reflect.getOwnPropertyDescriptor(target, key)
       if (typeof key === 'string' && state.depth === 0)
-        state.sink.env(key, desc ? String(desc.value) : undefined)
+        state.sink.env(key, desc ? String(desc.value) : undefined, copying)
       return desc
     },
     ownKeys(target) {
       if (state.depth === 0) state.sink.envEnumerated()
+      noteEnumeration()
       return Reflect.ownKeys(target)
     },
     set(target, key, value) {
@@ -369,6 +392,8 @@ function installToStringHook(): void {
 }
 
 export interface InstallOptions {
+  /** Absolute repository root; its files are observed even when it lives in a temporary directory. */
+  readonly root?: string
   /** Absolute path prefixes whose accesses are never recorded (the capture layer's own files). */
   readonly ignoredPrefixes?: readonly string[]
   /** Observe Function.prototype.toString (worker processes only). */
@@ -378,15 +403,9 @@ export interface InstallOptions {
 /** Installs every hook once per isolate. Subsequent calls only update ignored prefixes. */
 export function installHooks(options: InstallOptions = {}): void {
   const tmp = [os.tmpdir(), safeRealpath(os.tmpdir())]
-  state.ignoredPrefixes = [
-    ...new Set([
-      ...tmp.map((t) => t + path.sep),
-      '/proc/',
-      '/dev/',
-      '/sys/',
-      ...(options.ignoredPrefixes ?? []),
-    ]),
-  ]
+  state.tempPrefixes = [...new Set(tmp.map((t) => t + path.sep))]
+  state.rootPrefix = options.root ? path.resolve(options.root) + path.sep : null
+  state.ignoredPrefixes = [...new Set(['/proc/', '/dev/', '/sys/', ...(options.ignoredPrefixes ?? [])])]
   if (state.installed) return
   state.installed = true
   installFsHooks()
