@@ -12,7 +12,8 @@
     "lint": "biome check .",
     "format": "biome check --write .",
     "test": "pnpm build && vitest run --maxWorkers=2",
-    "check": "pnpm lint && pnpm build && pnpm test"
+    "check": "pnpm lint && pnpm build && pnpm test",
+    "smoke:pack": "node scripts/pack-smoke.mjs"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.14",
