@@ -50,8 +50,9 @@ describe('verdicts', () => {
 })
 
 describe('audit and canaries', () => {
+  // A worker thread's reads are not attributed to the test file: an unobservable channel.
   const SPAWN_READ =
-    "import { execFileSync } from 'node:child_process'\nimport { expect, test } from 'vitest'\ntest('reads through a child process', () => expect(execFileSync('cat', ['fixtures/x.txt']).toString()).toBe('a'))\n"
+    "import { Worker } from 'node:worker_threads'\nimport { expect, test } from 'vitest'\ntest('reads through a worker thread', async () => {\n  const text = await new Promise((resolve) => new Worker(\"require('worker_threads').parentPort.postMessage(require('fs').readFileSync('fixtures/x.txt', 'utf8'))\", { eval: true }).on('message', resolve))\n  expect(text).toBe('a')\n})\n"
 
   test('the audit catches a reuse that an allowed unobservable channel made wrong', () => {
     sandbox = new Sandbox('audit')
@@ -59,7 +60,7 @@ describe('audit and canaries', () => {
       .write('test/spawn-read.test.ts', SPAWN_READ)
       .write('test/plain.test.ts', PLAIN_TEST)
     expect(sandbox.cli(['run', '--full', '--allow', 'spawn']).code).toBe(0)
-    // The child process's read is invisible, so with spawn allowed the change goes unnoticed...
+    // The worker thread's read is invisible, so with spawn allowed the change goes unnoticed...
     sandbox.write('fixtures/x.txt', 'b')
     const plan = Object.fromEntries(
       sandbox.cli(['plan', '--allow', 'spawn']).decisions.map((d) => [d.check.path, d.action]),
@@ -110,21 +111,124 @@ describe('evidence store placement', () => {
   })
 })
 
-describe('unobservable channels', () => {
-  test('spawning a process blocks reuse', () => {
-    sandbox = new Sandbox('spawn')
+/** A 64-bit ELF executable without an interpreter: statically linked, so it cannot be traced. */
+function writeStaticProgram(dir: string, rel: string): void {
+  const elf = Buffer.alloc(64)
+  elf.write('\x7fELF', 0, 'latin1')
+  elf[4] = 2 // 64-bit
+  elf[5] = 1 // little endian
+  elf[6] = 1
+  elf.writeUInt16LE(2, 16) // executable
+  elf.writeUInt16LE(0x3e, 18) // x86-64
+  elf.writeUInt32LE(1, 20)
+  elf.writeBigUInt64LE(64n, 32) // program headers (none)
+  elf.writeUInt16LE(64, 52)
+  elf.writeUInt16LE(56, 54)
+  const file = path.join(dir, rel)
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  fs.writeFileSync(file, elf, { mode: 0o755 })
+}
+
+const tracing = process.platform === 'linux' && process.arch === 'x64'
+
+describe.runIf(tracing)('child processes', () => {
+  const spawnTest = (body: string): string =>
+    `import { execFileSync, execSync } from 'node:child_process'\nimport { expect, test } from 'vitest'\ntest('child', () => {\n${body}\n})\n`
+
+  test("a child process's reads are inputs of the file that started it", () => {
+    sandbox = new Sandbox('child-read')
+      .write('fixtures/x.txt', 'a')
+      .write('fixtures/other.txt', 'o')
       .write(
-        'test/spawn.test.ts',
-        "import { execFileSync } from 'node:child_process'\nimport { expect, test } from 'vitest'\ntest('spawn', () => expect(execFileSync(process.execPath, ['-e', 'process.stdout.write(\"ok\")']).toString()).toBe('ok'))\n",
+        'test/child.test.ts',
+        spawnTest("  expect(execFileSync('cat', ['fixtures/x.txt']).toString()).toBe('a')"),
       )
       .write('test/plain.test.ts', PLAIN_TEST)
     sandbox.capture()
-    const plan = sandbox.plan()
-    expect(plan['test/spawn.test.ts']?.action).toBe('run')
-    expect(plan['test/spawn.test.ts']?.reason).toBe('blocked-flag')
-    expect(plan['test/plain.test.ts']?.action).toBe('skip')
+    expect(sandbox.actions()).toEqual({ 'test/child.test.ts': 'skip', 'test/plain.test.ts': 'skip' })
+    sandbox.write('fixtures/other.txt', 'p')
+    expect(sandbox.actions()).toEqual({ 'test/child.test.ts': 'skip', 'test/plain.test.ts': 'skip' })
+    sandbox.write('fixtures/x.txt', 'b')
+    expect(sandbox.actions()).toEqual({ 'test/child.test.ts': 'run', 'test/plain.test.ts': 'skip' })
+    expect(sandbox.plan()['test/child.test.ts']?.details).toEqual(['fixtures/x.txt changed'])
   })
 
+  test('promisify(exec) behaves as without Veyrum and is traced', () => {
+    sandbox = new Sandbox('child-promisify')
+      .write('fixtures/x.txt', 'a')
+      .write(
+        'test/child.test.ts',
+        "import { exec } from 'node:child_process'\nimport { promisify } from 'node:util'\nimport { expect, test } from 'vitest'\ntest('child', async () => {\n  const { stdout, stderr } = await promisify(exec)('cat fixtures/x.txt')\n  expect([stdout, stderr]).toEqual(['a', ''])\n})\n",
+      )
+    sandbox.capture()
+    expect(sandbox.actions()['test/child.test.ts']).toBe('skip')
+    sandbox.write('fixtures/x.txt', 'b')
+    expect(sandbox.actions()['test/child.test.ts']).toBe('run')
+  })
+
+  test('programs a shell runs are traced too', () => {
+    sandbox = new Sandbox('child-shell')
+      .write('fixtures/x.txt', 'abc')
+      .write(
+        'test/child.test.ts',
+        spawnTest("  expect(execSync('cat fixtures/x.txt | wc -c').toString().trim()).toBe('3')"),
+      )
+    sandbox.capture()
+    expect(sandbox.actions()['test/child.test.ts']).toBe('skip')
+    sandbox.write('fixtures/x.txt', 'abcd')
+    expect(sandbox.actions()['test/child.test.ts']).toBe('run')
+  })
+
+  test("a Node child process's module loads and status checks are inputs", () => {
+    const script =
+      "const fs = require('fs'); let flag = true; try { fs.statSync('fixtures/flag') } catch { flag = false }; process.stdout.write(String(flag) + require('./fixtures/mod.cjs'))"
+    sandbox = new Sandbox('child-node')
+      .write('fixtures/mod.cjs', 'module.exports = 42\n')
+      .write(
+        'test/child.test.ts',
+        spawnTest(
+          `  expect(execFileSync(process.execPath, ['-e', ${JSON.stringify(script)}]).toString()).toBe('false42')`,
+        ),
+      )
+    sandbox.capture()
+    expect(sandbox.actions()['test/child.test.ts']).toBe('skip')
+    sandbox.write('fixtures/flag', '')
+    expect(sandbox.actions()['test/child.test.ts']).toBe('run')
+    sandbox.remove('fixtures/flag')
+    expect(sandbox.actions()['test/child.test.ts']).toBe('skip')
+    sandbox.write('fixtures/mod.cjs', 'module.exports = 43\n')
+    expect(sandbox.actions()['test/child.test.ts']).toBe('run')
+  })
+
+  test("the child process's environment is an input", () => {
+    sandbox = new Sandbox('child-env').write(
+      'test/child.test.ts',
+      spawnTest("  expect(execSync('printf %s \"$GREETING\"').toString()).toBe('hi')"),
+    )
+    sandbox.capture({ GREETING: 'hi' })
+    expect(sandbox.actions({ GREETING: 'hi' })['test/child.test.ts']).toBe('skip')
+    expect(sandbox.actions({ GREETING: 'bye' })['test/child.test.ts']).toBe('run')
+  })
+
+  test('a program that cannot be traced blocks reuse, started directly or by a traced one', () => {
+    sandbox = new Sandbox('child-static')
+      .write(
+        'test/direct.test.ts',
+        spawnTest("  try { execFileSync('./fixtures/static') } catch {}\n  expect(1).toBe(1)"),
+      )
+      .write(
+        'test/nested.test.ts',
+        spawnTest("  execSync('./fixtures/static 2>/dev/null || true')\n  expect(1).toBe(1)"),
+      )
+    writeStaticProgram(sandbox.dir, 'fixtures/static')
+    sandbox.capture()
+    const plan = sandbox.plan()
+    expect(plan['test/direct.test.ts']?.reason).toBe('blocked-flag')
+    expect(plan['test/nested.test.ts']?.reason).toBe('blocked-flag')
+  })
+})
+
+describe('unobservable channels', () => {
   test('starting a worker thread blocks reuse', () => {
     sandbox = new Sandbox('worker-thread').write(
       'test/thread.test.ts',

@@ -35,7 +35,11 @@ If the latest record for a file is a failure, the file always runs.
 | `manifest` | repository `package.json` the toolchain read, or that governs a module | manifest digest (below), or absent | runner main process reads, module lookup, reads by known manifest readers |
 | `stat` | existence or type check | file, directory, other or absent | `fs` hooks |
 | `dir` | directory listing | digest of entry names | `readdir` and `opendir` hooks |
-| `env` | environment variable | value digest, or unset | `process.env` proxy |
+| `env` | environment variable | value digest, or unset | `process.env` proxy; the whole environment of a traced child process |
+| `pkgname` | package name Jest looked up in its haste map | digest of the repository manifests declaring it | Jest resolver hook |
+
+Reads, checks and listings made by traced child processes are recorded as the entries above,
+as if the test file had made them (see Child processes).
 
 A manifest digest covers every field of a `package.json` except the version ranges of
 dependencies (their names are kept), `scripts`, install and publish settings (`engines`,
@@ -88,7 +92,7 @@ Flags record channels the closure cannot fully observe.
 | Flag | Meaning | Default policy |
 | --- | --- | --- |
 | `net-remote` | connection to a non-loopback host | blocks reuse |
-| `spawn` | child process started | blocks reuse |
+| `spawn` | child process that could not be traced, or a worker thread | blocks reuse |
 | `shared-worker` | isolation off, files share an isolate | blocks reuse |
 | `snapshot-written` | the pass wrote a snapshot | not evidence |
 | `flaky-suspect` | the pass needed a retry | not evidence |
@@ -100,6 +104,29 @@ Flags record channels the closure cannot fully observe.
 | `native-addon` | native module loaded, binary recorded | allowed |
 | `env-enumerated` | whole environment read, every variable recorded | allowed |
 | `writes-fs` | files written | allowed |
+
+## Child processes
+
+A child process a test starts (`child_process`, including through a shell) is traced when it
+runs a program that makes its system calls through the C library: a dynamically linked, 64-bit
+ELF program that is not written in Go, or a script whose interpreter is one. Tracing is Linux
+x64 only. A preloaded library (`packages/capture/native/trace.c`) records the files the process
+and its descendants open, check and list, the programs they execute, and where they connect,
+and the test file's closure gets them like its own reads. On top of that:
+
+- **The program and its lookup are inputs.** The executed file's content, and the absence of the
+  program in PATH directories searched before it.
+- **The whole environment is an input.** A shell imports every variable at startup, so each
+  variable the child receives is recorded, not just those it reads.
+- **Descendants stay traced.** Every exec restores the tracer's variables, even when a program
+  clears its environment for its own children.
+- **Anything else blocks reuse.** Executing a statically linked or Go program, a raw `execve`
+  system call, `fexecve`, `glob`, `ftw` and `nftw` (which read directories internally) are
+  reported as untraceable, and the check gets the `spawn` flag. So does a worker thread, and a
+  child process on any other platform.
+
+Temporary files are ignored for children as for tests. Unix socket connections count as local
+network use, as they do for the test itself.
 
 ## Vitest
 
@@ -189,7 +216,14 @@ These produce no capture, so they always run. Both are safe and cost little:
    sees with the same value is compared as usual.
 7. **Volatile environment variables.** Variables in the volatile list (CI run identifiers,
    Vitest worker ids, terminal session variables) do not affect outcomes.
-8. **Manifest readers.** Code in the runner's main process, and the known manifest readers in
+8. **Child processes use the C library.** A traced program reads files through the C library's
+   exported functions or the `syscall` function. Files the C library reads internally (locale
+   data, name service configuration) are system files, covered by the runtime key. A child
+   process reads nothing through a descriptor another process opened, except what the test
+   itself opened, and a file the test writes after a child read it was not read by the child
+   again. The traced child sees the tracer's variables (`LD_PRELOAD`, `VEYRUM_TRACE`,
+   `UV_USE_IO_URING=0`) in its environment.
+9. **Manifest readers.** Code in the runner's main process, and the known manifest readers in
    workers, use neither dependency version ranges nor scripts from a repository manifest. A
    plugin that did would change what it emits, which the transform-output fingerprints observe.
 

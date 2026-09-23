@@ -5,7 +5,16 @@ import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { promisify } from 'node:util'
 import workerThreads from 'node:worker_threads'
+import {
+  executableTraceable,
+  resolveExecutable,
+  TRACE_LIBRARY,
+  type TraceEvent,
+  type TraceFs,
+  tracingAvailable,
+} from './trace.ts'
 
 /** `manifest`: a package manifest a manifest reader read (see InstallOptions.manifestReaders). */
 export type PathKind = 'read' | 'stat' | 'dir' | 'manifest'
@@ -36,6 +45,11 @@ export interface HookSink {
   envWrite(name: string): void
   net(host: string, port: number | undefined, local: boolean): void
   spawn(command: string): void
+  /**
+   * The log file child processes started now should trace into, or null when this sink does not
+   * trace children (their start is then reported with `spawn`).
+   */
+  traceLog?(): string | null
   /** A package name looked up among the repository's own manifests (Jest's haste packages). */
   packageName(name: string): void
   dlopen(absolute: string): void
@@ -248,20 +262,34 @@ function observeWrite(p: unknown): void {
 
 type AnyFn = (...args: any[]) => any
 
-function wrap(target: any, name: string, before: (args: any[]) => void): void {
+/**
+ * Replaces target[name] with a function that calls `before` with the arguments first. `before` may
+ * return an array of replacement arguments. The original's own properties are kept, and its promisified form
+ * (`util.promisify.custom`, which `exec` and `exists` define) is wrapped the same way, so
+ * `promisify(exec)` is observed and behaves as it does without Veyrum.
+ */
+function wrap(target: any, name: string, before: (args: any[]) => unknown): void {
   const original = target[name] as AnyFn | undefined
   if (typeof original !== 'function') return
-  const wrapped = function (this: unknown, ...args: any[]) {
-    try {
-      before(args)
-    } catch {
-      // Observation must never change behavior.
+  const wrapFn = (fn: AnyFn): AnyFn =>
+    function (this: unknown, ...args: any[]) {
+      let actual = args
+      try {
+        const replaced = before(args)
+        if (Array.isArray(replaced)) actual = replaced
+      } catch {
+        // Observation must never change behavior.
+      }
+      return fn.apply(this, actual)
     }
-    return original.apply(this, args)
+  const wrapped = wrapFn(original)
+  for (const key of Reflect.ownKeys(original)) {
+    if (key === 'prototype') continue
+    const descriptor = Object.getOwnPropertyDescriptor(original, key)!
+    if (key === promisify.custom && typeof descriptor.value === 'function')
+      descriptor.value = wrapFn(descriptor.value as AnyFn)
+    Object.defineProperty(wrapped, key, descriptor)
   }
-  Object.defineProperty(wrapped, 'name', { value: original.name })
-  Object.defineProperty(wrapped, 'length', { value: original.length })
-  for (const key of Object.keys(original)) (wrapped as any)[key] = (original as any)[key]
   target[name] = wrapped
 }
 
@@ -470,6 +498,146 @@ function installWorkerThreadHook(): void {
   ;(workerThreads as { Worker: typeof Original }).Worker = ObservedWorker
 }
 
+type SpawnFunction = 'spawn' | 'spawnSync' | 'exec' | 'execSync' | 'execFile' | 'execFileSync' | 'fork'
+
+interface SpawnCall {
+  /** The shell that runs the command, or null when the file runs directly. */
+  readonly shell: string | null
+  readonly file: string
+  readonly options: Record<string, unknown> | undefined
+  /** The same call with other options. */
+  rebuild(options: Record<string, unknown>): unknown[]
+}
+
+const isOptions = (v: unknown): v is Record<string, unknown> =>
+  typeof v === 'object' && v !== null && !Array.isArray(v)
+
+/** Reads a child_process call's arguments the way Node normalizes them. */
+function spawnCall(name: SpawnFunction, args: unknown[]): SpawnCall {
+  const file = String(args[0])
+  if (name === 'exec' || name === 'execSync') {
+    const second = args[1]
+    const options = isOptions(second) ? second : undefined
+    const callback = [args[1], args[2]].find((a) => typeof a === 'function')
+    return {
+      shell: typeof options?.shell === 'string' ? options.shell : '/bin/sh',
+      file,
+      options,
+      rebuild: (o) => (callback ? [file, o, callback] : [file, o]),
+    }
+  }
+  let i = 1
+  let list: unknown[] = []
+  if (Array.isArray(args[1])) {
+    list = args[1]
+    i = 2
+  } else if (args[1] === null || (args[1] === undefined && args.length > 2)) {
+    i = 2
+  }
+  const candidate = args[i]
+  const options = isOptions(candidate) ? candidate : undefined
+  if (options || args[i] === null || (args[i] === undefined && i < args.length)) i++
+  const rest = args.slice(i)
+  const shell =
+    name === 'fork'
+      ? null
+      : options?.shell === true
+        ? '/bin/sh'
+        : typeof options?.shell === 'string'
+          ? options.shell
+          : null
+  return {
+    shell,
+    file: name === 'fork' ? String(options?.execPath ?? process.execPath) : file,
+    options,
+    rebuild: (o) => [args[0], list, o, ...rest],
+  }
+}
+
+const traceFs: TraceFs = {
+  statSync: state.raw.statSync,
+  openSync: fs.openSync,
+  readSync: fs.readSync,
+  closeSync: fs.closeSync,
+}
+
+/**
+ * Prepares a child process start. When the sink traces children and the program can be traced,
+ * the child gets the tracer through its environment; the program, the PATH lookup that found it
+ * and every variable of the child's environment are recorded as inputs (a shell reads its whole
+ * environment). Otherwise the start is reported as an unobserved spawn.
+ */
+function prepareSpawn(name: SpawnFunction, args: unknown[]): unknown[] | undefined {
+  if (state.depth > 0) return undefined
+  const label = String(args[0]).split(/\s+/)[0] ?? ''
+  const sink = state.sink
+  state.depth++
+  try {
+    const log = sink.traceLog?.() ?? null
+    if (!log || !tracingAvailable(traceFs)) {
+      sink.spawn(label)
+      return undefined
+    }
+    const call = spawnCall(name, args)
+    const given = call.options?.env as NodeJS.ProcessEnv | undefined
+    // exec calls the exported execFile: a call an outer hook already prepared is left as is.
+    if (given?.VEYRUM_TRACE === log) return undefined
+    const env = given ?? { ...process.env }
+    const cwd = typeof call.options?.cwd === 'string' ? path.resolve(call.options.cwd) : process.cwd()
+    const program = call.shell ?? call.file
+    const pathVariable = env.PATH
+    const resolved = resolveExecutable(program, pathVariable, cwd, traceFs)
+    // Programs looked up on PATH: the directories searched before the match, and the match.
+    if (!program.includes('/')) {
+      for (const dir of (pathVariable ?? '/usr/bin:/bin').split(':')) {
+        const candidate = path.resolve(cwd, dir || '.', program)
+        if (candidate === resolved) break
+        if (!ignored(candidate)) sink.path(candidate, 'stat', typeOf(candidate), 'other')
+      }
+    }
+    if (!resolved) return undefined // Nothing runs: the start fails.
+    if (!executableTraceable(resolved, traceFs)) {
+      sink.spawn(label)
+      return undefined
+    }
+    if (!ignored(resolved)) sink.path(resolved, 'read', 'file', 'other')
+    for (const [n, v] of Object.entries(env)) sink.env(n, v, false, 'test')
+    const preload = env.LD_PRELOAD ? `${TRACE_LIBRARY}:${env.LD_PRELOAD}` : TRACE_LIBRARY
+    // libuv can read files through io_uring, which the tracer cannot see.
+    const childEnv = { ...env, LD_PRELOAD: preload, VEYRUM_TRACE: log, UV_USE_IO_URING: '0' }
+    return call.rebuild({ ...call.options, env: childEnv })
+  } finally {
+    state.depth--
+  }
+}
+
+/** Records what traced child processes did, as if the test had done it (see trace.ts). */
+export function replayTrace(events: readonly TraceEvent[], sink: HookSink): void {
+  state.depth++
+  try {
+    for (const e of events) {
+      if (e.kind === 'untraceable') {
+        sink.spawn(e.what)
+      } else if (e.kind === 'net') {
+        sink.net(e.host, e.port, e.host.startsWith('unix:') || LOOPBACK.test(e.host))
+      } else if (!ignored(e.path)) {
+        if (e.kind === 'write') {
+          sink.write(e.path)
+        } else if (e.kind === 'dir') {
+          sink.path(e.path, 'dir', typeOf(e.path), 'other')
+        } else {
+          const type = e.present ? typeOf(e.path) : 'absent'
+          // Opening a directory without listing it only shows that it exists.
+          const kind = e.kind === 'stat' || type === 'dir' ? 'stat' : 'read'
+          sink.path(e.path, kind, type, 'other')
+        }
+      }
+    }
+  } finally {
+    state.depth--
+  }
+}
+
 function installProcessHooks(): void {
   for (const name of [
     'spawn',
@@ -480,7 +648,7 @@ function installProcessHooks(): void {
     'execFileSync',
     'fork',
   ] as const) {
-    wrap(childProcess, name, (a) => state.sink.spawn(String(a[0]).split(/\s+/)[0] ?? ''))
+    wrap(childProcess, name, (a) => prepareSpawn(name, a))
   }
   const originalDlopen = process.dlopen
   process.dlopen = function (this: unknown, module: unknown, filename: string, ...rest: unknown[]) {

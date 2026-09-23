@@ -7,7 +7,7 @@
     "node": ">=22.15"
   },
   "scripts": {
-    "build": "tsc -b",
+    "build": "tsc -b && node scripts/build-native.mjs",
     "typecheck": "tsc -b --pretty",
     "lint": "biome check .",
     "format": "biome check --write .",

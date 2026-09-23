@@ -16,11 +16,13 @@ import {
   type PathKind,
   type PathType,
   type Reader,
+  replayTrace,
   setSink,
   unobserved,
 } from './hooks.ts'
 import { packageRootOf } from './main.ts'
 import type { PayloadModule, WorkerPayload } from './payload.ts'
+import { parseTrace } from './trace.ts'
 
 export type { WorkerPayload } from './payload.ts'
 
@@ -254,9 +256,35 @@ class FileRecorder implements HookSink {
   /** Under the Jest layout, tests read their context's copy of the environment, never the process's. */
   private readonly testScopeOnly: boolean
 
-  constructor(volatileEnv: RegExp, testScopeOnly: boolean) {
+  /** Where this file's child processes log what they do (see trace.ts); created on first use. */
+  private readonly traceFile: string
+  private traceStarted = false
+
+  constructor(volatileEnv: RegExp, testScopeOnly: boolean, traceFile: string) {
     this.volatileEnv = volatileEnv
     this.testScopeOnly = testScopeOnly
+    this.traceFile = traceFile
+  }
+
+  traceLog(): string {
+    if (!this.traceStarted) {
+      fs.mkdirSync(path.dirname(this.traceFile), { recursive: true })
+      this.traceStarted = true
+    }
+    return this.traceFile
+  }
+
+  /** Records what this file's child processes did, then removes their log. */
+  replayChildren(): void {
+    if (!this.traceStarted) return
+    let text = ''
+    try {
+      text = fs.readFileSync(this.traceFile, 'utf8')
+      fs.rmSync(this.traceFile, { force: true })
+    } catch {
+      // No child wrote anything (the start failed, or the program ran no traced code).
+    }
+    replayTrace(parseTrace(text), this)
   }
 
   seen(absolute: string, kind: PathKind): boolean {
@@ -494,7 +522,11 @@ export async function beginWorkerCapture(options: WorkerCaptureOptions): Promise
       if (!options.volatileEnv.test(n)) out[n] = hashEnvValue(v)
     return out
   })
-  const recorder = new FileRecorder(options.volatileEnv, layout === 'jest')
+  const recorder = new FileRecorder(
+    options.volatileEnv,
+    layout === 'jest',
+    path.join(options.outDir, 'traces', `${process.pid}-${threadId}-${isolate.files}.log`),
+  )
   if (layout === 'jest') isolate.compiled = new Map()
   const compiled = isolate.compiled
   // Restored at finish: tests can run inside the runner's main process, whose recorder is active.
@@ -549,6 +581,7 @@ export async function beginWorkerCapture(options: WorkerCaptureOptions): Promise
         return jestModuleCode(source)
       }
       setSink(outerSink)
+      unobserved(() => recorder.replayChildren())
       state.compiled = null
       if (!state.toolchainObserved)
         errors.push('module loads cannot be observed (Node lacks module.registerHooks)')

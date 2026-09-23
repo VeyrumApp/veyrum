@@ -335,14 +335,22 @@ describe('outcomes and channels', () => {
     expect(s.plan()['test/flaky.test.js']?.reason).toBe('not-reusable')
   })
 
-  test('starting a child process blocks reuse', () => {
-    const s = jest('spawn').write(
-      'test/spawn.test.js',
-      "const { execFileSync } = require('child_process')\ntest('spawn', () => expect(execFileSync(process.execPath, ['-e', 'process.stdout.write(\"x\")']).toString()).toBe('x'))\n",
-    )
-    s.capture()
-    expect(s.plan()['test/spawn.test.js']?.reason).toBe('blocked-flag')
-  })
+  test.runIf(process.platform === 'linux' && process.arch === 'x64')(
+    "a child process is traced: its reads are the test file's inputs",
+    () => {
+      const s = jest('spawn')
+        .write('fixtures/x.txt', 'a')
+        .write(
+          'test/spawn.test.js',
+          "const { execFileSync } = require('child_process')\ntest('spawn', () => expect(execFileSync(process.execPath, ['-e', 'process.stdout.write(require(\"fs\").readFileSync(\"fixtures/x.txt\", \"utf8\"))']).toString()).toBe('a'))\n",
+        )
+        .write('test/plain.test.js', PLAIN_TEST)
+      s.capture()
+      expect(s.actions()).toEqual({ 'test/plain.test.js': 'skip', 'test/spawn.test.js': 'skip' })
+      s.write('fixtures/x.txt', 'b')
+      expect(s.actions()).toEqual({ 'test/plain.test.js': 'skip', 'test/spawn.test.js': 'run' })
+    },
+  )
 })
 
 describe('failing open', () => {
