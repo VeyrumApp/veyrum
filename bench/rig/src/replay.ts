@@ -165,6 +165,9 @@ async function selectAll(
     checks,
     changed: relative,
     lockfileChanged: changed.some((f) => corpus.lockfiles.includes(f)),
+    lockfiles: corpus.lockfiles.map((f) =>
+      path.relative(paths.testRoot, path.join(paths.repo, f)).split(path.sep).join('/'),
+    ),
   }
   return {
     all: new Set(checks.map((c) => c.path)),

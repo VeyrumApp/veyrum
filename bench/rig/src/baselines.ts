@@ -1,13 +1,5 @@
-import {
-  type CheckRef,
-  type ClosureEntry,
-  CurrentState,
-  listRepoFiles,
-  plan,
-  type RunInfo,
-  type Store,
-  stem,
-} from '@veyrum/core'
+import { type CheckRef, listRepoFiles, plan, type RunInfo, type Store, stem } from '@veyrum/core'
+import { exec } from './exec.ts'
 
 export interface SelectionContext {
   readonly repo: string
@@ -16,8 +8,10 @@ export interface SelectionContext {
   readonly checks: readonly CheckRef[]
   /** Paths (relative to the test root) changed since the evidence was recorded. */
   readonly changed: readonly string[]
-  /** Whether a lockfile changed: tracked by the coverage baseline like Datadog's "tracked files". */
+  /** Whether a lockfile changed. */
   readonly lockfileChanged: boolean
+  /** Lockfiles, relative to the test root (Datadog-style tracked files). */
+  readonly lockfiles: readonly string[]
 }
 
 const DOC_LIKE = /\.(md|mdx|txt|png|jpe?g|gif|svg|ico|webp)$|(^|\/)(LICENSE|CHANGELOG[^/]*|\.github\/.*)$/i
@@ -68,36 +62,47 @@ export async function selectFileClosure(ctx: SelectionContext, runtimeKey: strin
 }
 
 /**
- * Datadog Test Impact Analysis, emulated at its strongest: skip a test file when a prior passing
- * run covered exactly the same source and dependency file contents, unless a tracked file
- * (configuration or lockfile) changed. Like Datadog, it does not track fixtures, directory
- * listings or environment variables.
+ * Datadog Test Impact Analysis, as documented and as its open-source tracer (dd-trace-js) collects
+ * coverage: a test file is skipped when Datadog has a passing run of it at an earlier commit and none
+ * of the files it covered were modified between that commit and now. Covered files are repository
+ * files the test executed (the tracer excludes node_modules). Tracked files force a full run: the
+ * lockfiles, any package.json (Datadog's own example) and the runner's configuration files, as a
+ * reasonably configured project would declare them. Fixtures, directory listings and environment
+ * variables are not tracked, as Datadog documents.
+ *
+ * Datadog never skips on the default branch; the replay treats each commit like a pull request
+ * against its parent, which is how a selection rule is compared.
  */
 export function selectFileCoverage(ctx: SelectionContext): Set<string> {
-  const state = new CurrentState(ctx.repo, ctx.store)
-  const trackedChanged = new Map<string, boolean>()
-  const lockfileChanged = ctx.lockfileChanged
-  const tracked = (run: RunInfo): boolean => {
-    let changed = trackedChanged.get(run.id)
-    if (changed === undefined) {
-      changed = lockfileChanged || run.shared.some((e) => e.k === 'file' && state.fileDigest(e.p) !== e.h)
-      trackedChanged.set(run.id, changed)
+  const diffs = new Map<string, Set<string> | null>()
+  /** Files modified between a commit and the working tree (which holds any applied mutant). */
+  const changedSince = (revision: string): Set<string> | null => {
+    let files = diffs.get(revision)
+    if (files === undefined) {
+      const r = exec('git', ['diff', '--name-only', '--relative', revision], { cwd: ctx.repo })
+      files = r.code === 0 ? new Set(r.stdout.split('\n').filter(Boolean)) : null
+      diffs.set(revision, files)
     }
-    return changed
+    return files
   }
-  const covered = (entry: ClosureEntry): boolean => {
-    if (entry.k === 'mod') return state.fileDigest(entry.p) === entry.src
-    if (entry.k === 'dep') return state.fileDigest(entry.p) === entry.h
-    return true
+  const tracked = (changed: ReadonlySet<string>, run: RunInfo): boolean => {
+    for (const f of changed) if (ctx.lockfiles.includes(f) || /(^|\/)package\.json$/.test(f)) return true
+    return run.shared.some((e) => e.k === 'file' && !e.p.includes('node_modules/') && changed.has(e.p))
   }
   const selected = new Set<string>()
   for (const check of ctx.checks) {
     let skip = false
     for (const record of ctx.store.recordsFor(check, 20)) {
+      // A failing run is never a basis, and the latest failure means the file runs.
       if (record.verdict !== 'pass') break
+      if (!record.revision) continue
+      const changed = changedSince(record.revision)
       const run = ctx.store.getRun(record.runId)
-      if (!run || tracked(run)) continue
-      if (record.closure.every(covered)) {
+      if (!changed || !run || tracked(changed, run)) continue
+      const covered = record.closure.flatMap((e) =>
+        e.k === 'mod' && !e.p.includes('node_modules/') ? [e.p] : [],
+      )
+      if (covered.every((p) => !changed.has(p))) {
         skip = true
         break
       }
