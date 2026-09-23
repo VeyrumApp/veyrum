@@ -4,85 +4,43 @@ import { createRequire } from 'node:module'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { MainRecorder, rawFs, VOLATILE_ENV } from '@veyrum/capture'
+import { assemble } from '@veyrum/capture/assemble'
 import {
   type CheckRef,
+  checkKey,
   type Decision,
-  type EvidenceRecord,
+  forcedDecisions,
   listRepoFiles,
-  type Policy,
+  needsPlan,
   plan,
+  type RunOptions,
+  type RunResult,
+  recordVerifications,
   runtimeFacts,
   runtimeKeyOf,
-  type Store,
+  selectExecution,
   toRepoPath,
 } from '@veyrum/core'
 import type { TestSpecification, Vitest } from 'vitest/node'
-import { assemble } from './assemble.ts'
 import { CAPTURE_ENV, type CaptureConfig } from './protocol.ts'
 import { OutcomeReporter } from './reporter.ts'
 import { createTransformer } from './transformer.ts'
 
-export type RunMode =
-  /** Run every test file and record evidence. */
-  | 'full'
-  /** Skip test files whose evidence is still valid; run and record the rest. */
-  | 'affected'
-  /** Only compute decisions; run nothing. */
-  | 'plan'
+export type { RunMode, Verification } from '@veyrum/core'
 
-export interface VitestRunOptions {
-  readonly root: string
-  readonly store: Store
-  readonly mode: RunMode
+export interface VitestRunOptions extends RunOptions {
   /** Path to the Vitest config file (defaults to Vitest's own lookup). */
   readonly config?: string
-  readonly revision?: string | null
-  readonly policy?: Policy
   /** Extra Vitest options (for example maxWorkers). */
   readonly vitestOptions?: Record<string, unknown>
-  /** Print Vitest's default reporter output. */
-  readonly printTests?: boolean
-  /** Restrict to these repository-relative test files (others are neither planned nor run). */
-  readonly only?: readonly string[]
-  /** Keep worker payloads and module code after the run (for debugging). */
-  readonly keepScratch?: boolean
   /**
    * Run every test file in its own isolate even if the project disables isolation. Evidence from a
    * shared isolate is never reused, so projects with `isolate: false` only benefit with this on.
    */
   readonly forceIsolation?: boolean
-  /**
-   * With mode 'full': also plan, then report any file the plan would have reused that fails.
-   * This is the audit that measures the real escape rate.
-   */
-  readonly audit?: boolean
-  /** With mode 'affected': also run this fraction of reusable files as canaries (0 to 1). */
-  readonly canary?: number
 }
 
-/** A reused (or would-be reused) file that was executed anyway to check the decision. */
-export interface Verification {
-  readonly check: CheckRef
-  readonly recordId: string
-  readonly kind: 'audit' | 'canary'
-  readonly outcome: 'pass' | 'fail'
-}
-
-export interface VitestRunResult {
-  readonly runId: string
-  readonly decisions: readonly Decision[]
-  readonly records: readonly EvidenceRecord[]
-  readonly ran: readonly CheckRef[]
-  /** Reuse decisions that were checked by running the file anyway (audit or canary). */
-  readonly verifications: readonly Verification[]
-  readonly ok: boolean
-  readonly timings: {
-    readonly planMs: number
-    readonly runMs: number
-    readonly recordMs: number
-    readonly totalMs: number
-  }
-}
+export type VitestRunResult = RunResult
 
 interface TargetVitest {
   readonly nodeUrl: string
@@ -189,20 +147,6 @@ function veyrumDirs(): string[] {
     }
   }
   return [...new Set(out)]
-}
-
-/** Small deterministic PRNG (mulberry32), seeded from a string. */
-function seededRandom(seed: string): () => number {
-  let h = 2166136261
-  for (let i = 0; i < seed.length; i++) h = Math.imul(h ^ seed.charCodeAt(i), 16777619)
-  let a = h >>> 0
-  return () => {
-    a = (a + 0x6d2b79f5) >>> 0
-    let t = a
-    t = Math.imul(t ^ (t >>> 15), t | 1)
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
-  }
 }
 
 function checkOf(root: string, spec: TestSpecification): CheckRef {
@@ -315,17 +259,8 @@ export async function runVitest(options: VitestRunOptions): Promise<VitestRunRes
 
     const planStarted = performance.now()
     let decisions: Decision[]
-    if (options.mode === 'full' && !options.audit) {
-      decisions = checks.map((check) => ({
-        check,
-        action: 'run',
-        reason: 'forced',
-        recordId: null,
-        details: ['full run requested'],
-        closureSize: 0,
-        flagsRelied: [],
-        durationMs: 0,
-      }))
+    if (!needsPlan(options)) {
+      decisions = forcedDecisions(checks)
     } else {
       decisions = await plan({
         root,
@@ -354,26 +289,8 @@ export async function runVitest(options: VitestRunOptions): Promise<VitestRunRes
       }
     }
 
-    const keyOf = (c: CheckRef): string => `${c.project}\u0000${c.path}`
-    const toRun = new Set(decisions.filter((d) => d.action === 'run').map((d) => keyOf(d.check)))
-    // Reuse decisions verified by running the file anyway: all of them in an audit, a random
-    // sample (seeded by the run id, so reproducible) as canaries.
-    const verified = new Map<string, { decision: Decision; kind: Verification['kind'] }>()
-    const reusable = decisions.filter((d) => d.action === 'skip')
-    if (options.mode === 'full' && options.audit) {
-      for (const d of reusable) verified.set(keyOf(d.check), { decision: d, kind: 'audit' })
-    } else if (options.mode === 'affected' && options.canary && options.canary > 0) {
-      const count = Math.min(reusable.length, Math.ceil(reusable.length * Math.min(1, options.canary)))
-      const random = seededRandom(runId)
-      const pool = [...reusable]
-      for (let i = 0; i < count; i++) {
-        const [d] = pool.splice(Math.floor(random() * pool.length), 1)
-        if (d) verified.set(keyOf(d.check), { decision: d, kind: 'canary' })
-      }
-    }
-    for (const key of verified.keys()) toRun.add(key)
-    if (options.mode === 'full') for (const c of checks) toRun.add(keyOf(c))
-    const selected = specs.filter((s) => toRun.has(`${s.project.name}\u0000${toRepoPath(root, s.moduleId)}`))
+    const execution = selectExecution(checks, decisions, options, runId)
+    const selected = specs.filter((s) => execution.toRun.has(checkKey(checkOf(root, s))))
     const runStarted = performance.now()
     let unhandled = 0
     if (selected.length > 0) {
@@ -392,7 +309,7 @@ export async function runVitest(options: VitestRunOptions): Promise<VitestRunRes
       revision: options.revision ?? null,
       createdAt,
       outDir: scratch,
-      outcomes: reporter.outcomes,
+      outcomes: reporter.outcomes.values(),
       main,
       files,
       store: options.store,
@@ -412,19 +329,7 @@ export async function runVitest(options: VitestRunOptions): Promise<VitestRunRes
       for (const record of records) options.store.putRecord(record)
     })
     const recordMs = performance.now() - recordStarted
-    const verifications: Verification[] = []
-    const byCheck = new Map(records.map((r) => [keyOf({ path: r.check, project: r.project }), r]))
-    for (const [key, { decision, kind }] of verified) {
-      const rec = byCheck.get(key)
-      if (!rec || !decision.recordId) continue
-      verifications.push({ check: decision.check, recordId: decision.recordId, kind, outcome: rec.verdict })
-    }
-    if (verifications.length > 0) {
-      options.store.transaction(() => {
-        for (const v of verifications)
-          options.store.putVerification(runId, v.check, v.recordId, v.kind, v.outcome)
-      })
-    }
+    const verifications = recordVerifications(options.store, runId, execution, records)
     const failed =
       records.some((r) => r.verdict === 'fail') || unhandled > 0 || records.length < selected.length
     return {

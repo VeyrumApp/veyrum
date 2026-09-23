@@ -4,6 +4,8 @@ import { fileURLToPath } from 'node:url'
 
 export interface ExecResult {
   readonly code: number
+  /** Signal that ended the process, if any (for example SIGKILL from an out-of-memory kill). */
+  readonly signal: string | null
   readonly stdout: string
   readonly stderr: string
   readonly ms: number
@@ -25,6 +27,7 @@ export function exec(
   })
   return {
     code: result.status ?? -1,
+    signal: result.signal ?? null,
     stdout: result.stdout ?? '',
     stderr: result.stderr ?? '',
     ms: performance.now() - started,

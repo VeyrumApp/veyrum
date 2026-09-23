@@ -9,6 +9,10 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
+    "./assemble": {
+      "types": "./dist/assemble.d.ts",
+      "default": "./dist/assemble.js"
+    },
     "./worker": {
       "types": "./dist/worker.d.ts",
       "default": "./dist/worker.js"

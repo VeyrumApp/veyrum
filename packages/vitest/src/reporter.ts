@@ -1,21 +1,10 @@
+import type { CheckOutcome } from '@veyrum/capture/assemble'
 import type { TestOutcome } from '@veyrum/core'
 import type { Reporter, TestModule } from 'vitest/node'
 
-export interface ModuleOutcome {
-  /** Absolute path of the test file. */
-  readonly moduleId: string
-  readonly project: string
-  /** Vite environment the file ran in (used to re-transform its modules at plan time). */
-  readonly env: string
-  readonly state: 'passed' | 'failed' | 'skipped' | 'pending' | 'queued'
-  readonly tests: readonly TestOutcome[]
-  readonly durationMs: number
-  readonly retries: number
-}
-
 /** Collects per-file outcomes for evidence records. Prints nothing. */
 export class OutcomeReporter implements Reporter {
-  readonly outcomes = new Map<string, ModuleOutcome>()
+  readonly outcomes = new Map<string, CheckOutcome>()
 
   onTestModuleEnd(module: TestModule): void {
     const tests: TestOutcome[] = []
@@ -31,11 +20,13 @@ export class OutcomeReporter implements Reporter {
         retries: diagnostic?.retryCount ?? 0,
       })
     }
+    const state = module.state()
     this.outcomes.set(`${module.project.name}\u0000${module.moduleId}`, {
-      moduleId: module.moduleId,
+      file: module.moduleId,
       project: module.project.name,
+      // The Vite environment the file ran in.
       env: module.viteEnvironment?.name ?? 'ssr',
-      state: module.state(),
+      verdict: state === 'passed' || state === 'skipped' ? 'pass' : 'fail',
       tests,
       durationMs: module.diagnostic().duration,
       retries,

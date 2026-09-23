@@ -1,6 +1,5 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import type { MainObservations, RawFs, WorkerPayload } from '@veyrum/capture'
 import {
   type ClosureEntry,
   CurrentState,
@@ -15,10 +14,28 @@ import {
   type RunInfo,
   type Store,
   serializeUnits,
+  type TestOutcome,
   TOP_UNIT,
   toRepoPath,
 } from '@veyrum/core'
-import type { ModuleOutcome } from './reporter.ts'
+import type { RawFs } from './hooks.ts'
+import type { MainObservations } from './main.ts'
+import type { WorkerPayload } from './payload.ts'
+
+/** A test file's result as the runner reported it. */
+export interface CheckOutcome {
+  /** Absolute path of the test file. */
+  readonly file: string
+  readonly project: string
+  /** Transform environment the file's modules ran in (used to re-transform them at plan time). */
+  readonly env: string
+  readonly verdict: 'pass' | 'fail'
+  readonly tests: readonly TestOutcome[]
+  readonly durationMs: number
+  readonly retries: number
+  /** Snapshot writes reported by the runner, when the worker cannot observe them. */
+  readonly snapshot?: { readonly added: number; readonly updated: number }
+}
 
 export interface AssembleInput {
   readonly root: string
@@ -28,7 +45,7 @@ export interface AssembleInput {
   readonly revision: string | null
   readonly createdAt: string
   readonly outDir: string
-  readonly outcomes: ReadonlyMap<string, ModuleOutcome>
+  readonly outcomes: Iterable<CheckOutcome>
   readonly main: MainObservations
   readonly files: readonly string[]
   readonly store: Store
@@ -150,11 +167,12 @@ export function assemble(input: AssembleInput): Assembled {
     return out
   }
 
-  for (const outcome of input.outcomes.values()) {
-    const check = toRepoPath(root, outcome.moduleId)
+  const outcomes = [...input.outcomes]
+  for (const outcome of outcomes) {
+    const check = toRepoPath(root, outcome.file)
     const flags = new Set<string>()
     const closure: ClosureEntry[] = []
-    const candidates = byTestFile.get(outcome.moduleId) ?? []
+    const candidates = byTestFile.get(outcome.file) ?? []
     // A file can run more than once in a run (repeats); the last payload describes the final attempt.
     const payload = candidates[candidates.length - 1]
     if (!payload) flags.add(FLAGS.captureIncomplete)
@@ -261,7 +279,9 @@ export function assemble(input: AssembleInput): Assembled {
     // observed the wrong thing (for example, the project was ignored) and the pass is not evidence.
     if (!closure.some((e) => e.k === 'mod' && e.p === check)) flags.add(FLAGS.captureIncomplete)
     if (outcome.retries > 0) flags.add(FLAGS.flakySuspect)
-    const verdict = outcome.state === 'passed' || outcome.state === 'skipped' ? 'pass' : 'fail'
+    if (outcome.snapshot && (outcome.snapshot.added > 0 || outcome.snapshot.updated > 0))
+      flags.add(FLAGS.snapshotWritten)
+    const verdict = outcome.verdict
     const reusable =
       verdict === 'pass' &&
       !flags.has(FLAGS.flakySuspect) &&
@@ -290,7 +310,7 @@ export function assemble(input: AssembleInput): Assembled {
   // test file simply has no evidence) or import.meta.glob (handled by re-transforming `dyn` modules).
   const shared: ClosureEntry[] = []
   const sharedSeen = new Set<string>()
-  const testFiles = new Set([...input.outcomes.values()].map((o) => o.moduleId))
+  const testFiles = new Set(outcomes.map((o) => o.file))
   for (const obs of input.main.paths) {
     if (ignored(obs.p) || allModulePaths.has(obs.p) || obs.kind === 'dir') continue
     // Reads inside node_modules are resolution metadata. Each check records the manifests of the

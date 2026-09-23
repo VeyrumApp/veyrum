@@ -54,7 +54,10 @@ export function captureRun(corpus: Corpus, repo: string, store: string, scratch:
   const json = path.join(scratch, 'capture.json')
   fs.rmSync(json, { force: true })
   const r = veyrum(corpus, repo, store, ['run', '--full'], json)
-  if (!fs.existsSync(json)) throw new Error(`veyrum run --full produced no output:\n${r.stdout}\n${r.stderr}`)
+  if (!fs.existsSync(json))
+    throw new Error(
+      `veyrum run --full produced no output (exit ${r.code}, signal ${r.signal ?? 'none'}):\n${r.stdout}\n${r.stderr}`,
+    )
   const data = JSON.parse(fs.readFileSync(json, 'utf8')) as {
     records: EvidenceRecord[]
     timings: { runMs: number; recordMs: number }
@@ -75,7 +78,10 @@ export function veyrumPlan(
   const json = path.join(scratch, 'plan.json')
   fs.rmSync(json, { force: true })
   const r = veyrum(corpus, repo, store, ['plan'], json)
-  if (!fs.existsSync(json)) throw new Error(`veyrum plan produced no output:\n${r.stdout}\n${r.stderr}`)
+  if (!fs.existsSync(json))
+    throw new Error(
+      `veyrum plan produced no output (exit ${r.code}, signal ${r.signal ?? 'none'}):\n${r.stdout}\n${r.stderr}`,
+    )
   const data = JSON.parse(fs.readFileSync(json, 'utf8')) as {
     decisions: Decision[]
     timings: { planMs: number }
