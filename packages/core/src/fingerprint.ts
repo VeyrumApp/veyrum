@@ -205,24 +205,33 @@ export function fingerprintModule(code: string, options: FingerprintOptions = {}
     return out.join('')
   }
 
-  const units = new Map<string, UnitInfo>()
-  units.set(TOP_UNIT, { path: TOP_UNIT, start: 0, end: code.length, fp: digest(serialize(null, program)) })
-  const byEnd = new Map<number, UnitInfo[]>()
+  const list: UnitInfo[] = [
+    { path: TOP_UNIT, start: 0, end: code.length, fp: digest(serialize(null, program)) },
+  ]
   for (const { node, path } of functions) {
-    const info: UnitInfo = { path, start: node.start, end: node.end, fp: digest(serialize(node, node)) }
-    units.set(path, info)
-    const list = byEnd.get(node.end)
-    if (list) list.push(info)
-    else byEnd.set(node.end, [info])
+    list.push({ path, start: node.start, end: node.end, fp: digest(serialize(node, node)) })
   }
-  const sortedBySpan = [...units.values()]
-    .filter((u) => u.path !== TOP_UNIT)
-    .sort((a, b) => b.start - a.start)
+  return moduleUnitsOf(list, false)
+}
 
+/** Builds the unit lookup (including V8 range location) from a unit list. */
+export function moduleUnitsOf(list: readonly UnitInfo[], opaque: boolean): ModuleUnits {
+  const units = new Map<string, UnitInfo>()
+  const byEnd = new Map<number, UnitInfo[]>()
+  for (const info of list) {
+    units.set(info.path, info)
+    if (info.path === TOP_UNIT || info.path === OPAQUE_UNIT) continue
+    const bucket = byEnd.get(info.end)
+    if (bucket) bucket.push(info)
+    else byEnd.set(info.end, [info])
+  }
+  const nested = list.filter((u) => u.path !== TOP_UNIT && u.path !== OPAQUE_UNIT)
+  const fallback = opaque ? OPAQUE_UNIT : TOP_UNIT
   return {
     units,
-    opaque: false,
+    opaque,
     locate(start: number, end: number): string {
+      if (opaque) return OPAQUE_UNIT
       const candidates = byEnd.get(end)
       if (candidates && candidates.length > 0) {
         let best = candidates[0]!
@@ -232,7 +241,7 @@ export function fingerprintModule(code: string, options: FingerprintOptions = {}
       // Synthetic V8 functions (class member initializers, static initializers) and anything else
       // without a node of its own belong to the innermost unit that contains them.
       let innermost: UnitInfo | undefined
-      for (const u of sortedBySpan) {
+      for (const u of nested) {
         if (
           u.start <= start &&
           end <= u.end &&
@@ -241,14 +250,29 @@ export function fingerprintModule(code: string, options: FingerprintOptions = {}
           innermost = u
         }
       }
-      return innermost ? innermost.path : TOP_UNIT
+      return innermost ? innermost.path : fallback
     },
   }
 }
 
+/** Compact serialization of a module's units, for caching fingerprints across runs. */
+export function serializeUnits(m: ModuleUnits): string {
+  return JSON.stringify({
+    o: m.opaque ? 1 : 0,
+    u: [...m.units.values()].map((u) => [u.path, u.start, u.end, u.fp]),
+  })
+}
+
+export function deserializeUnits(text: string): ModuleUnits {
+  const data = JSON.parse(text) as { o: number; u: [string, number, number, string][] }
+  return moduleUnitsOf(
+    data.u.map(([path, start, end, fp]) => ({ path, start, end, fp })),
+    data.o === 1,
+  )
+}
+
 function opaqueModule(code: string): ModuleUnits {
-  const info: UnitInfo = { path: OPAQUE_UNIT, start: 0, end: code.length, fp: digest(code) }
-  return { units: new Map([[OPAQUE_UNIT, info]]), opaque: true, locate: () => OPAQUE_UNIT }
+  return moduleUnitsOf([{ path: OPAQUE_UNIT, start: 0, end: code.length, fp: digest(code) }], true)
 }
 
 function collectImportAliases(program: AstNode): Map<string, string> {

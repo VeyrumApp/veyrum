@@ -5,6 +5,7 @@ import {
   type ClosureEntry,
   CurrentState,
   type Digest,
+  deserializeUnits,
   digest,
   type EvidenceRecord,
   FLAGS,
@@ -13,6 +14,7 @@ import {
   OPAQUE_UNIT,
   type RunInfo,
   type Store,
+  serializeUnits,
   TOP_UNIT,
   toRepoPath,
 } from '@veyrum/core'
@@ -49,6 +51,9 @@ export interface Assembled {
   readonly records: readonly EvidenceRecord[]
 }
 
+/** Bump when unit naming or canonicalization changes, so cached fingerprints are not reused. */
+const UNIT_FORMAT = '1'
+
 /** A snapshot line such as `src/a.ts:12:3` means the test observes source positions. */
 const POSITION_PATTERN = /\.[cm]?[jt]sx?:\d+:\d+/
 
@@ -84,11 +89,20 @@ export function assemble(input: AssembleInput): Assembled {
   }
 
   const moduleCache = new Map<string, ModuleUnits>()
+  // Unit fingerprints depend only on the executed code (and the root, which is normalized away),
+  // so they are cached across runs by code digest: unchanged modules are never parsed again.
   const unitsFor = (codeDigest: string): ModuleUnits => {
     let m = moduleCache.get(codeDigest)
     if (!m) {
-      const code = fs.readFileSync(path.join(input.outDir, 'blobs', `${codeDigest}.js`), 'utf8')
-      m = fingerprintModule(code, { root })
+      const key = `code\u0000${UNIT_FORMAT}\u0000${codeDigest}`
+      const cached = input.store.getCached(key)
+      if (cached) {
+        m = deserializeUnits(cached)
+      } else {
+        const code = fs.readFileSync(path.join(input.outDir, 'blobs', `${codeDigest}.js`), 'utf8')
+        m = fingerprintModule(code, { root })
+        input.store.putCached(key, serializeUnits(m))
+      }
       moduleCache.set(codeDigest, m)
     }
     return m

@@ -1,9 +1,12 @@
 export { isConfigLike, listRepoFiles } from './files.ts'
 export {
+  deserializeUnits,
   type FingerprintOptions,
   fingerprintModule,
   type ModuleUnits,
+  moduleUnitsOf,
   OPAQUE_UNIT,
+  serializeUnits,
   TOP_UNIT,
   type UnitInfo,
 } from './fingerprint.ts'

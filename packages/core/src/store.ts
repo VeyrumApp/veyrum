@@ -191,6 +191,18 @@ export class Store {
       .run(key, JSON.stringify(units))
   }
 
+  /** Raw cached text (for example serialized module units keyed by code digest). */
+  getCached(key: string): string | undefined {
+    const row = this.db.prepare('SELECT units FROM unit_cache WHERE key = ?').get(key) as
+      | { units: string }
+      | undefined
+    return row?.units
+  }
+
+  putCached(key: string, text: string): void {
+    this.db.prepare('INSERT OR REPLACE INTO unit_cache (key, units) VALUES (?, ?)').run(key, text)
+  }
+
   private hydrate(row: RecordRow): EvidenceRecord {
     let closure = this.closureCache.get(row.closure_digest)
     if (!closure) {
