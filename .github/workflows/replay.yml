@@ -1,0 +1,64 @@
+name: Replay
+
+# Replays corpora (bench/corpora/<name>.json) on dedicated runners, one job per corpus, so
+# benchmarks run in parallel and never compete for memory. Results, report and log are uploaded.
+on:
+  workflow_dispatch:
+    inputs:
+      corpora:
+        description: JSON array of corpus names, for example ["vue-core", "date-fns"]
+        default: '["vue-core"]'
+      commits:
+        description: Commits to replay (empty for the corpus default)
+        default: ''
+      until:
+        description: Commit to end at (empty for the branch head)
+        default: ''
+
+jobs:
+  replay:
+    name: replay (${{ matrix.corpus }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        corpus: ${{ fromJSON(inputs.corpora) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - name: Replay
+        shell: bash
+        env:
+          CORPUS: ${{ matrix.corpus }}
+          COMMITS: ${{ inputs.commits }}
+          UNTIL: ${{ inputs.until }}
+        run: |
+          args=(--bench "$RUNNER_TEMP/bench" --overhead-every 4)
+          if [ -n "$COMMITS" ]; then args+=(--commits "$COMMITS"); fi
+          if [ -n "$UNTIL" ]; then args+=(--until "$UNTIL"); fi
+          bench/replay.sh "bench/corpora/$CORPUS.json" "${args[@]}" 2>&1 | tee "$RUNNER_TEMP/replay.log"
+      - name: Report
+        if: always()
+        shell: bash
+        env:
+          CORPUS: ${{ matrix.corpus }}
+        run: |
+          node bench/rig/dist/main.js rescore "bench/corpora/$CORPUS.json" --bench "$RUNNER_TEMP/bench"
+          node bench/rig/dist/main.js report "bench/corpora/$CORPUS.json" --bench "$RUNNER_TEMP/bench" > /dev/null
+          cat "$RUNNER_TEMP/bench/$CORPUS/report.md" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: replay-${{ matrix.corpus }}
+          path: |
+            ${{ runner.temp }}/bench/${{ matrix.corpus }}/results.jsonl
+            ${{ runner.temp }}/bench/${{ matrix.corpus }}/report.md
+            ${{ runner.temp }}/replay.log
+          if-no-files-found: warn

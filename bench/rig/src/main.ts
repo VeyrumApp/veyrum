@@ -12,7 +12,7 @@ import { rescoreFileCoverage } from './rescore.ts'
 const HELP = `veyrum-bench - replay history and mutants to compare Veyrum with baseline selectors
 
 Usage:
-  veyrum-bench replay <corpus.json> [--bench <dir>] [--overhead-every <n>]
+  veyrum-bench replay <corpus.json> [--bench <dir>] [--overhead-every <n>] [--commits <n>] [--until <sha>]
   veyrum-bench report <corpus.json> [--bench <dir>]
   veyrum-bench rescore <corpus.json> [--bench <dir>]   Recompute the Datadog-style baseline of a finished replay
 
@@ -29,6 +29,8 @@ async function main(argv: string[]): Promise<number> {
     options: {
       bench: { type: 'string' },
       'overhead-every': { type: 'string' },
+      commits: { type: 'string' },
+      until: { type: 'string' },
       help: { type: 'boolean', short: 'h', default: false },
     },
   })
@@ -37,7 +39,13 @@ async function main(argv: string[]): Promise<number> {
     process.stdout.write(HELP)
     return values.help ? 0 : 2
   }
-  const corpus = loadCorpus(corpusFile)
+  const loaded = loadCorpus(corpusFile)
+  // A shorter or pinned range than the corpus declares (a quick validation, or a reproducible run).
+  const corpus = {
+    ...loaded,
+    ...(values.commits ? { commits: Number(values.commits) } : {}),
+    ...(values.until ? { until: values.until } : {}),
+  }
   const bench = path.resolve(values.bench ?? DEFAULT_BENCH)
   const paths = pathsFor(corpus, bench)
   if (command === 'replay') {
