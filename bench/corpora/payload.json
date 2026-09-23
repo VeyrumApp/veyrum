@@ -1,0 +1,22 @@
+{
+  "name": "payload",
+  "repo": "https://github.com/payloadcms/payload.git",
+  "branch": "main",
+  "commits": 40,
+  "install": ["pnpm", "install", "--frozen-lockfile", "--prefer-offline"],
+  "prepare": ["pnpm", "turbo", "build", "--filter", "@payloadcms/typescript-plugin"],
+  "lockfiles": ["pnpm-lock.yaml"],
+  "runnerArgs": ["--project", "unit"],
+  "maxWorkers": 2,
+  "mutationSources": [
+    "^packages/payload/src/(utilities|uploads)/.+(?<!\\.spec)(?<!\\.d)\\.ts$",
+    "^packages/codemod/src/(?!utils/test-helpers\\.ts$).+(?<!\\.spec)(?<!\\.input)(?<!\\.output)\\.ts$",
+    "^packages/drizzle/src/(find|queries|upsertRow|utilities)/.+(?<!\\.spec)\\.ts$",
+    "^packages/plugin-import-export/src/utilities/.+(?<!\\.spec)\\.ts$",
+    "^packages/plugin-cloud-storage/src/.+(?<!\\.spec)\\.ts$",
+    "^packages/storage-(azure|gcs|r2|s3|vercel-blob)/src/.+(?<!\\.spec)\\.ts$",
+    "^tools/releaser/src/.+(?<!\\.spec)\\.ts$"
+  ],
+  "mutantsPerCommit": 6,
+  "mutationEvery": 4
+}
