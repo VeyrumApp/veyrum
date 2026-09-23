@@ -189,6 +189,26 @@ async function selectAll(
 export interface ReplayOptions {
   /** Measure an uninstrumented run every N commits (0 disables). */
   readonly overheadEvery: number
+  /**
+   * Replay only window `index` of `count` contiguous windows of the range, preceded by its own
+   * warm-up commit, so windows run in parallel. Commit indexes stay global; a window's warm-up
+   * records no mutants or overhead pairs unless it is the range's own first commit, so merged
+   * results count every commit once.
+   */
+  readonly shard?: { readonly index: number; readonly count: number }
+}
+
+/** The commits of one shard (with its warm-up first), as [global index, sha] pairs. */
+export function shardCommits(
+  shas: readonly string[],
+  shard: ReplayOptions['shard'],
+): (readonly [number, string])[] {
+  const all = shas.map((sha, i) => [i, sha] as const)
+  if (!shard || shard.count <= 1) return all
+  const commits = shas.length - 1
+  const start = 1 + Math.floor((shard.index * commits) / shard.count)
+  const end = Math.floor(((shard.index + 1) * commits) / shard.count)
+  return all.slice(start - 1, end + 1)
 }
 
 export async function replay(corpus: Corpus, benchRoot: string, options: ReplayOptions): Promise<void> {
@@ -218,8 +238,12 @@ export async function replay(corpus: Corpus, benchRoot: string, options: ReplayO
   }
 
   try {
-    for (const [index, sha] of shas.entries()) {
+    const window = shardCommits(shas, options.shard)
+    const firstIndex = window[0]?.[0] ?? 0
+    for (const [index, sha] of window) {
       if (doneShas.has(sha)) continue
+      // A shard's own warm-up commit is scored by the previous shard; it only records evidence.
+      const scored = index === 0 || index !== firstIndex
       log(`commit ${index}/${shas.length - 1} ${sha.slice(0, 10)}`)
       // A replay interrupted after this commit's capture was stored, but before its result line was
       // written, left evidence from this very commit. Plans must only see earlier commits.
@@ -264,7 +288,7 @@ export async function replay(corpus: Corpus, benchRoot: string, options: ReplayO
       // 2. Optional uninstrumented run for overhead (before capture, alternating order is not needed
       //    since both runs are sequential on the same tree).
       let plainWallMs: number | null = null
-      if (options.overheadEvery > 0 && index % options.overheadEvery === 0) {
+      if (scored && options.overheadEvery > 0 && index % options.overheadEvery === 0) {
         plainWallMs = plainRun(corpus, paths.testRoot, paths.scratch).wallMs
       }
 
@@ -321,7 +345,7 @@ export async function replay(corpus: Corpus, benchRoot: string, options: ReplayO
       log(`  ${outcomes.size} files, ${flips.length} flips, ${flaky.size} flaky; ${summary}`)
 
       // 4. Mutants on sampled commits, using evidence recorded at this commit.
-      if (corpus.mutantsPerCommit > 0 && index % corpus.mutationEvery === 0) {
+      if (scored && corpus.mutantsPerCommit > 0 && index % corpus.mutationEvery === 0) {
         for (const m of runMutants(corpus, paths, store, sha, changed, outcomes, capture.wallMs)) {
           write(await m)
         }

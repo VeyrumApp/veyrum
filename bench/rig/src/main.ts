@@ -13,6 +13,7 @@ const HELP = `veyrum-bench - replay history and mutants to compare Veyrum with b
 
 Usage:
   veyrum-bench replay <corpus.json> [--bench <dir>] [--overhead-every <n>] [--commits <n>] [--until <sha>]
+                                     [--shard <i>/<n>] [--mutants-per-commit <n>] [--mutation-every <n>]
   veyrum-bench report <corpus.json> [--bench <dir>]
   veyrum-bench rescore <corpus.json> [--bench <dir>]   Recompute the Datadog-style baseline of a finished replay
 
@@ -31,6 +32,9 @@ async function main(argv: string[]): Promise<number> {
       'overhead-every': { type: 'string' },
       commits: { type: 'string' },
       until: { type: 'string' },
+      shard: { type: 'string' },
+      'mutants-per-commit': { type: 'string' },
+      'mutation-every': { type: 'string' },
       help: { type: 'boolean', short: 'h', default: false },
     },
   })
@@ -45,11 +49,19 @@ async function main(argv: string[]): Promise<number> {
     ...loaded,
     ...(values.commits ? { commits: Number(values.commits) } : {}),
     ...(values.until ? { until: values.until } : {}),
+    ...(values['mutants-per-commit'] ? { mutantsPerCommit: Number(values['mutants-per-commit']) } : {}),
+    ...(values['mutation-every'] ? { mutationEvery: Number(values['mutation-every']) } : {}),
   }
+  const shardMatch = values.shard?.match(/^(\d+)\/(\d+)$/)
+  if (values.shard && !shardMatch) throw new Error(`--shard must be <index>/<count>, got ${values.shard}`)
+  const shard = shardMatch ? { index: Number(shardMatch[1]), count: Number(shardMatch[2]) } : undefined
   const bench = path.resolve(values.bench ?? DEFAULT_BENCH)
   const paths = pathsFor(corpus, bench)
   if (command === 'replay') {
-    await replay(corpus, bench, { overheadEvery: Number(values['overhead-every'] ?? 5) })
+    await replay(corpus, bench, {
+      overheadEvery: Number(values['overhead-every'] ?? 5),
+      ...(shard ? { shard } : {}),
+    })
     return 0
   }
   if (command === 'rescore') {

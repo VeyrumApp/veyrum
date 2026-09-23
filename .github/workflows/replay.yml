@@ -1,29 +1,66 @@
 name: Replay
 
-# Replays corpora (bench/corpora/<name>.json) on dedicated runners, one job per corpus, so
-# benchmarks run in parallel and never compete for memory. Results, report and log are uploaded.
+# Replays corpora (bench/corpora/<name>.json) on dedicated runners. Each corpus's commit range is
+# pinned once, then split into shards that replay in parallel, each window after its own warm-up
+# commit; a merge job per corpus combines the shards into one report.
 on:
   workflow_dispatch:
     inputs:
       corpora:
         description: JSON array of corpus names, for example ["vue-core", "date-fns"]
         default: '["vue-core"]'
+      shards:
+        description: Parallel shards per corpus
+        default: '4'
       commits:
         description: Commits to replay (empty for the corpus default)
         default: ''
       until:
-        description: Commit to end at (empty for the branch head)
+        description: Commit to end at (empty for the branch head; use with a single corpus)
+        default: ''
+      mutants-per-commit:
+        description: Mutants per sampled commit (empty for the corpus default)
+        default: ''
+      mutation-every:
+        description: Sample mutants every Nth commit (empty for the corpus default)
         default: ''
 
 jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: plan
+        env:
+          CORPORA: ${{ inputs.corpora }}
+          SHARDS: ${{ inputs.shards }}
+          UNTIL: ${{ inputs.until }}
+        run: |
+          node --input-type=module -e '
+            import fs from "node:fs"
+            import { execFileSync } from "node:child_process"
+            const include = []
+            for (const name of JSON.parse(process.env.CORPORA)) {
+              const corpus = JSON.parse(fs.readFileSync(`bench/corpora/${name}.json`, "utf8"))
+              // Pin the range once so every shard replays the same history.
+              const until = process.env.UNTIL || corpus.until ||
+                execFileSync("git", ["ls-remote", corpus.repo, `refs/heads/${corpus.branch}`], { encoding: "utf8" }).split("\t")[0]
+              for (let shard = 0; shard < Number(process.env.SHARDS); shard++) include.push({ corpus: name, shard, until })
+            }
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, `matrix=${JSON.stringify({ include })}\n`)
+            console.log(JSON.stringify(include, null, 2))
+          '
+
   replay:
-    name: replay (${{ matrix.corpus }})
+    name: replay (${{ matrix.corpus }} ${{ matrix.shard }})
+    needs: plan
     runs-on: ubuntu-latest
     timeout-minutes: 350
     strategy:
       fail-fast: false
-      matrix:
-        corpus: ${{ fromJSON(inputs.corpora) }}
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -37,28 +74,60 @@ jobs:
         shell: bash
         env:
           CORPUS: ${{ matrix.corpus }}
+          SHARD: ${{ matrix.shard }}/${{ inputs.shards }}
+          UNTIL: ${{ matrix.until }}
           COMMITS: ${{ inputs.commits }}
-          UNTIL: ${{ inputs.until }}
+          MUTANTS: ${{ inputs.mutants-per-commit }}
+          EVERY: ${{ inputs.mutation-every }}
         run: |
-          args=(--bench "$RUNNER_TEMP/bench" --overhead-every 4)
+          args=(--bench "$RUNNER_TEMP/bench" --overhead-every 4 --shard "$SHARD" --until "$UNTIL")
           if [ -n "$COMMITS" ]; then args+=(--commits "$COMMITS"); fi
-          if [ -n "$UNTIL" ]; then args+=(--until "$UNTIL"); fi
+          if [ -n "$MUTANTS" ]; then args+=(--mutants-per-commit "$MUTANTS"); fi
+          if [ -n "$EVERY" ]; then args+=(--mutation-every "$EVERY"); fi
           bench/replay.sh "bench/corpora/$CORPUS.json" "${args[@]}" 2>&1 | tee "$RUNNER_TEMP/replay.log"
-      - name: Report
+      - uses: actions/upload-artifact@v4
         if: always()
+        with:
+          name: shard-${{ matrix.corpus }}-${{ matrix.shard }}
+          path: |
+            ${{ runner.temp }}/bench/${{ matrix.corpus }}/results.jsonl
+            ${{ runner.temp }}/replay.log
+          if-no-files-found: warn
+
+  merge:
+    name: report (${{ matrix.corpus }})
+    needs: replay
+    if: always()
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        corpus: ${{ fromJSON(inputs.corpora) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: shard-${{ matrix.corpus }}-*
+          path: ${{ runner.temp }}/shards
+      - name: Report
         shell: bash
         env:
           CORPUS: ${{ matrix.corpus }}
         run: |
-          node bench/rig/dist/main.js rescore "bench/corpora/$CORPUS.json" --bench "$RUNNER_TEMP/bench"
+          mkdir -p "$RUNNER_TEMP/bench/$CORPUS"
+          cat "$RUNNER_TEMP"/shards/*/bench/"$CORPUS"/results.jsonl "$RUNNER_TEMP"/shards/*/results.jsonl 2>/dev/null \
+            > "$RUNNER_TEMP/bench/$CORPUS/results.jsonl" || true
+          wc -l "$RUNNER_TEMP/bench/$CORPUS/results.jsonl"
           node bench/rig/dist/main.js report "bench/corpora/$CORPUS.json" --bench "$RUNNER_TEMP/bench" > /dev/null
           cat "$RUNNER_TEMP/bench/$CORPUS/report.md" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
-        if: always()
         with:
           name: replay-${{ matrix.corpus }}
-          path: |
-            ${{ runner.temp }}/bench/${{ matrix.corpus }}/results.jsonl
-            ${{ runner.temp }}/bench/${{ matrix.corpus }}/report.md
-            ${{ runner.temp }}/replay.log
-          if-no-files-found: warn
+          path: ${{ runner.temp }}/bench/${{ matrix.corpus }}

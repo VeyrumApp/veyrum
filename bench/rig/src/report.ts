@@ -84,7 +84,9 @@ interface Row {
 }
 
 export function renderReport(title: string, lines: readonly ResultLine[]): string {
-  const commits = lines.filter((l): l is CommitResult => l.kind === 'commit' && l.baselines !== null)
+  const commits = lines
+    .filter((l): l is CommitResult => l.kind === 'commit' && l.baselines !== null)
+    .sort((a, b) => a.index - b.index)
   const mutants = lines.filter((l): l is MutantResult => l.kind === 'mutant')
   const killed = mutants.filter((m) => m.killed.length > 0 && !m.timedOut)
   const flips = commits.reduce((n, c) => n + c.flips.length, 0)
