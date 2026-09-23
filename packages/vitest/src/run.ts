@@ -178,11 +178,9 @@ export async function runVitest(options: VitestRunOptions): Promise<VitestRunRes
   const root = path.resolve(options.root)
   const runId = crypto.randomUUID()
   const createdAt = new Date().toISOString()
-  const scratch = path.join(
-    path.dirname(options.store.file === ':memory:' ? path.join(root, '.veyrum', 'x') : options.store.file),
-    'tmp',
-    runId,
-  )
+  // Scratch space lives inside the project root wherever the store is: the setup file placed here
+  // must be a project file, or Vite may refuse to serve it.
+  const scratch = path.join(root, '.veyrum', 'tmp', runId)
   const files = listRepoFiles(root)
   const target = resolveTargetVitest(root)
   const ownDirs = veyrumDirs()

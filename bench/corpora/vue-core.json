@@ -1,0 +1,13 @@
+{
+  "name": "vue-core",
+  "repo": "https://github.com/vuejs/core.git",
+  "branch": "main",
+  "commits": 40,
+  "install": ["pnpm", "install", "--frozen-lockfile", "--prefer-offline"],
+  "lockfiles": ["pnpm-lock.yaml"],
+  "vitestArgs": ["--project", "unit*"],
+  "maxWorkers": 2,
+  "mutationSources": ["^packages/[^/]+/src/.+\\.ts$"],
+  "mutantsPerCommit": 6,
+  "mutationEvery": 4
+}

@@ -1,0 +1,14 @@
+{
+  "name": "@veyrum/rig",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Replay benchmark: historical commits and mutants, Veyrum against baseline selectors",
+  "bin": {
+    "veyrum-bench": "./dist/main.js"
+  },
+  "dependencies": {
+    "@veyrum/core": "workspace:*",
+    "oxc-parser": "0.151.0"
+  }
+}
