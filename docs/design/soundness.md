@@ -139,8 +139,17 @@ Jest-specific observation rules, each covered by `packages/jest/test/hazards.tes
   recorded as a module, by what executed) and kept for everything else, such as JSON modules.
 - **Resolution is observed.** Jest resolves modules in the worker through hooked `fs`, so the
   existence checks of resolution are recorded per file.
-- **The haste map is not an input.** Jest indexes the repository in the main process by reading
-  every file; the main-process recorder is paused while a haste map builds.
+- **The haste map is not an input; the names looked up in it are.** Jest indexes the repository
+  in the main process by reading every file; the main-process recorder is paused while a haste
+  map builds. A bare specifier that node_modules resolution cannot find is then looked up by name
+  among the repository's package.json files ("haste packages"). Each looked-up name is recorded
+  (`pkgname`) with the repository manifests declaring it, over every package.json outside
+  node_modules, a superset of what Jest indexes. Jest caches successful resolutions per worker,
+  so a cache hit inside a package resolved by name records that name too. A file that resolves a
+  haste module (named by `hasteImplModulePath`) is not evidence.
+- **A package's own name matters only with `exports`.** Node, Jest and oxc resolve a package's
+  imports of itself by name only through its `exports` field, so manifest digests leave the name
+  out when there is none. Jest's lookups by name are the `pkgname` entries above.
 - **Transformer configuration is shared.** Babel, SWC, Browserslist, TypeScript and Jest
   configuration files are shared inputs, and a new one anywhere is a configuration-like addition.
 - **Manual mocks apply by location.** A new file under any `__mocks__` directory is treated as a

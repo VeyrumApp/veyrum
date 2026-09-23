@@ -272,6 +272,8 @@ export function assemble(input: AssembleInput): Assembled {
         }
       }
       for (const e of payload.env) add(`env:${e.n}`, { k: 'env', n: e.n, h: e.h })
+      for (const n of payload.packageNames ?? [])
+        add(`pkgname:${n}`, { k: 'pkgname', n, h: state.packageNameDigest(n, () => input.files) })
 
       // Snapshots that embed source positions make formatting-only edits observable.
       for (const entry of closure) {
@@ -419,5 +421,5 @@ export function assemble(input: AssembleInput): Assembled {
 }
 
 function entryKey(e: ClosureEntry): string {
-  return e.k === 'env' ? `env:${e.n}` : `${e.k}:${e.p}`
+  return e.k === 'env' || e.k === 'pkgname' ? `${e.k}:${e.n}` : `${e.k}:${e.p}`
 }

@@ -56,6 +56,10 @@ export function hashManifest(bytes: Uint8Array): Digest {
   if (!isPlainObject(value)) return hashFileBytes(bytes)
   const projected: Record<string, unknown> = { ...value }
   for (const field of INERT_FIELDS) delete projected[field]
+  // Resolvers use a package's own name only to resolve imports of the package from inside itself,
+  // which Node, Jest and oxc allow only through "exports". Jest's lookup of repository packages
+  // by name is recorded separately, as `pkgname` entries.
+  if (projected.exports === undefined) delete projected.name
   for (const field of DEPENDENCY_FIELDS) {
     const deps = projected[field]
     if (isPlainObject(deps)) projected[field] = Object.keys(deps).sort()
@@ -96,6 +100,7 @@ export class CurrentState {
   private readonly dirs = new Map<string, Digest | null>()
   private readonly manifests = new Map<string, Digest | null>()
   private readonly stats = new Map<string, StatType>()
+  private packageNames: Map<string, string[]> | undefined
 
   readonly root: string
   private readonly store: Store | undefined
@@ -163,6 +168,35 @@ export class CurrentState {
     }
     this.dirs.set(repoPath, value)
     return value
+  }
+
+  /**
+   * Digest of the repository manifests that declare a package name, given the repository's file
+   * list. Capture and planning compute it the same way, over every package.json outside
+   * node_modules: a superset of what Jest indexes, so a change Jest would see always shows here.
+   */
+  packageNameDigest(name: string, files: () => readonly string[]): Digest {
+    if (!this.packageNames) {
+      this.packageNames = new Map()
+      for (const file of files()) {
+        if (file !== 'package.json' && !file.endsWith('/package.json')) continue
+        let declared: unknown
+        try {
+          declared = (
+            JSON.parse(this.fs.readFileSync(fromRepoPath(this.root, file), 'utf8') as string) as {
+              name?: unknown
+            }
+          ).name
+        } catch {
+          continue
+        }
+        if (typeof declared !== 'string') continue
+        const list = this.packageNames.get(declared)
+        if (list) list.push(file)
+        else this.packageNames.set(declared, [file])
+      }
+    }
+    return digest(`pkgname\n${(this.packageNames.get(name) ?? []).sort().join('\n')}`)
   }
 
   envDigest(name: string, injected: Readonly<Record<string, Digest | null>>): Digest | null {

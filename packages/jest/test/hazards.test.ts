@@ -208,6 +208,63 @@ describe('inputs', () => {
     expect(s.actions()['test/plain.test.js']).toBe('run')
   })
 
+  test("a package's own name is an input only when it has exports", () => {
+    const manifest = (fields: Record<string, unknown>) =>
+      JSON.stringify({ private: true, ...fields }, null, 2)
+    const s = jest('manifest-name')
+      .write('package.json', manifest({ name: 'before' }))
+      .write('test/plain.test.js', PLAIN_TEST)
+    s.capture()
+    s.write('package.json', manifest({ name: 'after' }))
+    expect(s.actions()['test/plain.test.js']).toBe('skip')
+    s.write('package.json', manifest({ name: 'after', exports: './index.js' }))
+    s.capture()
+    s.write('package.json', manifest({ name: 'renamed', exports: './index.js' }))
+    expect(s.actions()['test/plain.test.js']).toBe('run')
+  })
+
+  for (const workers of [1, 2]) {
+    test(`a bare import Jest resolves to a repository package by name depends on that name (${workers === 1 ? 'in band' : 'workers'})`, () => {
+      const helper = (name: string) => JSON.stringify({ name, main: 'index.js' }, null, 2)
+      const HASTE_TEST = "const helper = require('helper')\ntest('haste', () => expect(helper).toBe(7))\n"
+      const s = jest(`haste-package-${workers}`, workers)
+        .write('packages/helper/package.json', helper('helper'))
+        .write('packages/helper/index.js', 'module.exports = 7\n')
+        .write('packages/other/package.json', helper('other'))
+        .write('packages/other/index.js', 'module.exports = 8\n')
+        // Two files resolving the same name: in one worker, the second is served from Jest's cache.
+        .write('test/haste-a.test.js', HASTE_TEST)
+        .write('test/haste-b.test.js', HASTE_TEST)
+        .write(
+          'test/optional.test.js',
+          "let ghost = null\ntry { ghost = require('ghost') } catch {}\ntest('optional', () => expect(ghost).toBe(null))\n",
+        )
+        .write('test/plain.test.js', PLAIN_TEST)
+      s.capture()
+      expect(Object.values(s.actions())).toEqual(['skip', 'skip', 'skip', 'skip'])
+      // Renaming a package nothing looked up changes nothing.
+      s.write('packages/other/package.json', helper('other-renamed'))
+      expect(Object.values(s.actions())).toEqual(['skip', 'skip', 'skip', 'skip'])
+      // A package taking a name a test looked up and did not find.
+      s.write('packages/other/package.json', helper('ghost'))
+      expect(s.actions()).toEqual({
+        'test/haste-a.test.js': 'skip',
+        'test/haste-b.test.js': 'skip',
+        'test/optional.test.js': 'run',
+        'test/plain.test.js': 'skip',
+      })
+      s.write('packages/other/package.json', helper('other'))
+      // The package a test resolved by name giving up that name.
+      s.write('packages/helper/package.json', helper('helper-renamed'))
+      expect(s.actions()).toEqual({
+        'test/haste-a.test.js': 'run',
+        'test/haste-b.test.js': 'run',
+        'test/optional.test.js': 'skip',
+        'test/plain.test.js': 'skip',
+      })
+    })
+  }
+
   test('a test that requires package.json depends on all of it', () => {
     const manifest = (range: string) =>
       JSON.stringify({ name: 'manifest', private: true, devDependencies: { eslint: range } }, null, 2)

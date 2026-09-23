@@ -247,6 +247,7 @@ class FileRecorder implements HookSink {
   envEnumeratedFlag = false
   readonly netEvents = new Map<string, { host: string; port: number | null; local: boolean }>()
   readonly spawns = new Set<string>()
+  readonly packageNames = new Set<string>()
   readonly dlopens = new Set<string>()
   sourceObservedFlag = false
   private readonly volatileEnv: RegExp
@@ -295,6 +296,9 @@ class FileRecorder implements HookSink {
   }
   spawn(command: string): void {
     this.spawns.add(command)
+  }
+  packageName(name: string): void {
+    this.packageNames.add(name)
   }
   dlopen(absolute: string): void {
     this.dlopens.add(absolute)
@@ -369,6 +373,83 @@ function recordToolchain(into: Set<string>, files: Set<string>): boolean {
       return nextLoad(url, context)
     },
   })
+  return true
+}
+
+/**
+ * Directories of repository packages this process resolved by name, with those names (see
+ * observeJestResolver), and names to record for every file when a resolver's cache cannot be
+ * observed.
+ */
+const hastePackageDirs = new Map<string, Set<string>>()
+const unobservedCacheNames = new Set<string>()
+let hasteModuleResolved = false
+const RESOLVER_HOOK_KEY = Symbol.for('veyrum.resolverHook')
+
+interface JestResolverPrototype {
+  getPackage(name: string): string | null
+  getModule(name: string): string | null
+}
+
+/**
+ * Observes how Jest's resolver consults its haste map. A bare specifier that node_modules
+ * resolution cannot find is looked up by name among the repository's package.json files, so the
+ * set of packages declaring that name is an input of the file that looked it up.
+ *
+ * Jest's resolver caches successful resolutions per worker across files, so a later file
+ * resolving the same specifier gets the cached path without a lookup. Cache hits inside a
+ * package resolved by name therefore record that name too; inside such a package that can include
+ * paths resolved another way, which only adds inputs. Haste modules (named by a
+ * `hasteImplModulePath`) cannot be recomputed at plan time, so resolving one ends reuse.
+ */
+export function observeJestResolver(resolver: { prototype: JestResolverPrototype }): void {
+  const proto = resolver.prototype as JestResolverPrototype & { [RESOLVER_HOOK_KEY]?: true }
+  if (proto[RESOLVER_HOOK_KEY]) return
+  proto[RESOLVER_HOOK_KEY] = true
+  const getPackage = proto.getPackage
+  proto.getPackage = function (this: { _moduleNameCache?: unknown }, name: string) {
+    const found = getPackage.call(this, name)
+    try {
+      getSink()?.packageName(name)
+      if (found) {
+        const dir = path.dirname(found) + path.sep
+        const names = hastePackageDirs.get(dir) ?? new Set<string>()
+        hastePackageDirs.set(dir, names.add(name))
+        if (!observeNameCache(this._moduleNameCache)) unobservedCacheNames.add(name)
+      }
+    } catch {
+      // Observation must never change behavior.
+    }
+    return found
+  }
+  const getModule = proto.getModule
+  proto.getModule = function (this: unknown, name: string) {
+    const found = getModule.call(this, name)
+    if (found) hasteModuleResolved = true
+    return found
+  }
+}
+
+/** Records package names for cache hits inside packages resolved by name; false if not a Map. */
+function observeNameCache(cache: unknown): boolean {
+  if (!(cache instanceof Map)) return false
+  const hooked = cache as Map<string, unknown> & { [RESOLVER_HOOK_KEY]?: true }
+  if (hooked[RESOLVER_HOOK_KEY]) return true
+  hooked[RESOLVER_HOOK_KEY] = true
+  const get = cache.get
+  cache.get = function (this: Map<string, unknown>, key: string) {
+    const value = get.call(this, key)
+    try {
+      if (typeof value === 'string') {
+        const sink = getSink()
+        for (const [dir, names] of hastePackageDirs)
+          if (value.startsWith(dir)) for (const name of names) sink?.packageName(name)
+      }
+    } catch {
+      // Observation must never change behavior.
+    }
+    return value
+  }
   return true
 }
 
@@ -471,6 +552,7 @@ export async function beginWorkerCapture(options: WorkerCaptureOptions): Promise
       state.compiled = null
       if (!state.toolchainObserved)
         errors.push('module loads cannot be observed (Node lacks module.registerHooks)')
+      if (hasteModuleResolved) errors.push('a haste module was resolved; haste module names are not observed')
       const modules: PayloadModule[] = []
       const natives = new Set<string>()
       let evalScripts = 0
@@ -568,6 +650,7 @@ export async function beginWorkerCapture(options: WorkerCaptureOptions): Promise
         envWritten: [...recorder.envWritten],
         net: [...recorder.netEvents.values()],
         spawns: [...recorder.spawns],
+        packageNames: [...new Set([...recorder.packageNames, ...unobservedCacheNames])].sort(),
         dlopen: [...recorder.dlopens],
         evalScripts,
         sourceObserved: recorder.sourceObservedFlag,

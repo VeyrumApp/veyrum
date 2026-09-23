@@ -1,4 +1,4 @@
-import { configScope, isConfigLike } from './files.ts'
+import { configScope, isConfigLike, listRepoFiles } from './files.ts'
 import { TOP_UNIT } from './fingerprint.ts'
 import { type Digest, digest } from './hash.ts'
 import { fromRepoPath, stem } from './paths.ts'
@@ -45,6 +45,11 @@ export async function plan(options: PlanOptions): Promise<Decision[]> {
   const sharedVerdicts = new Map<string, readonly string[]>()
   const addedSince = new Map<string, readonly string[]>()
   const currentFiles = options.files ? new Set(options.files) : undefined
+  let fileList: readonly string[] | undefined
+  const listFiles = (): readonly string[] => {
+    fileList ??= options.files ?? listRepoFiles(options.root)
+    return fileList
+  }
   const unitMemo = new Map<string, Promise<Readonly<Record<string, Digest>> | null>>()
 
   const getRun = (id: string): RunInfo | undefined => {
@@ -58,7 +63,7 @@ export async function plan(options: PlanOptions): Promise<Decision[]> {
     const changes: string[] = []
     for (const entry of run.shared) {
       // Shared inputs were read by the runner's main process, which sees the environment as is.
-      const change = checkPlainEntry(entry, state, NO_INJECTED_ENV)
+      const change = checkPlainEntry(entry, state, listFiles, NO_INJECTED_ENV)
       if (change) {
         changes.push(`runner input ${change}`)
         if (changes.length >= MAX_DETAILS) break
@@ -138,7 +143,7 @@ export async function plan(options: PlanOptions): Promise<Decision[]> {
     if (scoped.length > 0) {
       const under = (p: string, dir: string): boolean => p === dir || p.startsWith(`${dir}/`)
       for (const { path: added, dir } of scoped) {
-        if (under(check.path, dir) || record.closure.some((e) => e.k !== 'env' && under(e.p, dir)))
+        if (under(check.path, dir) || record.closure.some((e) => 'p' in e && under(e.p, dir)))
           changes.push(`new configuration-like file ${added}`)
       }
       if (changes.length > 0) return changes
@@ -152,7 +157,7 @@ export async function plan(options: PlanOptions): Promise<Decision[]> {
         const change = await checkModule(entry, check.project, strict, run)
         if (change) changes.push(change)
       } else {
-        const change = checkPlainEntry(entry, state, run.injectedEnv, run.injectedVaryingEnv)
+        const change = checkPlainEntry(entry, state, listFiles, run.injectedEnv, run.injectedVaryingEnv)
         if (change) changes.push(change)
       }
       if (changes.length >= MAX_DETAILS) return changes
@@ -288,6 +293,7 @@ function decision(
 function checkPlainEntry(
   entry: ClosureEntry,
   state: CurrentState,
+  files: () => readonly string[],
   injected: Readonly<Record<string, Digest | null>>,
   injectedVarying: readonly string[] = [],
 ): string | null {
@@ -320,6 +326,10 @@ function checkPlainEntry(
       const now = state.envDigest(entry.n, injected)
       return now === entry.h ? null : `environment variable ${entry.n} changed`
     }
+    case 'pkgname':
+      return state.packageNameDigest(entry.n, files) === entry.h
+        ? null
+        : `the repository packages named ${entry.n} changed`
     case 'mod':
       return `${entry.p} requires module comparison`
   }

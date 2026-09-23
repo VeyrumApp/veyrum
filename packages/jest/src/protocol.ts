@@ -7,6 +7,8 @@ export interface JestCaptureConfig {
   /** Absolute paths of Veyrum's capture modules, loaded natively by the environment wrapper. */
   readonly captureIndex: string
   readonly captureWorker: string
+  /** The jest-resolve module Jest's runtime resolves with, whose haste lookups are observed. */
+  readonly resolver: string
   /** The environment each project configured, by Jest project config id, that the wrapper runs. */
   readonly environments: Readonly<Record<string, string>>
 }

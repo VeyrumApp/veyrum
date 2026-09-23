@@ -33,6 +33,12 @@ export type ClosureEntry =
   | { readonly k: 'dir'; readonly p: string; readonly h: Digest | null }
   /** An environment variable read. `h` is null when it was unset. */
   | { readonly k: 'env'; readonly n: string; readonly h: Digest | null }
+  /**
+   * A package name looked up among the repository's own manifests, as Jest does for a bare
+   * specifier that node_modules resolution cannot find ("haste packages"). `h` digests the
+   * repository manifests declaring that name (see `CurrentState.packageNameDigest`).
+   */
+  | { readonly k: 'pkgname'; readonly n: string; readonly h: Digest }
 
 export type ClosureKind = ClosureEntry['k']
 

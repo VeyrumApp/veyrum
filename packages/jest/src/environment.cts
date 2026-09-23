@@ -21,6 +21,7 @@ interface CaptureConfig {
   ignored: string[]
   captureIndex: string
   captureWorker: string
+  resolver: string
   environments: Record<string, string>
 }
 
@@ -64,6 +65,10 @@ function loadCapture(): { index: typeof Capture; worker: typeof CaptureWorker } 
       index: nativeRequire(config.captureIndex) as typeof Capture,
       worker: nativeRequire(config.captureWorker) as typeof CaptureWorker,
     }
+    const resolver = nativeRequire(config.resolver) as { default?: unknown }
+    capture.worker.observeJestResolver(
+      (resolver.default ?? resolver) as Parameters<typeof CaptureWorker.observeJestResolver>[0],
+    )
   }
   return capture
 }

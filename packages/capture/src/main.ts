@@ -154,6 +154,7 @@ export class MainRecorder implements HookSink {
   }
   net(): void {}
   spawn(): void {}
+  packageName(): void {}
   dlopen(): void {}
   sourceObserved(): void {}
 }

@@ -32,6 +32,12 @@ describe('manifest digests', () => {
     ).toBe(hash(base))
   })
 
+  test('the name is kept only when exports allow importing the package by it from inside', () => {
+    expect(hash({ ...base, name: 'renamed' })).toBe(hash(base))
+    const exported = { ...base, exports: './index.js' }
+    expect(hash({ ...exported, name: 'renamed' })).not.toBe(hash(exported))
+  })
+
   test('dependency names are kept', () => {
     expect(hash({ ...base, devDependencies: { eslint: '^10.8.0', prettier: '^3.0.0' } })).not.toBe(hash(base))
     expect(

@@ -47,6 +47,8 @@ export interface TargetJest {
   readonly transform: string
   readonly resolve: string
   readonly hasteMap: string
+  /** jest-resolve as jest-runtime loads it: the resolver test files resolve through. */
+  readonly runtimeResolve: string
 }
 
 export function resolveTargetJest(root: string): TargetJest {
@@ -84,6 +86,7 @@ export function resolveTargetJest(root: string): TargetJest {
     transform: fromCore.resolve('@jest/transform'),
     resolve: fromCore.resolve('jest-resolve'),
     hasteMap: createRequire(runtime).resolve('jest-haste-map'),
+    runtimeResolve: createRequire(runtime).resolve('jest-resolve'),
   }
 }
 
@@ -250,6 +253,7 @@ export async function runJest(options: JestRunOptions): Promise<RunResult> {
       ignored,
       captureIndex: ownRequire.resolve('@veyrum/capture'),
       captureWorker: ownRequire.resolve('@veyrum/capture/worker'),
+      resolver: target.runtimeResolve,
       environments,
     }
     process.env[JEST_CAPTURE_ENV] = JSON.stringify(captureConfig)

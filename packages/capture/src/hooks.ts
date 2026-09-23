@@ -36,6 +36,8 @@ export interface HookSink {
   envWrite(name: string): void
   net(host: string, port: number | undefined, local: boolean): void
   spawn(command: string): void
+  /** A package name looked up among the repository's own manifests (Jest's haste packages). */
+  packageName(name: string): void
   dlopen(absolute: string): void
   sourceObserved(): void
 }
@@ -48,6 +50,7 @@ const noop: HookSink = {
   envWrite() {},
   net() {},
   spawn() {},
+  packageName() {},
   dlopen() {},
   sourceObserved() {},
 }

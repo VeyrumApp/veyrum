@@ -28,6 +28,11 @@ export interface WorkerPayload {
   readonly envWritten: readonly string[]
   readonly net: readonly { readonly host: string; readonly port: number | null; readonly local: boolean }[]
   readonly spawns: readonly string[]
+  /**
+   * Jest layout: package names looked up among repository manifests while resolving (haste
+   * packages), directly or through Jest's resolver cache.
+   */
+  readonly packageNames?: readonly string[]
   readonly dlopen: readonly string[]
   /** Number of executed scripts compiled from strings (eval, new Function). */
   readonly evalScripts: number
