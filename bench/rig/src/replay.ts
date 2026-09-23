@@ -90,7 +90,7 @@ function log(message: string): void {
   process.stdout.write(`[${new Date().toISOString().slice(11, 19)}] ${message}\n`)
 }
 
-function readResults(file: string): ResultLine[] {
+export function readResults(file: string): ResultLine[] {
   if (!fs.existsSync(file)) return []
   return fs
     .readFileSync(file, 'utf8')

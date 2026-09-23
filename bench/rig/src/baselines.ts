@@ -1,4 +1,12 @@
-import { type CheckRef, listRepoFiles, plan, type RunInfo, type Store, stem } from '@veyrum/core'
+import {
+  type CheckRef,
+  type EvidenceRecord,
+  listRepoFiles,
+  plan,
+  type RunInfo,
+  type Store,
+  stem,
+} from '@veyrum/core'
 import { exec } from './exec.ts'
 
 export interface SelectionContext {
@@ -73,14 +81,25 @@ export async function selectFileClosure(ctx: SelectionContext, runtimeKey: strin
  * Datadog never skips on the default branch; the replay treats each commit like a pull request
  * against its parent, which is how a selection rule is compared.
  */
-export function selectFileCoverage(ctx: SelectionContext): Set<string> {
+export interface CoverageOptions {
+  /** Compare against this commit instead of the working tree (rescoring a finished replay). */
+  readonly against?: string
+  /** Files also counted as modified (a mutant applied on top of `against`). */
+  readonly alsoChanged?: readonly string[]
+  /** Which recorded runs Datadog would have had (rescoring: only earlier commits). */
+  readonly eligible?: (record: EvidenceRecord) => boolean
+}
+
+export function selectFileCoverage(ctx: SelectionContext, options: CoverageOptions = {}): Set<string> {
   const diffs = new Map<string, Set<string> | null>()
-  /** Files modified between a commit and the working tree (which holds any applied mutant). */
+  /** Files modified between a commit and now (the working tree holds any applied mutant). */
   const changedSince = (revision: string): Set<string> | null => {
     let files = diffs.get(revision)
     if (files === undefined) {
-      const r = exec('git', ['diff', '--name-only', '--relative', revision], { cwd: ctx.repo })
+      const range = options.against ? [revision, options.against] : [revision]
+      const r = exec('git', ['diff', '--name-only', '--relative', ...range], { cwd: ctx.repo })
       files = r.code === 0 ? new Set(r.stdout.split('\n').filter(Boolean)) : null
+      if (files) for (const f of options.alsoChanged ?? []) files.add(f)
       diffs.set(revision, files)
     }
     return files
@@ -92,7 +111,8 @@ export function selectFileCoverage(ctx: SelectionContext): Set<string> {
   const selected = new Set<string>()
   for (const check of ctx.checks) {
     let skip = false
-    for (const record of ctx.store.recordsFor(check, 20)) {
+    for (const record of ctx.store.recordsFor(check, options.eligible ? 200 : 20)) {
+      if (options.eligible && !options.eligible(record)) continue
       // A failing run is never a basis, and the latest failure means the file runs.
       if (record.verdict !== 'pass') break
       if (!record.revision) continue

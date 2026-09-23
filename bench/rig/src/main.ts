@@ -7,12 +7,14 @@ import { loadCorpus } from './corpus.ts'
 import { EXIT_KILLED, KilledError } from './exec.ts'
 import { pathsFor, replay } from './replay.ts'
 import { readLines, renderReport } from './report.ts'
+import { rescoreFileCoverage } from './rescore.ts'
 
 const HELP = `veyrum-bench - replay history and mutants to compare Veyrum with baseline selectors
 
 Usage:
   veyrum-bench replay <corpus.json> [--bench <dir>] [--overhead-every <n>]
   veyrum-bench report <corpus.json> [--bench <dir>]
+  veyrum-bench rescore <corpus.json> [--bench <dir>]   Recompute the Datadog-style baseline of a finished replay
 
 Corpora live in bench/corpora. Work directories default to <repo>/.bench/<name>.
 `
@@ -40,6 +42,11 @@ async function main(argv: string[]): Promise<number> {
   const paths = pathsFor(corpus, bench)
   if (command === 'replay') {
     await replay(corpus, bench, { overheadEvery: Number(values['overhead-every'] ?? 5) })
+    return 0
+  }
+  if (command === 'rescore') {
+    const { commits, mutants } = rescoreFileCoverage(corpus, bench)
+    process.stdout.write(`rescored ${commits} commits and ${mutants} mutants in ${paths.results}\n`)
     return 0
   }
   if (command === 'report') {
