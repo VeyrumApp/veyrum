@@ -19,6 +19,19 @@ describe('manifest digests', () => {
     expect(hash({ ...base, dependencies: { vue: '3.6.0' } })).toBe(hash(base))
   })
 
+  test('install, publish and descriptive fields are left out', () => {
+    expect(
+      hash({
+        ...base,
+        engines: { node: '>=26' },
+        packageManager: 'pnpm@12.0.0',
+        private: true,
+        description: 'changed',
+        license: 'MIT',
+      }),
+    ).toBe(hash(base))
+  })
+
   test('dependency names are kept', () => {
     expect(hash({ ...base, devDependencies: { eslint: '^10.8.0', prettier: '^3.0.0' } })).not.toBe(hash(base))
     expect(

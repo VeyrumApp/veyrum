@@ -37,8 +37,9 @@ If the latest record for a file is a failure, the file always runs.
 | `dir` | directory listing | digest of entry names | `readdir` and `opendir` hooks |
 | `env` | environment variable | value digest, or unset | `process.env` proxy |
 
-A manifest digest covers every field of a `package.json` except `scripts` and the version ranges
-of dependencies; dependency names are kept. The toolchain reads repository manifests for module
+A manifest digest covers every field of a `package.json` except the version ranges of
+dependencies (their names are kept), `scripts`, install and publish settings (`engines`,
+`packageManager`, `publishConfig`, `files`, `private`) and descriptive metadata. The toolchain reads repository manifests for module
 format, resolution, dependency names and its own configuration fields (`jest`, `babel`,
 `browserslist`), and what is actually installed is recorded by each loaded package's own
 manifest. A manifest a test reads or imports itself is a `file` or `mod` entry, compared in full,

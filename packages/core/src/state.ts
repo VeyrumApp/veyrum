@@ -10,6 +10,30 @@ export function hashFileBytes(bytes: Uint8Array): Digest {
 
 const DEPENDENCY_FIELDS = ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies']
 
+/**
+ * Fields that only describe the package or steer installing and publishing it: nothing a test
+ * runs reads them to load or transform code.
+ */
+const INERT_FIELDS = [
+  'scripts',
+  'engines',
+  'devEngines',
+  'packageManager',
+  'publishConfig',
+  'files',
+  'private',
+  'description',
+  'keywords',
+  'author',
+  'contributors',
+  'maintainers',
+  'license',
+  'repository',
+  'bugs',
+  'homepage',
+  'funding',
+]
+
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
@@ -17,9 +41,10 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 /**
  * Digest of a package manifest as the runner's toolchain uses it. The toolchain reads manifests
  * for module format, resolution and the names of dependencies; the installed version of every
- * package a check loads is recorded separately, by that package's own manifest. Version ranges
- * and scripts therefore cannot change an outcome by themselves and are left out. Every other
- * field, and the order of fields, is kept. Unparsable content is compared byte for byte.
+ * package a check loads is recorded separately, by that package's own manifest. Version ranges,
+ * scripts, install and publish settings, and descriptive metadata therefore cannot change an
+ * outcome by themselves and are left out. Every other field, and the order of fields, is kept.
+ * Unparsable content is compared byte for byte.
  */
 export function hashManifest(bytes: Uint8Array): Digest {
   let value: unknown
@@ -30,7 +55,7 @@ export function hashManifest(bytes: Uint8Array): Digest {
   }
   if (!isPlainObject(value)) return hashFileBytes(bytes)
   const projected: Record<string, unknown> = { ...value }
-  delete projected.scripts
+  for (const field of INERT_FIELDS) delete projected[field]
   for (const field of DEPENDENCY_FIELDS) {
     const deps = projected[field]
     if (isPlainObject(deps)) projected[field] = Object.keys(deps).sort()
