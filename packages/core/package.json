@@ -1,9 +1,17 @@
 {
   "name": "@veyrum/core",
   "version": "0.1.0",
+  "description": "Evidence records, fingerprints, store and planner for Veyrum",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/VeyrumApp/veyrum.git",
+    "directory": "packages/core"
+  },
+  "engines": {
+    "node": ">=22.15"
+  },
   "private": true,
   "type": "module",
-  "description": "Evidence records, fingerprints, store and planner for Veyrum",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",

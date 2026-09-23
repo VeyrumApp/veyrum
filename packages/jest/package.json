@@ -1,9 +1,17 @@
 {
   "name": "@veyrum/jest",
   "version": "0.1.0",
+  "description": "Veyrum adapter for Jest: capture, planning and selective execution",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/VeyrumApp/veyrum.git",
+    "directory": "packages/jest"
+  },
+  "engines": {
+    "node": ">=22.15"
+  },
   "private": true,
   "type": "module",
-  "description": "Veyrum adapter for Jest: capture, planning and selective execution",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -19,6 +27,11 @@
   },
   "peerDependencies": {
     "jest": ">=29.0.0"
+  },
+  "peerDependenciesMeta": {
+    "jest": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@jest/core": "30.5.2",

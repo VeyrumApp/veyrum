@@ -1,9 +1,17 @@
 {
   "name": "@veyrum/vitest",
   "version": "0.1.0",
+  "description": "Veyrum adapter for Vitest: capture, planning and selective execution",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/VeyrumApp/veyrum.git",
+    "directory": "packages/vitest"
+  },
+  "engines": {
+    "node": ">=22.15"
+  },
   "private": true,
   "type": "module",
-  "description": "Veyrum adapter for Vitest: capture, planning and selective execution",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -24,7 +32,12 @@
     "@veyrum/core": "workspace:*"
   },
   "peerDependencies": {
-    "vitest": ">=5.0.0"
+    "vitest": ">=4.1.0"
+  },
+  "peerDependenciesMeta": {
+    "vitest": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "vitest": "5.0.1"

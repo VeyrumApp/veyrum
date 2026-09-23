@@ -1,9 +1,17 @@
 {
   "name": "veyrum",
   "version": "0.1.0",
+  "description": "Veyrum CLI: run only the tests whose evidence is no longer valid",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/VeyrumApp/veyrum.git",
+    "directory": "packages/cli"
+  },
+  "engines": {
+    "node": ">=22.15"
+  },
   "private": true,
   "type": "module",
-  "description": "Veyrum CLI: run only the tests whose evidence is no longer valid",
   "bin": {
     "veyrum": "./dist/main.js"
   },
