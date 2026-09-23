@@ -35,6 +35,7 @@ export {
   hashDirNames,
   hashEnvValue,
   hashFileBytes,
+  hashManifest,
   type StateFs,
   type StatType,
 } from './state.ts'

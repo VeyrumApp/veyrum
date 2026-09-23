@@ -110,6 +110,12 @@ export async function endWorkerCapture(): Promise<void> {
 /** Stack frames of Jest's module loader (its file cache reads each module before compiling it). */
 const JEST_RUNTIME_FRAME = /[\\/]jest-runtime[\\/]build[\\/]/
 
+/**
+ * Stack frames of code that reads package manifests only for module format, resolution or its own
+ * configuration field: Jest's module resolver and Babel's configuration loader.
+ */
+const MANIFEST_READERS = [/[\\/]jest-resolve[\\/]build[\\/]/, /[\\/]@babel[\\/]core[\\/]lib[\\/]config[\\/]/]
+
 /** Jest 29 wraps CommonJS modules in this (Jest 30 uses vm.compileFunction without a wrapper). */
 const JEST29_WRAPPER_START = '({"Object.<anonymous>":function('
 const JEST29_WRAPPER_OPEN = '){'
@@ -207,8 +213,9 @@ class FileRecorder implements HookSink {
       if (!this.runnerReads.has(absolute)) this.runnerReads.set(absolute, type)
       return
     }
-    const key = `${kind}\u0000${absolute}`
-    if (!this.paths.has(key)) this.paths.set(key, { p: absolute, kind, type })
+    const recorded: PathKind = reader === 'manifest' ? 'manifest' : kind
+    const key = `${recorded}\u0000${absolute}`
+    if (!this.paths.has(key)) this.paths.set(key, { p: absolute, kind: recorded, type })
   }
   write(absolute: string): void {
     this.writes.add(absolute)
@@ -270,6 +277,7 @@ export function prepareWorkerHooks(options: WorkerCaptureOptions): void {
     root: options.root,
     ignoredPrefixes: [...options.ignoredPrefixes, path.resolve(options.outDir) + path.sep],
     observeSource: true,
+    manifestReaders: MANIFEST_READERS,
     ...(options.layout === 'jest' ? { runnerReaders: [JEST_RUNTIME_FRAME] } : {}),
   })
   const isolate: IsolateState = {

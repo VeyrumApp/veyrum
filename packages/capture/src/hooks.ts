@@ -7,7 +7,8 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import workerThreads from 'node:worker_threads'
 
-export type PathKind = 'read' | 'stat' | 'dir'
+/** `manifest`: a package manifest a manifest reader read (see InstallOptions.manifestReaders). */
+export type PathKind = 'read' | 'stat' | 'dir' | 'manifest'
 /**
  * Which environment object a read went through: the process's own `process.env`, or a copy a
  * runner made for test code (Jest gives each test file's context its own copy). Under Jest, reads
@@ -15,14 +16,15 @@ export type PathKind = 'read' | 'stat' | 'dir'
  */
 export type EnvScope = 'process' | 'test'
 
-export type Reader = 'runner' | 'node-loader' | 'other'
+export type Reader = 'runner' | 'manifest' | 'node-loader' | 'other'
 export type PathType = 'file' | 'dir' | 'other' | 'absent'
 
 /** Receives observations from the hooks. Swapped per test file by the runner adapter. */
 export interface HookSink {
   /**
    * `reader` says who read the file when the hooks classify reads (InstallOptions.runnerReaders):
-   * the runner's module loader, Node's own module loader, or anything else (test code).
+   * the runner's module loader, a manifest reader (InstallOptions.manifestReaders), Node's own
+   * module loader, or anything else (test code).
    */
   path(absolute: string, kind: PathKind, type: PathType, reader: Reader): void
   /** True when the observation is already recorded, so hooks can skip classifying it again. */
@@ -71,6 +73,8 @@ interface HookState {
   rootPrefix: string | null
   /** Callers whose reads are the runner loading modules (see InstallOptions.runnerReaders). */
   runnerReaders: RegExp[]
+  /** Callers that read package manifests for known fields (see InstallOptions.manifestReaders). */
+  manifestReaders: RegExp[]
 }
 
 const STATE_KEY = Symbol.for('veyrum.capture.hooks')
@@ -87,6 +91,7 @@ function sharedState(): HookState {
     tempPrefixes: [],
     rootPrefix: null,
     runnerReaders: [],
+    manifestReaders: [],
   }
   g[STATE_KEY] = created
   return created
@@ -174,15 +179,25 @@ function callerFiles(limit: number): string[] {
   })
 }
 
-/** Who called into fs: the runner's module loader, Node's module loader, or other code. */
-function classifyReader(): Reader {
-  for (const file of callerFiles(16)) {
+/** Deep enough to reach a manifest reader behind its fs abstraction (Babel reads through gensync). */
+const MANIFEST_STACK_LIMIT = 40
+
+/**
+ * Who called into fs: the runner's module loader, Node's module loader, a manifest reader (for a
+ * package manifest), or other code. The first caller outside Veyrum and Node decides, except that a
+ * manifest read by other code counts as a manifest read when a manifest reader is anywhere below.
+ */
+function classifyReader(isManifest: boolean): Reader {
+  const files = callerFiles(isManifest ? MANIFEST_STACK_LIMIT : 16)
+  for (const file of files) {
     if (file.startsWith(OWN_DIR)) continue
     if (file.startsWith('node:internal/modules/')) return 'node-loader'
     // Skip Node's own fs internals (readFileSync calls openSync, which is hooked too).
     if (file.startsWith('node:') || file === '') continue
-    return state.runnerReaders.some((re) => re.test(file)) ? 'runner' : 'other'
+    if (state.runnerReaders.some((re) => re.test(file))) return 'runner'
+    break
   }
+  if (isManifest && files.some((file) => state.manifestReaders.some((re) => re.test(file)))) return 'manifest'
   return 'other'
 }
 
@@ -192,7 +207,9 @@ function observePath(p: unknown, kind: PathKind): void {
   if (!absolute || ignored(absolute) || state.sink.seen?.(absolute, kind)) return
   state.depth++
   try {
-    const reader = kind === 'read' && state.runnerReaders.length > 0 ? classifyReader() : 'other'
+    const isManifest = state.manifestReaders.length > 0 && path.basename(absolute) === 'package.json'
+    const classify = kind === 'read' && (state.runnerReaders.length > 0 || isManifest)
+    const reader = classify ? classifyReader(isManifest) : 'other'
     state.sink.path(absolute, kind, typeOf(absolute), reader)
   } finally {
     state.depth--
@@ -501,6 +518,12 @@ export interface InstallOptions {
    * compiled as modules (their content is recorded as a module) and keep the rest (JSON, assets).
    */
   readonly runnerReaders?: readonly RegExp[]
+  /**
+   * Callers (matched against any stack frame) that read package manifests only for module format,
+   * resolution or their own configuration field, never for dependency version ranges or scripts.
+   * Their reads of package.json are reported as `manifest`, to be compared as manifests.
+   */
+  readonly manifestReaders?: readonly RegExp[]
 }
 
 /** Installs every hook once per isolate. Subsequent calls only update ignored prefixes. */
@@ -510,6 +533,7 @@ export function installHooks(options: InstallOptions = {}): void {
   state.rootPrefix = options.root ? path.resolve(options.root) + path.sep : null
   state.ignoredPrefixes = [...new Set(['/proc/', '/dev/', '/sys/', ...(options.ignoredPrefixes ?? [])])]
   if (options.runnerReaders) state.runnerReaders = [...options.runnerReaders]
+  if (options.manifestReaders) state.manifestReaders = [...options.manifestReaders]
   if (state.installed) return
   state.installed = true
   installFsHooks()

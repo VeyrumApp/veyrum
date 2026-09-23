@@ -22,6 +22,11 @@ export type ClosureEntry =
   | { readonly k: 'dep'; readonly p: string; readonly h: Digest | null }
   /** A file read through the fs API. `h` is null when the file did not exist at read time. */
   | { readonly k: 'file'; readonly p: string; readonly h: Digest | null }
+  /**
+   * A package manifest the runner's main process read. Compared by `hashManifest`: dependency
+   * version ranges and scripts are left out, since what is installed is recorded separately.
+   */
+  | { readonly k: 'manifest'; readonly p: string; readonly h: Digest | null }
   /** A path whose existence or type was checked, but whose content was not read. */
   | { readonly k: 'stat'; readonly p: string; readonly t: 'file' | 'dir' | 'other' | 'absent' }
   /** A directory whose listing was read. */

@@ -280,8 +280,9 @@ export async function runJest(options: JestRunOptions): Promise<RunResult> {
     const checks = selectedSpecs.map((s) => s.check)
 
     const configFiles = new Set<string>()
-    for (const f of files)
-      if (TOOLCHAIN_CONFIG.test(f) || f === 'package.json') configFiles.add(path.join(root, f))
+    for (const f of files) if (TOOLCHAIN_CONFIG.test(f)) configFiles.add(path.join(root, f))
+    // The root manifest can hold Jest, Babel and Browserslist configuration.
+    const manifestFiles = [path.join(root, 'package.json')]
     if (options.config) configFiles.add(path.resolve(root, options.config))
 
     const planStarted = performance.now()
@@ -366,6 +367,7 @@ export async function runJest(options: JestRunOptions): Promise<RunResult> {
           sharedWorkerProjects: new Set(),
           ignored,
           configFiles: [...configFiles],
+          manifestFiles,
         }),
       )
       options.store.transaction(() => {

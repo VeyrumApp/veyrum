@@ -8,6 +8,36 @@ export function hashFileBytes(bytes: Uint8Array): Digest {
   return digest(bytes)
 }
 
+const DEPENDENCY_FIELDS = ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies']
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/**
+ * Digest of a package manifest as the runner's toolchain uses it. The toolchain reads manifests
+ * for module format, resolution and the names of dependencies; the installed version of every
+ * package a check loads is recorded separately, by that package's own manifest. Version ranges
+ * and scripts therefore cannot change an outcome by themselves and are left out. Every other
+ * field, and the order of fields, is kept. Unparsable content is compared byte for byte.
+ */
+export function hashManifest(bytes: Uint8Array): Digest {
+  let value: unknown
+  try {
+    value = JSON.parse(Buffer.from(bytes).toString('utf8'))
+  } catch {
+    return hashFileBytes(bytes)
+  }
+  if (!isPlainObject(value)) return hashFileBytes(bytes)
+  const projected: Record<string, unknown> = { ...value }
+  delete projected.scripts
+  for (const field of DEPENDENCY_FIELDS) {
+    const deps = projected[field]
+    if (isPlainObject(deps)) projected[field] = Object.keys(deps).sort()
+  }
+  return digest(`manifest\n${JSON.stringify(projected)}`)
+}
+
 /** Digest of a directory listing (entry names only, order-insensitive). */
 export function hashDirNames(names: readonly string[]): Digest {
   return digest(`dir\n${[...names].sort().join('\n')}`)
@@ -39,6 +69,7 @@ const NOT_A_FILE = 'not-a-file'
 export class CurrentState {
   private readonly files = new Map<string, Digest | null>()
   private readonly dirs = new Map<string, Digest | null>()
+  private readonly manifests = new Map<string, Digest | null>()
   private readonly stats = new Map<string, StatType>()
 
   readonly root: string
@@ -64,6 +95,21 @@ export class CurrentState {
     if (cached !== undefined) return cached
     const value = this.computeFileDigest(fromRepoPath(this.root, repoPath))
     this.files.set(repoPath, value)
+    return value
+  }
+
+  /** Manifest digest of a file (see `hashManifest`); null if it does not exist. */
+  manifestDigest(repoPath: string): Digest | null {
+    const cached = this.manifests.get(repoPath)
+    if (cached !== undefined) return cached
+    let value: Digest | null
+    try {
+      const absolute = fromRepoPath(this.root, repoPath)
+      value = this.fs.statSync(absolute).isFile() ? hashManifest(this.fs.readFileSync(absolute)) : NOT_A_FILE
+    } catch {
+      value = null
+    }
+    this.manifests.set(repoPath, value)
     return value
   }
 

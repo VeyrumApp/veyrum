@@ -275,6 +275,13 @@ function checkPlainEntry(
       if (now === null) return `${entry.p} was removed`
       return `${entry.p} changed`
     }
+    case 'manifest': {
+      const now = state.manifestDigest(entry.p)
+      if (now === entry.h) return null
+      if (entry.h === null) return `${entry.p} now exists`
+      if (now === null) return `${entry.p} was removed`
+      return `${entry.p} changed`
+    }
     case 'stat': {
       const now = state.statType(entry.p)
       return now === entry.t ? null : `${entry.p} is now ${now} (was ${entry.t})`

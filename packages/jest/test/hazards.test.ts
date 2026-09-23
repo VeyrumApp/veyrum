@@ -163,6 +163,37 @@ describe('inputs', () => {
     expect(s.actions({ CI: 'true' })['test/snap.test.js']).toBe('run')
   })
 
+  test('a version range in package.json is not an input; other fields are', () => {
+    const manifest = (fields: Record<string, unknown>) =>
+      JSON.stringify({ name: 'manifest', private: true, ...fields }, null, 2)
+    const s = jest('manifest')
+      .write('package.json', manifest({ devDependencies: { eslint: '^10.8.0' } }))
+      .write('test/plain.test.js', PLAIN_TEST)
+    s.capture()
+    s.write('package.json', manifest({ devDependencies: { eslint: '^10.10.0' } }))
+    expect(s.actions()['test/plain.test.js']).toBe('skip')
+    s.write(
+      'package.json',
+      manifest({ devDependencies: { eslint: '^10.10.0' }, imports: { '#src/*': './src/*' } }),
+    )
+    expect(s.actions()['test/plain.test.js']).toBe('run')
+  })
+
+  test('a test that requires package.json depends on all of it', () => {
+    const manifest = (range: string) =>
+      JSON.stringify({ name: 'manifest', private: true, devDependencies: { eslint: range } }, null, 2)
+    const s = jest('manifest-require')
+      .write('package.json', manifest('^10.8.0'))
+      .write(
+        'test/manifest.test.js',
+        "const pkg = require('../package.json')\ntest('range', () => expect(pkg.devDependencies.eslint).toMatch(/^\\^10/))\n",
+      )
+      .write('test/plain.test.js', PLAIN_TEST)
+    s.capture()
+    s.write('package.json', manifest('^10.10.0'))
+    expect(s.actions()).toEqual({ 'test/manifest.test.js': 'run', 'test/plain.test.js': 'skip' })
+  })
+
   test('transformer configuration is a shared input', () => {
     const s = jest('babel-config')
       .write('babel.config.js', 'module.exports = { plugins: [] }\n')

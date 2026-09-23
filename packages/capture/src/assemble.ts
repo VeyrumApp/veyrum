@@ -63,6 +63,12 @@ export interface AssembleInput {
    * and TypeScript/JavaScript project configs.
    */
   readonly configFiles: readonly string[]
+  /**
+   * Package manifests every check depends on through the fields the toolchain reads from them
+   * (for example Jest, Babel and Browserslist configuration). Compared as manifests: dependency
+   * version ranges and scripts are left out.
+   */
+  readonly manifestFiles?: readonly string[]
 }
 
 export interface Assembled {
@@ -240,10 +246,12 @@ export function assemble(input: AssembleInput): Assembled {
           add(`dep:${mp}`, { k: 'dep', p: mp, h: state.fileDigest(mp) })
         }
       }
+      // The manifests that govern each module's format and subpath imports. A test that imports
+      // a manifest itself has it as a module, compared in full.
       for (const absolute of modulesByPath.keys()) {
         for (const manifest of manifestsFor(absolute)) {
           const mp = toRepoPath(root, manifest)
-          add(`file:${mp}`, { k: 'file', p: mp, h: state.fileDigest(mp) })
+          add(`manifest:${mp}`, { k: 'manifest', p: mp, h: state.manifestDigest(mp) })
         }
       }
       for (const obs of payload.paths) {
@@ -251,6 +259,12 @@ export function assemble(input: AssembleInput): Assembled {
         const p = toRepoPath(root, obs.p)
         if (obs.kind === 'dir') {
           add(`dir:${p}`, { k: 'dir', p, h: obs.type === 'dir' ? state.dirDigest(p) : null })
+        } else if (obs.kind === 'manifest' && (obs.type === 'file' || obs.type === 'absent')) {
+          add(`manifest:${p}`, {
+            k: 'manifest',
+            p,
+            h: obs.type === 'absent' ? null : state.manifestDigest(p),
+          })
         } else if (obs.kind === 'read' && (obs.type === 'file' || obs.type === 'absent')) {
           add(`file:${p}`, { k: 'file', p, h: obs.type === 'absent' ? null : state.fileDigest(p) })
         } else {
@@ -318,8 +332,12 @@ export function assemble(input: AssembleInput): Assembled {
     if (testFiles.has(obs.p)) continue
     const p = toRepoPath(root, obs.p)
     let entry: ClosureEntry
-    if (obs.kind === 'read' && (obs.type === 'file' || obs.type === 'absent')) {
-      entry = { k: 'file', p, h: obs.type === 'absent' ? null : state.fileDigest(p) }
+    if ((obs.kind === 'read' || obs.kind === 'manifest') && (obs.type === 'file' || obs.type === 'absent')) {
+      // The toolchain reads manifests for module format, resolution and dependency names. A
+      // configuration file that imports a manifest records its full content as well, below.
+      const k = path.basename(p) === 'package.json' ? 'manifest' : 'file'
+      if (obs.type === 'absent') entry = { k, p, h: null }
+      else entry = k === 'manifest' ? { k, p, h: state.manifestDigest(p) } : { k, p, h: state.fileDigest(p) }
     } else {
       entry = { k: 'stat', p, t: obs.type }
     }
@@ -343,6 +361,15 @@ export function assemble(input: AssembleInput): Assembled {
     if (ignored(absolute) || testFiles.has(absolute) || !isInside(root, absolute)) continue
     const p = toRepoPath(root, absolute)
     const entry: ClosureEntry = { k: 'file', p, h: state.fileDigest(p) }
+    const key = entryKey(entry)
+    if (sharedSeen.has(key)) continue
+    sharedSeen.add(key)
+    shared.push(entry)
+  }
+  for (const absolute of input.manifestFiles ?? []) {
+    if (ignored(absolute) || !isInside(root, absolute)) continue
+    const p = toRepoPath(root, absolute)
+    const entry: ClosureEntry = { k: 'manifest', p, h: state.manifestDigest(p) }
     const key = entryKey(entry)
     if (sharedSeen.has(key)) continue
     sharedSeen.add(key)

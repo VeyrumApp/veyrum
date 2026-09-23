@@ -30,9 +30,18 @@ If the latest record for a file is a failure, the file always runs.
 | `mod` | repository module | raw source digest, plus unit fingerprints of the executed code | V8 precise coverage (function granularity) on the code Vite served |
 | `dep` | file loaded outside the transform pipeline, or a package manifest | content digest | V8 script list, `process.dlopen`, manifest lookup |
 | `file` | file read through `fs` | content digest, or absent | `fs` and `fs/promises` hooks |
+| `manifest` | repository `package.json` the toolchain read, or that governs a module | manifest digest (below), or absent | runner main process reads, module lookup, reads by known manifest readers |
 | `stat` | existence or type check | file, directory, other or absent | `fs` hooks |
 | `dir` | directory listing | digest of entry names | `readdir` and `opendir` hooks |
 | `env` | environment variable | value digest, or unset | `process.env` proxy |
+
+A manifest digest covers every field of a `package.json` except `scripts` and the version ranges
+of dependencies; dependency names are kept. The toolchain reads repository manifests for module
+format, resolution, dependency names and its own configuration fields (`jest`, `babel`,
+`browserslist`), and what is actually installed is recorded by each loaded package's own
+manifest. A manifest a test reads or imports itself is a `file` or `mod` entry, compared in full,
+and so is one a runner configuration file imports. Manifest readers are recognized by stack
+frame: Jest's resolver and Babel's configuration loader.
 
 ## Unit fingerprints
 
@@ -163,6 +172,9 @@ These produce no capture, so they always run. Both are safe and cost little:
    is treated as benign.
 6. **Volatile environment variables.** Variables in the volatile list (CI run identifiers,
    Vitest worker ids, terminal session variables) do not affect outcomes.
+7. **Manifest readers.** Code in the runner's main process, and the known manifest readers in
+   workers, use neither dependency version ranges nor scripts from a repository manifest. A
+   plugin that did would change what it emits, which the transform-output fingerprints observe.
 
 The audit (full runs on the main branch, plus sampled re-execution of reused files) is the
 backstop for every assumption. Its escape rate is the real safety number.

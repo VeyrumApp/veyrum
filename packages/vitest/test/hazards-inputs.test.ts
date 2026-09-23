@@ -144,6 +144,56 @@ describe('environment', () => {
 })
 
 describe('dependencies and configuration', () => {
+  function manifest(fields: Record<string, unknown>): string {
+    return JSON.stringify({ name: 'manifest', private: true, type: 'module', ...fields }, null, 2)
+  }
+
+  test('a version range or script in package.json is not an input of the run; other fields are', () => {
+    sandbox = new Sandbox('manifest')
+      .write(
+        'package.json',
+        manifest({ scripts: { lint: 'eslint .' }, devDependencies: { eslint: '^10.8.0' } }),
+      )
+      .write('test/plain.test.ts', PLAIN_TEST)
+    sandbox.capture()
+    sandbox.write(
+      'package.json',
+      manifest({ scripts: { lint: 'eslint . --fix' }, devDependencies: { eslint: '^10.10.0' } }),
+    )
+    expect(sandbox.actions()['test/plain.test.ts']).toBe('skip')
+    sandbox.write(
+      'package.json',
+      manifest({
+        scripts: { lint: 'eslint . --fix' },
+        devDependencies: { eslint: '^10.10.0', prettier: '^3.0.0' },
+      }),
+    )
+    expect(sandbox.actions()['test/plain.test.ts']).toBe('run')
+    sandbox.capture()
+    sandbox.write(
+      'package.json',
+      manifest({
+        scripts: { lint: 'eslint . --fix' },
+        devDependencies: { eslint: '^10.10.0', prettier: '^3.0.0' },
+        imports: { '#src/*': './src/*' },
+      }),
+    )
+    expect(sandbox.actions()['test/plain.test.ts']).toBe('run')
+  })
+
+  test('a test that imports package.json depends on all of it', () => {
+    sandbox = new Sandbox('manifest-import')
+      .write('package.json', manifest({ devDependencies: { eslint: '^10.8.0' } }))
+      .write(
+        'test/manifest.test.ts',
+        "import { expect, test } from 'vitest'\nimport pkg from '../package.json'\ntest('deps', () => expect(Object.values(pkg.devDependencies)).toContain('^10.8.0'))\n",
+      )
+      .write('test/plain.test.ts', PLAIN_TEST)
+    sandbox.capture()
+    sandbox.write('package.json', manifest({ devDependencies: { eslint: '^10.10.0' } }))
+    expect(sandbox.actions()).toEqual({ 'test/manifest.test.ts': 'run', 'test/plain.test.ts': 'skip' })
+  })
+
   function depProject(name: string): Sandbox {
     sandbox = new Sandbox(name)
       .write(
