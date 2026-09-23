@@ -280,9 +280,10 @@ export async function replay(corpus: Corpus, benchRoot: string, options: ReplayO
           const entry = veyrumReasons[d.reason] ?? { count: 0, details: [] }
           veyrumReasons[d.reason] = entry
           entry.count++
-          for (const detail of d.details) {
-            if (entry.details.length >= 5) break
-            if (!entry.details.includes(detail)) entry.details.push(detail)
+          for (const detail of d.details.length > 0 ? d.details : ['']) {
+            if (entry.details.length >= 8) break
+            const line = `${d.check.path}: ${detail}`
+            if (!entry.details.includes(line)) entry.details.push(line)
           }
         }
         checks = p.decisions.map((d) => d.check)
