@@ -30,7 +30,12 @@ interface RecordRow {
 export class Store {
   readonly file: string
   private readonly db: DatabaseSync
+  /**
+   * Recently hydrated closures, least recently used first. Bounded: a long-lived process (the
+   * benchmark rig, a server) must not accumulate every closure it ever read.
+   */
   private readonly closureCache = new Map<string, readonly ClosureEntry[]>()
+  private static readonly CLOSURE_CACHE_SIZE = 64
 
   private constructor(file: string, db: DatabaseSync) {
     this.file = file
@@ -155,6 +160,19 @@ export class Store {
     return runs
   }
 
+  /**
+   * The most recent records for a check, newest first, each hydrated only when reached: a planner
+   * that stops at the first reusable record never decompresses the others.
+   */
+  *candidates(check: CheckRef, limit = 20): Generator<EvidenceRecord> {
+    const rows = this.db
+      .prepare(
+        'SELECT * FROM records WHERE check_path = ? AND project = ? ORDER BY created_at DESC, id LIMIT ?',
+      )
+      .all(check.path, check.project, limit) as unknown as RecordRow[]
+    for (const row of rows) yield this.hydrate(row)
+  }
+
   recordsFor(check: CheckRef, limit = 20): EvidenceRecord[] {
     const rows = this.db
       .prepare(
@@ -268,15 +286,29 @@ export class Store {
     this.db.prepare('INSERT OR REPLACE INTO unit_cache (key, units) VALUES (?, ?)').run(key, text)
   }
 
-  private hydrate(row: RecordRow): EvidenceRecord {
-    let closure = this.closureCache.get(row.closure_digest)
-    if (!closure) {
-      const blob = this.db.prepare('SELECT data FROM blobs WHERE digest = ?').get(row.closure_digest) as
-        | { data: Uint8Array }
-        | undefined
-      closure = blob ? (JSON.parse(brotliDecompressSync(blob.data).toString('utf8')) as ClosureEntry[]) : []
-      this.closureCache.set(row.closure_digest, closure)
+  private closure(digest: string): readonly ClosureEntry[] {
+    const cached = this.closureCache.get(digest)
+    if (cached) {
+      this.closureCache.delete(digest)
+      this.closureCache.set(digest, cached)
+      return cached
     }
+    const blob = this.db.prepare('SELECT data FROM blobs WHERE digest = ?').get(digest) as
+      | { data: Uint8Array }
+      | undefined
+    const closure = blob
+      ? (JSON.parse(brotliDecompressSync(blob.data).toString('utf8')) as ClosureEntry[])
+      : []
+    this.closureCache.set(digest, closure)
+    if (this.closureCache.size > Store.CLOSURE_CACHE_SIZE) {
+      const oldest = this.closureCache.keys().next().value
+      if (oldest !== undefined) this.closureCache.delete(oldest)
+    }
+    return closure
+  }
+
+  private hydrate(row: RecordRow): EvidenceRecord {
+    const closure = this.closure(row.closure_digest)
     return {
       id: row.id,
       check: row.check_path,

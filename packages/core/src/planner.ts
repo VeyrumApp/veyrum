@@ -167,15 +167,13 @@ export async function plan(options: PlanOptions): Promise<Decision[]> {
   }
 
   const decide = async (check: CheckRef): Promise<Decision> => {
-    const records = options.store.recordsFor(check, policy.maxCandidates)
-    const latest = records[0]
-    if (!latest)
-      return decision(check, 'run', 'no-evidence', null, ['no evidence recorded for this check'], 0, [], 0)
+    let latest: EvidenceRecord | undefined
     let firstRejection: { reason: Decision['reason']; record: EvidenceRecord; details: string[] } | undefined
     const reject = (reason: Decision['reason'], record: EvidenceRecord, details: string[]): void => {
       if (!firstRejection) firstRejection = { reason, record, details }
     }
-    for (const record of records) {
+    for (const record of options.store.candidates(check, policy.maxCandidates)) {
+      latest ??= record
       if (record.verdict !== 'pass') {
         reject('no-evidence', record, ['the most recent evidence is a failure'])
         // A failure at identical inputs means the check still fails; never skip past it.
@@ -213,7 +211,9 @@ export async function plan(options: PlanOptions): Promise<Decision[]> {
           : 'inputs-changed'
       reject(reason, record, changes)
     }
-    const r = firstRejection!
+    if (!latest || !firstRejection)
+      return decision(check, 'run', 'no-evidence', null, ['no evidence recorded for this check'], 0, [], 0)
+    const r = firstRejection
     return decision(
       check,
       'run',
@@ -226,8 +226,17 @@ export async function plan(options: PlanOptions): Promise<Decision[]> {
     )
   }
 
-  return Promise.all(options.checks.map(decide))
+  // Bounded concurrency: checks wait on transforms, but each holds its candidate records in memory.
+  const out: Decision[] = new Array(options.checks.length)
+  let next = 0
+  const worker = async (): Promise<void> => {
+    for (let i = next++; i < options.checks.length; i = next++) out[i] = await decide(options.checks[i]!)
+  }
+  await Promise.all(Array.from({ length: Math.min(PLAN_CONCURRENCY, options.checks.length) }, worker))
+  return out
 }
+
+const PLAN_CONCURRENCY = 8
 
 function decision(
   check: CheckRef,
