@@ -9,9 +9,14 @@ on:
       corpora:
         description: JSON array of corpus names, for example ["vue-core", "date-fns"]
         default: '["vue-core"]'
+      preset:
+        description: "full: the corpus defaults and the inputs below. quick: 10 commits, 2 mutants each, one shard per corpus (about 30-40 minutes), for iterating; inputs below still override"
+        type: choice
+        options: [full, quick]
+        default: full
       shards:
-        description: Parallel shards per corpus
-        default: '4'
+        description: Parallel shards per corpus (empty for the preset's)
+        default: ''
       commits:
         description: Commits to replay (empty for the corpus default)
         default: ''
@@ -51,19 +56,31 @@ jobs:
       - id: plan
         env:
           CORPORA: ${{ inputs.corpora }}
+          PRESET: ${{ inputs.preset }}
           SHARDS: ${{ inputs.shards }}
           UNTIL: ${{ inputs.until }}
+          COMMITS: ${{ inputs.commits }}
+          MUTANTS: ${{ inputs.mutants-per-commit }}
+          EVERY: ${{ inputs.mutation-every }}
         run: |
           node --input-type=module -e '
             import fs from "node:fs"
             import { execFileSync } from "node:child_process"
+            const quick = process.env.PRESET === "quick"
+            const pick = (value, preset) => value || (quick ? preset : "")
+            const settings = {
+              shards: Number(pick(process.env.SHARDS, "1") || "4"),
+              commits: pick(process.env.COMMITS, "10"),
+              mutants: pick(process.env.MUTANTS, "2"),
+              every: pick(process.env.EVERY, "1"),
+            }
             const include = []
             for (const name of JSON.parse(process.env.CORPORA)) {
               const corpus = JSON.parse(fs.readFileSync(`bench/corpora/${name}.json`, "utf8"))
               // Pin the range once so every shard replays the same history.
               const until = process.env.UNTIL || corpus.until ||
                 execFileSync("git", ["ls-remote", corpus.repo, `refs/heads/${corpus.branch}`], { encoding: "utf8" }).split("\t")[0]
-              for (let shard = 0; shard < Number(process.env.SHARDS); shard++) include.push({ corpus: name, shard, until })
+              for (let shard = 0; shard < settings.shards; shard++) include.push({ corpus: name, shard, until, ...settings })
             }
             fs.appendFileSync(process.env.GITHUB_OUTPUT, `matrix=${JSON.stringify({ include })}\n`)
             console.log(JSON.stringify(include, null, 2))
@@ -92,11 +109,11 @@ jobs:
         shell: bash
         env:
           CORPUS: ${{ matrix.corpus }}
-          SHARD: ${{ matrix.shard }}/${{ inputs.shards }}
+          SHARD: ${{ matrix.shard }}/${{ matrix.shards }}
           UNTIL: ${{ matrix.until }}
-          COMMITS: ${{ inputs.commits }}
-          MUTANTS: ${{ inputs.mutants-per-commit }}
-          EVERY: ${{ inputs.mutation-every }}
+          COMMITS: ${{ matrix.commits }}
+          MUTANTS: ${{ matrix.mutants }}
+          EVERY: ${{ matrix.every }}
           VEYRUM_CPU_PROFILE: ${{ inputs.cpu-profile && format('{0}/profiles', runner.temp) || '' }}
           VEYRUM_JEST_COVERAGE: ${{ inputs.jest-coverage }}
         run: |

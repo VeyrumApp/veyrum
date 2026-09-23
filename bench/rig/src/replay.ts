@@ -1,6 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import { type CheckRef, digest, Store } from '@veyrum/core'
+import { type CheckRef, Store } from '@veyrum/core'
 import { type SelectionContext, selectFileClosure, selectFileCoverage, selectNaive } from './baselines.ts'
 import type { Corpus } from './corpus.ts'
 import { exec, git, KilledError } from './exec.ts'
@@ -101,20 +101,6 @@ export function readResults(file: string): ResultLine[] {
     .split('\n')
     .filter(Boolean)
     .map((l) => JSON.parse(l) as ResultLine)
-}
-
-function lockDigest(repo: string, lockfiles: readonly string[]): string {
-  return digest(
-    lockfiles
-      .map((f) => {
-        try {
-          return fs.readFileSync(path.join(repo, f), 'utf8')
-        } catch {
-          return ''
-        }
-      })
-      .join('\u0000'),
-  )
 }
 
 function checkout(repo: string, sha: string): void {
@@ -233,7 +219,6 @@ export async function replay(corpus: Corpus, benchRoot: string, options: ReplayO
   const done = readResults(paths.results).filter((r): r is CommitResult => r.kind === 'commit')
   const doneShas = new Set(done.map((r) => r.sha))
   let prev: CommitResult | undefined = done[done.length - 1]
-  let installedLock = ''
   const store = Store.open(paths.store)
   // Synchronous appends: everything else in the loop is synchronous, so a buffered stream would
   // never flush, and results must survive an interrupted replay.
@@ -254,11 +239,9 @@ export async function replay(corpus: Corpus, benchRoot: string, options: ReplayO
       const purged = store.forgetRevision(sha)
       if (purged > 0) log(`  discarded ${purged} run(s) recorded at this commit by an interrupted replay`)
       checkout(paths.repo, sha)
-      const lock = lockDigest(paths.repo, corpus.lockfiles)
-      if (lock !== installedLock || !fs.existsSync(path.join(paths.repo, 'node_modules'))) {
-        install(corpus, paths.repo)
-        installedLock = lock
-      }
+      // As CI does on every run. The clean removed what install generates outside node_modules
+      // (postinstall steps such as `nuxt prepare`), and a state CI never sees skews every selector.
+      install(corpus, paths.repo)
       prepare(corpus, paths.repo)
 
       const parent = prev?.sha ?? null
