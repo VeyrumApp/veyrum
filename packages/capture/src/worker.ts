@@ -61,8 +61,13 @@ interface IsolateState {
   heapAfterCollection: number
 }
 
-/** Heap growth after which dead code is collected before coverage starts again. */
-const COLLECT_AFTER_BYTES = 64 * 1024 * 1024
+/**
+ * Heap growth after which dead code is collected before coverage starts again. Each restart walks
+ * the heap and empties V8's compilation cache, which Jest relies on to recompile every module for
+ * each test file cheaply: at 64 MB, restarts on nearly every Apollo Client test file made compiling
+ * three times slower. At 256 MB the worker's peak memory stays within about 20% of plain Jest's.
+ */
+const COLLECT_AFTER_BYTES = 256 * 1024 * 1024
 
 function heapGrown(isolate: IsolateState): boolean {
   return process.memoryUsage().heapUsed - isolate.heapAfterCollection >= COLLECT_AFTER_BYTES
@@ -121,22 +126,8 @@ const JEST29_WRAPPER_START = '({"Object.<anonymous>":function('
 const JEST29_WRAPPER_OPEN = '){'
 const JEST29_WRAPPER_CLOSE = '\n}});'
 
-/**
- * Appended to every script Jest compiles while a file is captured, unique per file. Jest compiles
- * each module again for every test file; identical source would reuse V8's compiled functions,
- * which binary coverage reports only once per session. Unique source gives every file fresh
- * functions, so binary coverage (which, unlike count coverage, lets V8 optimize) reports each
- * function the file executes. A trailing comment shifts no offsets and no inner function's text.
- */
-const FILE_SUFFIX = /\n\/\/# veyrum-file \d+$/
-
-function withFileSuffix(code: string, file: number): string {
-  return `${code}\n//# veyrum-file ${file}`
-}
-
 /** The module code inside a script Jest compiled, and its offset in the script. */
-function jestModuleCode(compiled: string): { code: string; offset: number } {
-  const source = compiled.replace(FILE_SUFFIX, '')
+function jestModuleCode(source: string): { code: string; offset: number } {
   if (source.startsWith(JEST29_WRAPPER_START) && source.endsWith(JEST29_WRAPPER_CLOSE)) {
     const open = source.indexOf(JEST29_WRAPPER_OPEN, JEST29_WRAPPER_START.length)
     if (open > 0) {
@@ -151,16 +142,13 @@ function jestModuleCode(compiled: string): { code: string; offset: number } {
  * Records the source of every script compiled through node:vm, keyed by filename. Jest compiles
  * each module per test file this way, so this replaces asking the Debugger for script sources.
  */
-function installCompileHooks(isolate: IsolateState): void {
-  /** The source to compile: suffixed and recorded while a file is captured, else unchanged. */
-  const note = (filename: unknown, source: string): string => {
-    const map = isolate.compiled
-    if (!map || typeof filename !== 'string' || typeof source !== 'string') return source
-    const compiled = withFileSuffix(source, isolate.files)
+function installCompileHooks(compiled: () => Map<string, string[]> | null): void {
+  const note = (filename: unknown, source: unknown): void => {
+    const map = compiled()
+    if (!map || typeof filename !== 'string' || typeof source !== 'string') return
     const list = map.get(filename)
-    if (list) list.push(compiled)
-    else map.set(filename, [compiled])
-    return compiled
+    if (list) list.push(source)
+    else map.set(filename, [source])
   }
   const mutableVm = vm as unknown as Record<string, unknown>
   const originalCompile = vm.compileFunction
@@ -168,14 +156,15 @@ function installCompileHooks(isolate: IsolateState): void {
     code: string,
     params?: readonly string[],
     options?: vm.CompileFunctionOptions,
-  ) => originalCompile(note(options?.filename, code), params, options)
+  ) => {
+    note(options?.filename, code)
+    return originalCompile(code, params, options)
+  }
   const OriginalScript = vm.Script
   mutableVm.Script = class extends OriginalScript {
     constructor(code: string, options?: vm.ScriptOptions | string) {
-      super(
-        note(typeof options === 'string' ? options : options?.filename, code),
-        options as vm.ScriptOptions,
-      )
+      super(code, options as vm.ScriptOptions)
+      note(typeof options === 'string' ? options : options?.filename, code)
     }
   }
   const OriginalModule = (
@@ -184,7 +173,8 @@ function installCompileHooks(isolate: IsolateState): void {
   if (OriginalModule) {
     mutableVm.SourceTextModule = class extends OriginalModule {
       constructor(code: string, options?: { identifier?: string }) {
-        super(note(options?.identifier, code), options)
+        super(code, options)
+        note(options?.identifier, code)
       }
     }
   }
@@ -312,7 +302,7 @@ export function prepareWorkerHooks(options: WorkerCaptureOptions): void {
   }
   g[ISOLATE_KEY] = isolate
   if (options.layout === 'jest') {
-    installCompileHooks(isolate)
+    installCompileHooks(() => isolate.compiled)
     isolate.toolchainObserved = recordToolchain(isolate.toolchain, isolate.toolchainFiles)
   }
 }
@@ -342,9 +332,13 @@ export async function beginWorkerCapture(options: WorkerCaptureOptions): Promise
   const isolate = (globalThis as unknown as Record<symbol, IsolateState>)[ISOLATE_KEY]!
   const layout = options.layout ?? 'vitest'
   // Under Jest one session serves every file of the process: starting coverage deoptimizes all code
-  // and walks the heap, which per file would dominate the cost of short test files. Each file
-  // compiles its modules afresh (FILE_SUFFIX), so a take reports only that file's executions. The
-  // session is restarted, after a collection, once the functions it pins have grown the heap.
+  // and walks the heap, which per file would dominate the cost of short test files. Counts are reset
+  // by each take, so a file sees only its own executions. The session is restarted, after a
+  // collection, once the functions it pins have grown the heap.
+  // Count coverage keeps V8 from optimizing, which slows CPU-bound test code. Binary coverage does
+  // not, but reports each compiled function only once per session, and Jest's files share compiled
+  // functions through V8's compilation cache, so a later file's calls would go unreported. Giving
+  // each file unique source restores binary coverage but defeats the cache, which costs more.
   if (layout === 'jest' && isolate.session && heapGrown(isolate)) {
     const old = isolate.session
     isolate.session = null
@@ -357,9 +351,7 @@ export async function beginWorkerCapture(options: WorkerCaptureOptions): Promise
     fresh.connect()
     await collectDeadCode(fresh, isolate)
     await fresh.post('Profiler.enable')
-    // Binary coverage: count coverage keeps V8 from optimizing any function (about 14x slower on
-    // hot code). Under Jest, unique source per file (FILE_SUFFIX) keeps binary coverage exact.
-    await fresh.post('Profiler.startPreciseCoverage', { callCount: false, detailed: false })
+    await fresh.post('Profiler.startPreciseCoverage', { callCount: layout === 'jest', detailed: false })
     isolate.session = fresh
   }
   if (CPU_PROFILE_DIR) await isolate.session.post('Profiler.start')
