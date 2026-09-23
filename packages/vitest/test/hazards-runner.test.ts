@@ -166,6 +166,29 @@ describe.runIf(tracing)('child processes', () => {
     expect(sandbox.actions()['test/child.test.ts']).toBe('run')
   })
 
+  test('a traced process that forks keeps its IPC channel undisturbed', () => {
+    sandbox = new Sandbox('child-fork')
+      .write('fixtures/x.txt', 'a')
+      // Started without an IPC channel, the child's tracer log takes the lowest free descriptor,
+      // where fork then puts the grandchild's IPC channel.
+      .write(
+        'fixtures/child.cjs',
+        "const grandchild = require('child_process').fork('fixtures/grandchild.cjs')\ngrandchild.once('message', (m) => { process.stdout.write(m); grandchild.kill() })\n",
+      )
+      .write(
+        'fixtures/grandchild.cjs',
+        "process.send(require('fs').readFileSync('fixtures/x.txt', 'utf8'))\n",
+      )
+      .write(
+        'test/child.test.ts',
+        spawnTest("  expect(execFileSync(process.execPath, ['fixtures/child.cjs']).toString()).toBe('a')"),
+      )
+    sandbox.capture()
+    expect(sandbox.actions()['test/child.test.ts']).toBe('skip')
+    sandbox.write('fixtures/x.txt', 'b')
+    expect(sandbox.actions()['test/child.test.ts']).toBe('run')
+  })
+
   test('programs a shell runs are traced too', () => {
     sandbox = new Sandbox('child-shell')
       .write('fixtures/x.txt', 'abc')

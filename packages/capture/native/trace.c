@@ -16,8 +16,8 @@
  * calls (for example the files setlocale or NSS read) are not, which is why those live outside
  * the repository and are covered by the runtime key. Statically linked programs and Go programs
  * make system calls directly, so executing one is reported as untraceable ("u"), which ends reuse.
- * Every exec re-injects LD_PRELOAD and VEYRUM_TRACE, so a program that clears its environment
- * cannot drop the tracer for its children.
+ * Every exec restores LD_PRELOAD and VEYRUM_TRACE when they are missing, so a program that clears
+ * its environment cannot drop the tracer for its children.
  */
 #define _GNU_SOURCE
 #include <dirent.h>
@@ -71,6 +71,31 @@ static void *lookup(const char *name) {
   return p;
 }
 
+/* The log's identity: programs can reuse its descriptor number (dup2), so it is checked per write. */
+static dev_t log_dev;
+static ino_t log_ino;
+
+/* Descriptors from here up are unlikely to be chosen by the program for its own purposes. */
+#define LOG_FD_FLOOR 900
+
+static int log_open(void) {
+  int fd = (int)sys(SYS_openat, AT_FDCWD, trace_value, O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC, 0600);
+  if (fd < 0) return -1;
+  int high = (int)sys(SYS_fcntl, fd, F_DUPFD_CLOEXEC, LOG_FD_FLOOR);
+  if (high >= 0) {
+    sys(SYS_close, fd);
+    fd = high;
+  }
+  struct stat st;
+  if (sys(SYS_fstat, fd, &st) != 0) {
+    sys(SYS_close, fd);
+    return -1;
+  }
+  log_dev = st.st_dev;
+  log_ino = st.st_ino;
+  return fd;
+}
+
 static void log_init(void) {
   sys = (long (*)(long, ...))lookup("syscall");
   const char *trace = getenv("VEYRUM_TRACE");
@@ -79,7 +104,21 @@ static void log_init(void) {
   if (!preload || strlen(preload) >= sizeof preload_value) return;
   strcpy(trace_value, trace);
   strcpy(preload_value, preload);
-  log_fd = (int)sys(SYS_openat, AT_FDCWD, trace, O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC, 0600);
+  log_fd = log_open();
+}
+
+/*
+ * Appends to the log, first making sure the descriptor still is the log: a forked child about to
+ * exec, or a shell handling a redirection, may have put another file (an IPC channel) at its number.
+ */
+static void log_write(const char *buf, size_t len) {
+  struct stat st;
+  if (sys(SYS_fstat, log_fd, &st) != 0 || st.st_dev != log_dev || st.st_ino != log_ino) {
+    int fd = log_open();
+    if (fd < 0) return;
+    log_fd = fd;
+  }
+  sys(SYS_write, log_fd, buf, len);
 }
 
 __attribute__((constructor)) static void veyrum_trace_init(void) { log_init(); }
@@ -125,12 +164,12 @@ static void emit_at(char kind, int dirfd, const char *path) {
   /* A path that does not fit, or that contains a newline, cannot be recorded faithfully. */
   if (at >= sizeof line - 1 || strchr(path, '\n')) {
     static const char overflow[] = "u unrecordable path\n";
-    sys(SYS_write, log_fd, overflow, sizeof overflow - 1);
+    log_write(overflow, sizeof overflow - 1);
     errno = saved;
     return;
   }
   line[at++] = '\n';
-  sys(SYS_write, log_fd, line, at);
+  log_write(line, at);
   errno = saved;
 }
 
@@ -732,7 +771,11 @@ EXPORT int connect(int fd, const struct sockaddr *addr, socklen_t len) {
       const struct sockaddr_un *un = (const struct sockaddr_un *)addr;
       n = snprintf(line, sizeof line, "n unix:%.*s 0\n", (int)sizeof un->sun_path, un->sun_path[0] ? un->sun_path : "abstract");
     }
-    if (n > 0 && (size_t)n < sizeof line) sys(SYS_write, log_fd, line, (size_t)n);
+    if (n > 0 && (size_t)n < sizeof line) {
+      int saved = errno;
+      log_write(line, (size_t)n);
+      errno = saved;
+    }
   }
   return r;
 }
@@ -834,28 +877,59 @@ static void record_exec(const char *resolved) {
   busy = 0;
 }
 
-/*
- * The environment for an exec: the given one, with LD_PRELOAD and VEYRUM_TRACE restored to this
- * process's values. Written into `out`, which has room for the given entries plus three.
- */
-static char *preload_entry;
-static char *trace_entry;
-static void traced_env(char *const envp[], char **out) {
-  if (!preload_entry) {
-    static char p[sizeof preload_value + 16];
-    static char t[sizeof trace_value + 16];
-    snprintf(p, sizeof p, "LD_PRELOAD=%s", preload_value);
-    snprintf(t, sizeof t, "VEYRUM_TRACE=%s", trace_value);
-    preload_entry = p;
-    trace_entry = t;
+/* This library's own file name, from the dynamic loader. */
+static const char *own_path(void) {
+  static char path[PATH_MAX];
+  if (!path[0]) {
+    Dl_info info;
+    if (dladdr((void *)own_path, &info) && info.dli_fname && strlen(info.dli_fname) < sizeof path)
+      strcpy(path, info.dli_fname);
   }
+  return path;
+}
+
+/* Whether a colon-separated LD_PRELOAD value lists this library. */
+static int lists_library(const char *value) {
+  const char *own = own_path();
+  size_t len = strlen(own);
+  if (!len) return 0;
+  for (const char *p = value; (p = strstr(p, own)) != NULL; p += len)
+    if ((p == value || p[-1] == ':' || p[-1] == ' ') && (p[len] == '\0' || p[len] == ':' || p[len] == ' ')) return 1;
+  return 0;
+}
+
+/*
+ * The environment for an exec: the given one, with the tracer restored if the program removed it.
+ * A VEYRUM_TRACE that is present is kept: a traced process that starts a child for its own capture
+ * (Veyrum testing itself) points it at another log on purpose. Written into `out`, which has room
+ * for the given entries plus three.
+ */
+static char preload_entry[sizeof preload_value + PATH_MAX + 16];
+static char trace_entry[sizeof trace_value + 16];
+static void traced_env(char *const envp[], char **out) {
+  const char *preload = NULL;
+  int has_trace = 0;
   size_t n = 0;
   for (char *const *e = envp; e && *e; e++) {
-    if (strncmp(*e, "LD_PRELOAD=", 11) == 0 || strncmp(*e, "VEYRUM_TRACE=", 13) == 0) continue;
+    if (strncmp(*e, "LD_PRELOAD=", 11) == 0) {
+      preload = *e + 11;
+      continue;
+    }
+    if (strncmp(*e, "VEYRUM_TRACE=", 13) == 0 && (*e)[13]) has_trace = 1;
     out[n++] = *e;
   }
+  if (preload && lists_library(preload)) {
+    snprintf(preload_entry, sizeof preload_entry, "LD_PRELOAD=%s", preload);
+  } else if (preload && *preload) {
+    snprintf(preload_entry, sizeof preload_entry, "LD_PRELOAD=%s:%s", own_path(), preload);
+  } else {
+    snprintf(preload_entry, sizeof preload_entry, "LD_PRELOAD=%s", preload_value);
+  }
   out[n++] = preload_entry;
-  out[n++] = trace_entry;
+  if (!has_trace) {
+    snprintf(trace_entry, sizeof trace_entry, "VEYRUM_TRACE=%s", trace_value);
+    out[n++] = trace_entry;
+  }
   out[n] = NULL;
 }
 
