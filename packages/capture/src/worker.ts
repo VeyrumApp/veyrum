@@ -126,8 +126,23 @@ const JEST29_WRAPPER_START = '({"Object.<anonymous>":function('
 const JEST29_WRAPPER_OPEN = '){'
 const JEST29_WRAPPER_CLOSE = '\n}});'
 
+/**
+ * Experimental: Jest coverage mode. Count coverage (the default) keeps V8 from optimizing; binary
+ * coverage does not, but needs each file to compile its modules afresh (FILE_SUFFIX), which
+ * defeats V8's compilation cache. Which costs less depends on the suite.
+ */
+const JEST_BINARY_COVERAGE = process.env.VEYRUM_JEST_COVERAGE === 'binary'
+
+/**
+ * Appended under binary coverage to every script Jest compiles while a file is captured, unique
+ * per file: binary coverage reports each compiled function once per session, and identical
+ * source would reuse earlier files' functions. A trailing comment shifts no offsets.
+ */
+const FILE_SUFFIX = /\n\/\/# veyrum-file \d+$/
+
 /** The module code inside a script Jest compiled, and its offset in the script. */
-function jestModuleCode(source: string): { code: string; offset: number } {
+function jestModuleCode(compiled: string): { code: string; offset: number } {
+  const source = compiled.replace(FILE_SUFFIX, '')
   if (source.startsWith(JEST29_WRAPPER_START) && source.endsWith(JEST29_WRAPPER_CLOSE)) {
     const open = source.indexOf(JEST29_WRAPPER_OPEN, JEST29_WRAPPER_START.length)
     if (open > 0) {
@@ -142,13 +157,16 @@ function jestModuleCode(source: string): { code: string; offset: number } {
  * Records the source of every script compiled through node:vm, keyed by filename. Jest compiles
  * each module per test file this way, so this replaces asking the Debugger for script sources.
  */
-function installCompileHooks(compiled: () => Map<string, string[]> | null): void {
-  const note = (filename: unknown, source: unknown): void => {
-    const map = compiled()
-    if (!map || typeof filename !== 'string' || typeof source !== 'string') return
+function installCompileHooks(isolate: IsolateState): void {
+  /** The source to compile: recorded while a file is captured, and suffixed under binary coverage. */
+  const note = (filename: unknown, source: string): string => {
+    const map = isolate.compiled
+    if (!map || typeof filename !== 'string' || typeof source !== 'string') return source
+    const compiled = JEST_BINARY_COVERAGE ? `${source}\n//# veyrum-file ${isolate.files}` : source
     const list = map.get(filename)
-    if (list) list.push(source)
-    else map.set(filename, [source])
+    if (list) list.push(compiled)
+    else map.set(filename, [compiled])
+    return compiled
   }
   const mutableVm = vm as unknown as Record<string, unknown>
   const originalCompile = vm.compileFunction
@@ -156,15 +174,14 @@ function installCompileHooks(compiled: () => Map<string, string[]> | null): void
     code: string,
     params?: readonly string[],
     options?: vm.CompileFunctionOptions,
-  ) => {
-    note(options?.filename, code)
-    return originalCompile(code, params, options)
-  }
+  ) => originalCompile(note(options?.filename, code), params, options)
   const OriginalScript = vm.Script
   mutableVm.Script = class extends OriginalScript {
     constructor(code: string, options?: vm.ScriptOptions | string) {
-      super(code, options as vm.ScriptOptions)
-      note(typeof options === 'string' ? options : options?.filename, code)
+      super(
+        note(typeof options === 'string' ? options : options?.filename, code),
+        options as vm.ScriptOptions,
+      )
     }
   }
   const OriginalModule = (
@@ -173,8 +190,7 @@ function installCompileHooks(compiled: () => Map<string, string[]> | null): void
   if (OriginalModule) {
     mutableVm.SourceTextModule = class extends OriginalModule {
       constructor(code: string, options?: { identifier?: string }) {
-        super(code, options)
-        note(options?.identifier, code)
+        super(note(options?.identifier, code), options)
       }
     }
   }
@@ -302,7 +318,7 @@ export function prepareWorkerHooks(options: WorkerCaptureOptions): void {
   }
   g[ISOLATE_KEY] = isolate
   if (options.layout === 'jest') {
-    installCompileHooks(() => isolate.compiled)
+    installCompileHooks(isolate)
     isolate.toolchainObserved = recordToolchain(isolate.toolchain, isolate.toolchainFiles)
   }
 }
@@ -351,7 +367,10 @@ export async function beginWorkerCapture(options: WorkerCaptureOptions): Promise
     fresh.connect()
     await collectDeadCode(fresh, isolate)
     await fresh.post('Profiler.enable')
-    await fresh.post('Profiler.startPreciseCoverage', { callCount: layout === 'jest', detailed: false })
+    await fresh.post('Profiler.startPreciseCoverage', {
+      callCount: layout === 'jest' && !JEST_BINARY_COVERAGE,
+      detailed: false,
+    })
     isolate.session = fresh
   }
   if (CPU_PROFILE_DIR) await isolate.session.post('Profiler.start')

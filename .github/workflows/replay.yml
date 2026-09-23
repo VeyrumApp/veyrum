@@ -28,6 +28,11 @@ on:
         description: Write a CPU profile of every capture window (diagnostics; use a short range)
         type: boolean
         default: false
+      jest-coverage:
+        description: Jest coverage mode (experimental)
+        type: choice
+        options: [count, binary]
+        default: count
 
 # Replays execute third-party code (every commit's install scripts and tests), so the workflow
 # token is read-only and never left in the checkout.
@@ -93,6 +98,7 @@ jobs:
           MUTANTS: ${{ inputs.mutants-per-commit }}
           EVERY: ${{ inputs.mutation-every }}
           VEYRUM_CPU_PROFILE: ${{ inputs.cpu-profile && format('{0}/profiles', runner.temp) || '' }}
+          VEYRUM_JEST_COVERAGE: ${{ inputs.jest-coverage }}
         run: |
           args=(--bench "$RUNNER_TEMP/bench" --overhead-every 4 --shard "$SHARD" --until "$UNTIL")
           if [ -n "$COMMITS" ]; then args+=(--commits "$COMMITS"); fi
