@@ -442,9 +442,17 @@ function* runMutants(
             [],
             Math.round(Math.max(120_000, captureWallMs * 3)),
           )
-          killed = [...kill.outcomes]
+          const failing = [...kill.outcomes]
             .filter(([f, o]) => o.verdict === 'fail' && outcomes.get(f)?.verdict === 'pass')
             .map(([f]) => f)
+          // A flaky file can fail once under any mutant: a kill counts only if it fails again.
+          if (failing.length > 0) {
+            const again = plainRun(corpus, paths.testRoot, paths.scratch, failing)
+            killed = failing.filter((f) => again.outcomes.get(f)?.verdict === 'fail')
+            const flaky = failing.length - killed.length
+            if (flaky > 0)
+              log(`  mutant ${m.file}:${m.line}: ${flaky} failing file(s) passed on rerun, not counted`)
+          }
         } catch (error) {
           if (error instanceof KilledError) throw error
           timedOut = true
