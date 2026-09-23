@@ -164,6 +164,22 @@ export function renderReport(title: string, lines: readonly ResultLine[]): strin
   }
   out.push('')
 
+  out.push('## Per commit (share of test time run)', '')
+  const perCommit = BASELINES.filter((name) => name !== 'all')
+  out.push(`| # | Commit | Change | Files changed | Veyrum files | ${perCommit.join(' | ')} |`)
+  out.push(`| --- | --- | --- | --- | --- | ${perCommit.map(() => '---').join(' | ')} |`)
+  for (const c of commits) {
+    const veyrumFiles = c.baselines?.veyrum?.selected
+    const cells = perCommit.map((name) => {
+      const b = c.baselines?.[name]
+      return b && b.selected !== null ? pct(b.selectedMs / Math.max(1, c.totalMs)) : '-'
+    })
+    out.push(
+      `| ${c.index} | ${c.sha.slice(0, 7)} | ${changeType(c.changed)} | ${c.changed.length} | ${veyrumFiles ? `${veyrumFiles.length} / ${c.testFiles}` : '-'} | ${cells.join(' | ')} |`,
+    )
+  }
+  out.push('')
+
   if (killed.length > 0) {
     out.push('## Mutants', '')
     out.push(`| Selector | Mutant escapes | Median files selected |`)
