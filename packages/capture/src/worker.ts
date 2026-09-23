@@ -127,9 +127,12 @@ const JEST29_WRAPPER_OPEN = '){'
 const JEST29_WRAPPER_CLOSE = '\n}});'
 
 /**
- * Experimental: Jest coverage mode. Count coverage (the default) keeps V8 from optimizing; binary
- * coverage does not, but needs each file to compile its modules afresh (FILE_SUFFIX), which
- * defeats V8's compilation cache. Which costs less depends on the suite.
+ * Jest coverage mode. Count coverage (the default) keeps V8 from optimizing any code in the worker,
+ * the toolchain included; binary coverage does not, but needs each file to compile its modules
+ * afresh (FILE_SUFFIX), which defeats V8's compilation cache. Replays measured count coverage
+ * cheaper where recompiling dominates (Apollo Client +40% against +81%, twenty +124% against
+ * +242%) and binary coverage cheaper where ts-jest type-checks in the workers (apollo-server +53%
+ * against +91%). A V8 code cache across files made binary coverage slower overall.
  */
 const JEST_BINARY_COVERAGE = process.env.VEYRUM_JEST_COVERAGE === 'binary'
 
@@ -157,64 +160,16 @@ function jestModuleCode(compiled: string): { code: string; offset: number } {
  * Records the source of every script compiled through node:vm, keyed by filename. Jest compiles
  * each module per test file this way, so this replaces asking the Debugger for script sources.
  */
-/**
- * V8 code cache for the modules Jest compiles again for every test file, under binary coverage.
- * The per-file suffix defeats V8's in-memory compilation cache, but code cached for one file's
- * copy is accepted for another's: V8 checks the source length, which the fixed-width suffix keeps
- * equal, and deserializes fresh functions, as binary coverage needs. V8 does not compare the text
- * itself, so an entry is only used for exactly the source it was produced from. Least recently
- * used entries are evicted beyond a byte budget.
- */
-class CodeCache {
-  private readonly entries = new Map<string, { source: string; data: Buffer }>()
-  private bytes = 0
-  private readonly budget: number
-
-  constructor(budget: number) {
-    this.budget = budget
-  }
-
-  get(filename: string, source: string): Buffer | undefined {
-    const entry = this.entries.get(filename)
-    if (!entry || entry.source !== source) return undefined
-    this.entries.delete(filename)
-    this.entries.set(filename, entry)
-    return entry.data
-  }
-
-  set(filename: string, source: string, data: Buffer | undefined): void {
-    if (!data || data.length === 0 || data.length > this.budget) return
-    const old = this.entries.get(filename)
-    if (old) {
-      this.bytes -= old.data.length
-      this.entries.delete(filename)
-    }
-    this.entries.set(filename, { source, data })
-    this.bytes += data.length
-    for (const [key, entry] of this.entries) {
-      if (this.bytes <= this.budget) break
-      this.entries.delete(key)
-      this.bytes -= entry.data.length
-    }
-  }
-}
-
-const CODE_CACHE_BYTES = 256 * 1024 * 1024
-
 function installCompileHooks(isolate: IsolateState): void {
-  const cache = JEST_BINARY_COVERAGE ? new CodeCache(CODE_CACHE_BYTES) : null
-  /**
-   * While a file is captured: the source to compile (suffixed under binary coverage), recorded for
-   * the file, and cached code for it. Null otherwise: the caller's arguments are used unchanged.
-   */
-  const note = (filename: unknown, source: unknown): { code: string; cached: Buffer | undefined } | null => {
+  /** The source to compile: recorded while a file is captured, and suffixed under binary coverage. */
+  const note = (filename: unknown, source: string): string => {
     const map = isolate.compiled
-    if (!map || typeof filename !== 'string' || typeof source !== 'string') return null
-    const code = cache ? `${source}\n//# veyrum-file ${String(isolate.files).padStart(10, '0')}` : source
+    if (!map || typeof filename !== 'string' || typeof source !== 'string') return source
+    const compiled = JEST_BINARY_COVERAGE ? `${source}\n//# veyrum-file ${isolate.files}` : source
     const list = map.get(filename)
-    if (list) list.push(code)
-    else map.set(filename, [code])
-    return { code, cached: cache?.get(filename, source) }
+    if (list) list.push(compiled)
+    else map.set(filename, [compiled])
+    return compiled
   }
   const mutableVm = vm as unknown as Record<string, unknown>
   const originalCompile = vm.compileFunction
@@ -222,32 +177,14 @@ function installCompileHooks(isolate: IsolateState): void {
     code: string,
     params?: readonly string[],
     options?: vm.CompileFunctionOptions,
-  ) => {
-    const noted = note(options?.filename, code)
-    if (!noted) return originalCompile(code, params, options)
-    if (!cache) return originalCompile(noted.code, params, options)
-    // Cached data a caller supplied was made for the unsuffixed source.
-    const { cachedData: _callers, produceCachedData: _produce, ...rest } = options ?? {}
-    const fn = originalCompile(noted.code, params, {
-      ...rest,
-      ...(noted.cached ? { cachedData: noted.cached } : { produceCachedData: true }),
-    }) as ReturnType<typeof vm.compileFunction> & { cachedData?: Buffer; cachedDataRejected?: boolean }
-    if (!noted.cached || fn.cachedDataRejected) cache.set(options?.filename ?? '', code, fn.cachedData)
-    return fn
-  }
+  ) => originalCompile(note(options?.filename, code), params, options)
   const OriginalScript = vm.Script
   mutableVm.Script = class extends OriginalScript {
     constructor(code: string, options?: vm.ScriptOptions | string) {
-      const opts: vm.ScriptOptions = typeof options === 'string' ? { filename: options } : (options ?? {})
-      const noted = note(opts.filename, code)
-      if (!noted || !cache) {
-        super(noted?.code ?? code, options as vm.ScriptOptions)
-        return
-      }
-      const { cachedData: _callers, produceCachedData: _produce, ...rest } = opts
-      super(noted.code, noted.cached ? { ...rest, cachedData: noted.cached } : rest)
-      if (!noted.cached || this.cachedDataRejected)
-        cache.set(opts.filename ?? '', code, this.createCachedData())
+      super(
+        note(typeof options === 'string' ? options : options?.filename, code),
+        options as vm.ScriptOptions,
+      )
     }
   }
   const OriginalModule = (
@@ -256,7 +193,7 @@ function installCompileHooks(isolate: IsolateState): void {
   if (OriginalModule) {
     mutableVm.SourceTextModule = class extends OriginalModule {
       constructor(code: string, options?: { identifier?: string }) {
-        super(note(options?.identifier, code)?.code ?? code, options)
+        super(note(options?.identifier, code), options)
       }
     }
   }
