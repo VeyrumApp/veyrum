@@ -144,8 +144,8 @@ function ignored(absolute: string): boolean {
   return false
 }
 
-/** This package's directory: stack frames inside it are the hooks themselves. */
-const OWN_DIR = path.dirname(path.dirname(fileURLToPath(import.meta.url))) + path.sep
+/** This package's built output: stack frames inside it are the hooks themselves. */
+const OWN_DIR = path.dirname(fileURLToPath(import.meta.url)) + path.sep
 
 /**
  * File names of the calling frames, innermost first. Reads raw call sites instead of formatting a

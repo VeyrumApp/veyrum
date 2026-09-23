@@ -25,16 +25,15 @@ export function packageJsonAbove(file: string, name: string): { version: string;
 }
 
 /**
- * Directories holding Veyrum's own code (the adapter, capture and core packages), with and without
- * symlinks resolved, as path prefixes. Nothing under them is ever recorded as an input.
+ * Directories holding the code Veyrum runs (the built output of the adapter, capture and core
+ * packages), with and without symlinks resolved, as path prefixes. Nothing under them is recorded
+ * as an input. Only built output is excluded, never whole packages: when the project under test is
+ * Veyrum itself, its sources and tests are inputs like any other.
  */
-export function veyrumDirs(adapterDir: string): string[] {
+export function veyrumDirs(adapterDist: string): string[] {
   const require = createRequire(import.meta.url)
-  const dirs = new Set<string>([adapterDir])
-  for (const pkg of ['@veyrum/capture', '@veyrum/core']) {
-    const found = packageJsonAbove(require.resolve(pkg), pkg)
-    if (found) dirs.add(found.dir)
-  }
+  const dirs = new Set<string>([adapterDist])
+  for (const pkg of ['@veyrum/capture', '@veyrum/core']) dirs.add(path.dirname(require.resolve(pkg)))
   const out: string[] = []
   for (const d of dirs) {
     out.push(d + path.sep)

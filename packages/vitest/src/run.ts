@@ -126,7 +126,7 @@ export async function runVitest(options: VitestRunOptions): Promise<VitestRunRes
   const scratch = path.join(root, '.veyrum', 'tmp', runId)
   const files = listRepoFiles(root)
   const target = resolveTargetVitest(root)
-  const ownDirs = veyrumDirs(path.dirname(path.dirname(fileURLToPath(import.meta.url))))
+  const ownDirs = veyrumDirs(path.dirname(fileURLToPath(import.meta.url)))
   // Only the store's own files are ignored, never its directory: a store kept next to (or above)
   // the project would otherwise hide the whole project from capture.
   const ignored = [...ownDirs, scratch + path.sep, ...storeFiles(options.store.file)]

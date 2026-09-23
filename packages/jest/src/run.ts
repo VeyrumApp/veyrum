@@ -190,7 +190,7 @@ export async function runJest(options: JestRunOptions): Promise<RunResult> {
   const files = listRepoFiles(root)
   const target = resolveTargetJest(root)
   const here = path.dirname(fileURLToPath(import.meta.url))
-  const ignored = [...veyrumDirs(path.dirname(here)), scratch + path.sep, ...storeFiles(options.store.file)]
+  const ignored = [...veyrumDirs(here), scratch + path.sep, ...storeFiles(options.store.file)]
   const ownRequire = createRequire(import.meta.url)
 
   // The wrapper lives under a node_modules directory so no project transform applies to it, at a
