@@ -11,8 +11,37 @@ export interface ExecResult {
   readonly ms: number
 }
 
-/** Runs a command synchronously; the rig is deliberately sequential so timings are comparable. */
+/** A process ended by a signal or a shell reporting one (137 SIGKILL, 143 SIGTERM). */
+function killed(r: ExecResult): boolean {
+  return r.signal === 'SIGKILL' || r.signal === 'SIGTERM' || r.code === 137 || r.code === 143
+}
+
+/**
+ * Runs a command synchronously; the rig is deliberately sequential so timings are comparable.
+ * A run killed from outside (an out-of-memory killer on a shared machine) is retried after a pause,
+ * since its result says nothing about the code under test. Timeouts are not retried.
+ */
 export function exec(
+  command: string,
+  args: readonly string[],
+  options: { cwd: string; env?: NodeJS.ProcessEnv; timeoutMs?: number } = { cwd: process.cwd() },
+): ExecResult {
+  let result = execOnce(command, args, options)
+  for (
+    let attempt = 1;
+    attempt <= 3 && killed(result) && result.ms < (options.timeoutMs ?? Infinity) * 0.95;
+    attempt++
+  ) {
+    process.stderr.write(
+      `[rig] ${path.basename(command)} was killed (${result.signal ?? result.code}); retrying\n`,
+    )
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 30_000)
+    result = execOnce(command, args, options)
+  }
+  return result
+}
+
+function execOnce(
   command: string,
   args: readonly string[],
   options: { cwd: string; env?: NodeJS.ProcessEnv; timeoutMs?: number } = { cwd: process.cwd() },

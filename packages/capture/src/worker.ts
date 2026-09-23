@@ -57,6 +57,30 @@ interface IsolateState {
   /** Jest layout: files outside node_modules loaded natively (local transformers and plugins). */
   toolchainFiles: Set<string>
   toolchainObserved: boolean
+  /** Heap size after the last collection forced before starting coverage. */
+  heapAfterCollection: number
+}
+
+/** Heap growth after which dead code is collected before coverage starts again. */
+const COLLECT_AFTER_BYTES = 64 * 1024 * 1024
+
+/**
+ * Starting precise coverage walks the heap and pins every function it finds, including functions
+ * of contexts that are already dead but not yet collected, until coverage stops. A process that
+ * hosts many files in turn (Jest) never gets a full collection between one file's stop and the
+ * next file's start, so each start would pin all earlier files' dead contexts again, and memory
+ * would grow with every file. Collecting first releases them; doing it only after the heap has
+ * grown by a margin keeps the cost to one collection per several files.
+ */
+async function collectDeadCode(session: Session, isolate: IsolateState): Promise<void> {
+  if (isolate.files === 0) return
+  if (process.memoryUsage().heapUsed - isolate.heapAfterCollection < COLLECT_AFTER_BYTES) return
+  try {
+    await session.post('HeapProfiler.collectGarbage')
+  } catch {
+    // Without a collection, memory grows but results are unaffected.
+  }
+  isolate.heapAfterCollection = process.memoryUsage().heapUsed
 }
 
 /** Stack frames of Jest's module loader (its file cache reads each module before compiling it). */
@@ -228,6 +252,7 @@ export function prepareWorkerHooks(options: WorkerCaptureOptions): void {
     toolchain: new Set(),
     toolchainFiles: new Set(),
     toolchainObserved: true,
+    heapAfterCollection: 0,
   }
   g[ISOLATE_KEY] = isolate
   if (options.layout === 'jest') {
@@ -263,6 +288,7 @@ export async function beginWorkerCapture(options: WorkerCaptureOptions): Promise
     // by earlier files will not re-execute, so its payload is marked as coming from a reused isolate.
     const fresh = new Session()
     fresh.connect()
+    await collectDeadCode(fresh, isolate)
     await fresh.post('Profiler.enable')
     await fresh.post('Profiler.startPreciseCoverage', { callCount: false, detailed: false })
     isolate.session = fresh

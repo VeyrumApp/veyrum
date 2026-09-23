@@ -59,9 +59,11 @@ for (const [id, file] of Object.entries(config.environments)) environments.set(i
 
 let capture: { index: typeof Capture; worker: typeof CaptureWorker } | null = null
 function loadCapture(): { index: typeof Capture; worker: typeof CaptureWorker } {
-  capture ??= {
-    index: nativeRequire(config.captureIndex) as typeof Capture,
-    worker: nativeRequire(config.captureWorker) as typeof CaptureWorker,
+  if (!capture) {
+    capture = {
+      index: nativeRequire(config.captureIndex) as typeof Capture,
+      worker: nativeRequire(config.captureWorker) as typeof CaptureWorker,
+    }
   }
   return capture
 }
