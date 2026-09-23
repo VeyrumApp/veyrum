@@ -41,6 +41,10 @@ export interface CommitResult {
   readonly flaky: readonly string[]
   readonly baselines: Partial<Record<BaselineName, BaselineScore>> | null
   readonly veyrumPlanMs: number | null
+  /** Why Veyrum ran files: count per reason, and the first details of each (diagnostics). */
+  readonly veyrumReasons?: Readonly<
+    Record<string, { readonly count: number; readonly details: readonly string[] }>
+  >
   readonly capture: { readonly runMs: number; readonly recordMs: number; readonly wallMs: number }
   /** Wall time of an uninstrumented full run, measured on sampled commits for overhead. */
   readonly plainWallMs: number | null
@@ -265,10 +269,22 @@ export async function replay(corpus: Corpus, benchRoot: string, options: ReplayO
       // 1. Plans, made before anything runs at this commit, from evidence of earlier commits only.
       let selections: Record<BaselineName, Set<string> | null> | null = null
       let veyrumPlanMs: number | null = null
+      let veyrumReasons: Record<string, { count: number; details: string[] }> | undefined
       let checks: CheckRef[] = []
       if (parent) {
         const p = veyrumPlan(corpus, paths.testRoot, paths.store, paths.scratch)
         veyrumPlanMs = p.planMs
+        veyrumReasons = {}
+        for (const d of p.decisions) {
+          if (d.action !== 'run') continue
+          const entry = veyrumReasons[d.reason] ?? { count: 0, details: [] }
+          veyrumReasons[d.reason] = entry
+          entry.count++
+          for (const detail of d.details) {
+            if (entry.details.length >= 5) break
+            if (!entry.details.includes(detail)) entry.details.push(detail)
+          }
+        }
         checks = p.decisions.map((d) => d.check)
         const veyrumSelection = new Set(
           p.decisions.filter((d) => d.action === 'run').map((d) => d.check.path),
@@ -335,6 +351,7 @@ export async function replay(corpus: Corpus, benchRoot: string, options: ReplayO
         flaky: [...flaky],
         baselines,
         veyrumPlanMs,
+        ...(veyrumReasons ? { veyrumReasons } : {}),
         capture: { runMs: capture.runMs, recordMs: capture.recordMs, wallMs: capture.wallMs },
         plainWallMs,
       }
