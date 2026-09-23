@@ -15,6 +15,16 @@ const work = fs.mkdtempSync(path.join(os.tmpdir(), 'veyrum-pack-'))
 const packDir = path.join(work, 'pack')
 const PACKAGES = ['core', 'capture', 'vitest', 'jest', 'cli']
 
+/**
+ * Runner versions to check: the versions this repository develops against, or the ones given as
+ * SMOKE_VITEST and SMOKE_JEST (set only one to check only that runner).
+ */
+const devVersion = (pkg, dep) =>
+  JSON.parse(fs.readFileSync(path.join(repo, 'packages', pkg, 'package.json'), 'utf8')).devDependencies[dep]
+const pinned = process.env.SMOKE_VITEST || process.env.SMOKE_JEST
+const vitestVersion = pinned ? process.env.SMOKE_VITEST : devVersion('vitest', 'vitest')
+const jestVersion = pinned ? process.env.SMOKE_JEST : devVersion('jest', '@jest/core')
+
 function run(command, args, cwd) {
   const result = spawnSync(command, args, { cwd, encoding: 'utf8', env: { ...process.env, CI: 'true' } })
   const output = `${result.stdout}${result.stderr}`
@@ -78,39 +88,39 @@ try {
       stdio: 'ignore',
     })
 
-  const vitestVersion = JSON.parse(fs.readFileSync(path.join(repo, 'packages/vitest/package.json'), 'utf8'))
-    .devDependencies.vitest
-  const vitestDir = project(
-    'vitest',
-    { vitest: vitestVersion },
-    {
-      'src/math.ts':
-        'export const add = (a: number, b: number) => a + b\nexport const mul = (a: number, b: number) => a * b\n',
-      'test/add.test.ts':
-        "import { expect, test } from 'vitest'\nimport { add } from '../src/math'\ntest('add', () => expect(add(1, 2)).toBe(3))\n",
-      'test/mul.test.ts':
-        "import { expect, test } from 'vitest'\nimport { mul } from '../src/math'\ntest('mul', () => expect(mul(2, 3)).toBe(6))\n",
-    },
-  )
-  cycle(vitestDir, 'src/math.ts', 'ts')
-  process.stdout.write('vitest: ok\n')
+  if (vitestVersion) {
+    const vitestDir = project(
+      'vitest',
+      { vitest: vitestVersion },
+      {
+        'src/math.ts':
+          'export const add = (a: number, b: number) => a + b\nexport const mul = (a: number, b: number) => a * b\n',
+        'test/add.test.ts':
+          "import { expect, test } from 'vitest'\nimport { add } from '../src/math'\ntest('add', () => expect(add(1, 2)).toBe(3))\n",
+        'test/mul.test.ts':
+          "import { expect, test } from 'vitest'\nimport { mul } from '../src/math'\ntest('mul', () => expect(mul(2, 3)).toBe(6))\n",
+      },
+    )
+    cycle(vitestDir, 'src/math.ts', 'ts')
+    process.stdout.write(`vitest ${vitestVersion}: ok\n`)
+  }
 
-  const jestVersion = JSON.parse(fs.readFileSync(path.join(repo, 'packages/jest/package.json'), 'utf8'))
-    .devDependencies['@jest/core']
-  const jestDir = project(
-    'jest',
-    { jest: jestVersion },
-    {
-      'src/math.js':
-        'function add(a, b) { return a + b }\nfunction mul(a, b) { return a * b }\nmodule.exports = { add, mul }\n',
-      'test/add.test.js':
-        "const { add } = require('../src/math')\ntest('add', () => expect(add(1, 2)).toBe(3))\n",
-      'test/mul.test.js':
-        "const { mul } = require('../src/math')\ntest('mul', () => expect(mul(2, 3)).toBe(6))\n",
-    },
-  )
-  cycle(jestDir, 'src/math.js', 'js')
-  process.stdout.write('jest: ok\n')
+  if (jestVersion) {
+    const jestDir = project(
+      'jest',
+      { jest: jestVersion },
+      {
+        'src/math.js':
+          'function add(a, b) { return a + b }\nfunction mul(a, b) { return a * b }\nmodule.exports = { add, mul }\n',
+        'test/add.test.js':
+          "const { add } = require('../src/math')\ntest('add', () => expect(add(1, 2)).toBe(3))\n",
+        'test/mul.test.js':
+          "const { mul } = require('../src/math')\ntest('mul', () => expect(mul(2, 3)).toBe(6))\n",
+      },
+    )
+    cycle(jestDir, 'src/math.js', 'js')
+    process.stdout.write(`jest ${jestVersion}: ok\n`)
+  }
 } finally {
   fs.rmSync(work, { recursive: true, force: true })
 }
