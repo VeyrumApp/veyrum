@@ -25,6 +25,8 @@ export interface HookSink {
    * the runner's module loader, Node's own module loader, or anything else (test code).
    */
   path(absolute: string, kind: PathKind, type: PathType, reader: Reader): void
+  /** True when the observation is already recorded, so hooks can skip classifying it again. */
+  seen?(absolute: string, kind: PathKind): boolean
   write(absolute: string): void
   /** `copying` is true when the read is part of copying the whole environment ({...process.env}). */
   env(name: string, value: string | undefined, copying: boolean, scope: EnvScope): void
@@ -145,22 +147,41 @@ function ignored(absolute: string): boolean {
 /** This package's directory: stack frames inside it are the hooks themselves. */
 const OWN_DIR = path.dirname(path.dirname(fileURLToPath(import.meta.url))) + path.sep
 
-const NODE_LOADER_FRAME = /\(?node:internal\/modules\//
+/**
+ * File names of the calling frames, innermost first. Reads raw call sites instead of formatting a
+ * stack: runners install source-map support, which would map every frame of every stack.
+ */
+function callerFiles(limit: number): string[] {
+  const prepare = Error.prepareStackTrace
+  const stackLimit = Error.stackTraceLimit
+  const holder: { stack?: unknown } = {}
+  let stack: unknown
+  try {
+    Error.stackTraceLimit = limit
+    Error.prepareStackTrace = (_error, sites) => sites
+    Error.captureStackTrace(holder, callerFiles)
+    // The stack is formatted lazily, on first access: read it while the override is in place.
+    stack = holder.stack
+  } finally {
+    Error.prepareStackTrace = prepare
+    Error.stackTraceLimit = stackLimit
+  }
+  const sites = Array.isArray(stack) ? (stack as NodeJS.CallSite[]) : []
+  return sites.map((site) => {
+    // ES modules report file URLs.
+    const file = site.getFileName() ?? ''
+    return file.startsWith('file://') ? fileURLToPath(file) : file
+  })
+}
 
 /** Who called into fs: the runner's module loader, Node's module loader, or other code. */
 function classifyReader(): Reader {
-  const limit = Error.stackTraceLimit
-  Error.stackTraceLimit = 16
-  const stack = new Error().stack ?? ''
-  Error.stackTraceLimit = limit
-  const frames = stack.split('\n')
-  for (let i = 1; i < frames.length; i++) {
-    const frame = frames[i]!
-    if (frame.includes(OWN_DIR)) continue
-    if (NODE_LOADER_FRAME.test(frame)) return 'node-loader'
+  for (const file of callerFiles(16)) {
+    if (file.startsWith(OWN_DIR)) continue
+    if (file.startsWith('node:internal/modules/')) return 'node-loader'
     // Skip Node's own fs internals (readFileSync calls openSync, which is hooked too).
-    if (frame.includes('(node:') || frame.includes(' node:')) continue
-    return state.runnerReaders.some((re) => re.test(frame)) ? 'runner' : 'other'
+    if (file.startsWith('node:') || file === '') continue
+    return state.runnerReaders.some((re) => re.test(file)) ? 'runner' : 'other'
   }
   return 'other'
 }
@@ -168,7 +189,7 @@ function classifyReader(): Reader {
 function observePath(p: unknown, kind: PathKind): void {
   if (state.depth > 0) return
   const absolute = toAbsolute(p)
-  if (!absolute || ignored(absolute)) return
+  if (!absolute || ignored(absolute) || state.sink.seen?.(absolute, kind)) return
   state.depth++
   try {
     const reader = kind === 'read' && state.runnerReaders.length > 0 ? classifyReader() : 'other'
@@ -439,12 +460,7 @@ function installProcessHooks(): void {
 const BENIGN_SOURCE_READERS = [/[\\/]@vitest[\\/]runner[\\/]/, /[\\/]vitest[\\/]dist[\\/]/]
 
 function sourceReaderIsBenign(): boolean {
-  const limit = Error.stackTraceLimit
-  Error.stackTraceLimit = 4
-  const stack = new Error().stack ?? ''
-  Error.stackTraceLimit = limit
-  // Frames: Error, the proxy trap, then the caller.
-  const caller = stack.split('\n')[3] ?? ''
+  const caller = callerFiles(6).find((file) => !file.startsWith(OWN_DIR)) ?? ''
   return BENIGN_SOURCE_READERS.some((re) => re.test(caller))
 }
 

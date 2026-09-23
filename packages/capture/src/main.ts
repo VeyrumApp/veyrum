@@ -123,6 +123,9 @@ export class MainRecorder implements HookSink {
     }
   }
 
+  seen(absolute: string, kind: PathKind): boolean {
+    return this.written.has(absolute) || this.pathMap.has(`${kind}\u0000${absolute}`)
+  }
   path(absolute: string, kind: PathKind, type: PathType): void {
     if (!this.active || this.paused > 0 || this.written.has(absolute)) return
     const key = `${kind}\u0000${absolute}`

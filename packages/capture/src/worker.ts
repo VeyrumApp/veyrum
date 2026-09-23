@@ -64,23 +64,47 @@ interface IsolateState {
 /** Heap growth after which dead code is collected before coverage starts again. */
 const COLLECT_AFTER_BYTES = 64 * 1024 * 1024
 
+function heapGrown(isolate: IsolateState): boolean {
+  return process.memoryUsage().heapUsed - isolate.heapAfterCollection >= COLLECT_AFTER_BYTES
+}
+
 /**
- * Starting precise coverage walks the heap and pins every function it finds, including functions
- * of contexts that are already dead but not yet collected, until coverage stops. A process that
- * hosts many files in turn (Jest) never gets a full collection between one file's stop and the
- * next file's start, so each start would pin all earlier files' dead contexts again, and memory
- * would grow with every file. Collecting first releases them; doing it only after the heap has
- * grown by a margin keeps the cost to one collection per several files.
+ * Precise coverage pins every function it tracks until it stops, and starting it walks the heap and
+ * pins what it finds, including dead contexts not yet collected. A process hosting many files in
+ * turn (Jest) must therefore collect before starting again, or each start would pin all earlier
+ * files' dead contexts. Doing it only after the heap has grown keeps the cost to one collection per
+ * several files.
  */
 async function collectDeadCode(session: Session, isolate: IsolateState): Promise<void> {
-  if (isolate.files === 0) return
-  if (process.memoryUsage().heapUsed - isolate.heapAfterCollection < COLLECT_AFTER_BYTES) return
+  if (isolate.files === 0 || !heapGrown(isolate)) return
   try {
     await session.post('HeapProfiler.collectGarbage')
   } catch {
     // Without a collection, memory grows but results are unaffected.
   }
   isolate.heapAfterCollection = process.memoryUsage().heapUsed
+}
+
+async function stopCoverage(session: Session): Promise<void> {
+  try {
+    await session.post('Profiler.stopPreciseCoverage')
+    await session.post('Profiler.disable')
+  } catch {
+    // Nothing to clean up if the session already failed.
+  }
+  session.disconnect()
+}
+
+/**
+ * Ends a coverage session kept across files (Jest layout), for a process that goes on to do other
+ * work after its tests (Jest running in band in the runner's main process).
+ */
+export async function endWorkerCapture(): Promise<void> {
+  const isolate = (globalThis as unknown as Record<symbol, IsolateState | undefined>)[ISOLATE_KEY]
+  if (!isolate?.session) return
+  const session = isolate.session
+  isolate.session = null
+  await stopCoverage(session)
 }
 
 /** Stack frames of Jest's module loader (its file cache reads each module before compiling it). */
@@ -170,6 +194,9 @@ class FileRecorder implements HookSink {
     this.testScopeOnly = testScopeOnly
   }
 
+  seen(absolute: string, kind: PathKind): boolean {
+    return this.writes.has(absolute) || this.paths.has(`${kind}\u0000${absolute}`)
+  }
   path(absolute: string, kind: PathKind, type: PathType, reader: Reader): void {
     // Reads of files this check wrote itself derive from its own code and are not inputs.
     if (this.writes.has(absolute)) return
@@ -283,14 +310,24 @@ export async function beginWorkerCapture(options: WorkerCaptureOptions): Promise
   const errors: string[] = []
   prepareWorkerHooks(options)
   const isolate = (globalThis as unknown as Record<symbol, IsolateState>)[ISOLATE_KEY]!
+  const layout = options.layout ?? 'vitest'
+  // Under Jest one session serves every file of the process: starting coverage deoptimizes all code
+  // and walks the heap, which per file would dominate the cost of short test files. Counts are reset
+  // by each take, so a file sees only its own executions. The session is restarted, after a
+  // collection, once the functions it pins have grown the heap.
+  if (layout === 'jest' && isolate.session && heapGrown(isolate)) {
+    const old = isolate.session
+    isolate.session = null
+    await stopCoverage(old)
+  }
   if (!isolate.session) {
-    // A second file in the same isolate (isolation off) gets a fresh session, but modules cached
-    // by earlier files will not re-execute, so its payload is marked as coming from a reused isolate.
+    // Under Vitest, a second file in the same isolate (isolation off) gets a fresh session, but
+    // modules cached by earlier files will not re-execute, so its payload is marked as reused.
     const fresh = new Session()
     fresh.connect()
     await collectDeadCode(fresh, isolate)
     await fresh.post('Profiler.enable')
-    await fresh.post('Profiler.startPreciseCoverage', { callCount: false, detailed: false })
+    await fresh.post('Profiler.startPreciseCoverage', { callCount: layout === 'jest', detailed: false })
     isolate.session = fresh
   }
   isolate.files++
@@ -301,7 +338,6 @@ export async function beginWorkerCapture(options: WorkerCaptureOptions): Promise
       if (!options.volatileEnv.test(n)) out[n] = hashEnvValue(v)
     return out
   })
-  const layout = options.layout ?? 'vitest'
   const recorder = new FileRecorder(options.volatileEnv, layout === 'jest')
   if (layout === 'jest') isolate.compiled = new Map()
   const compiled = isolate.compiled
@@ -462,16 +498,18 @@ export async function beginWorkerCapture(options: WorkerCaptureOptions): Promise
         toolchainFiles: [...state.toolchainFiles],
         captureErrors: errors,
       }
-      // Detach so the worker can terminate promptly (an attached inspector keeps threads alive).
-      try {
-        await session.post('Profiler.stopPreciseCoverage')
-        if (debuggerEnabled) await session.post('Debugger.disable')
-        await session.post('Profiler.disable')
-      } catch {
-        // Nothing to clean up if the session already failed.
+      if (debuggerEnabled) {
+        try {
+          await session.post('Debugger.disable')
+        } catch {
+          // The session failed; the coverage above reports it.
+        }
       }
-      session.disconnect()
-      state.session = null
+      if (layout !== 'jest') {
+        // Detach so the worker can terminate promptly (an attached inspector keeps threads alive).
+        state.session = null
+        await stopCoverage(session)
+      }
       unobserved(() => {
         const dir = path.join(options.outDir, 'payloads')
         fs.mkdirSync(dir, { recursive: true })

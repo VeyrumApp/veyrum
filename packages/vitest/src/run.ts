@@ -263,29 +263,33 @@ export async function runVitest(options: VitestRunOptions): Promise<VitestRunRes
     const main = recorder.stop()
 
     const recordStarted = performance.now()
-    const { run, records } = assemble({
-      root,
-      runId,
-      runtimeKey,
-      runtime: facts,
-      revision: options.revision ?? null,
-      createdAt,
-      outDir: scratch,
-      outcomes: reporter.outcomes.values(),
-      main,
-      files,
-      store: options.store,
-      fs: rawFs,
-      runner: {
-        name: 'vitest',
-        version: target.version,
-        isolate: sharedWorkerProjects.size === 0,
-        pool: String((vitest.config as unknown as { pool?: string }).pool ?? ''),
-      },
-      sharedWorkerProjects,
-      ignored,
-      configFiles: [...configFiles],
-    })
+    const pool = String((vitest.config as unknown as { pool?: string }).pool ?? '')
+    // One transaction: assembly caches a digest for every file it reads.
+    const { run, records } = options.store.transaction(() =>
+      assemble({
+        root,
+        runId,
+        runtimeKey,
+        runtime: facts,
+        revision: options.revision ?? null,
+        createdAt,
+        outDir: scratch,
+        outcomes: reporter.outcomes.values(),
+        main,
+        files,
+        store: options.store,
+        fs: rawFs,
+        runner: {
+          name: 'vitest',
+          version: target.version,
+          isolate: sharedWorkerProjects.size === 0,
+          pool,
+        },
+        sharedWorkerProjects,
+        ignored,
+        configFiles: [...configFiles],
+      }),
+    )
     options.store.transaction(() => {
       options.store.putRun(run)
       for (const record of records) options.store.putRecord(record)

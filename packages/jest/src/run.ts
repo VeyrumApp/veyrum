@@ -6,10 +6,12 @@ import { fileURLToPath } from 'node:url'
 import { MainRecorder, rawFs, VOLATILE_ENV } from '@veyrum/capture'
 import { assemble } from '@veyrum/capture/assemble'
 import { packageJsonAbove, storeFiles, veyrumDirs } from '@veyrum/capture/host'
+import { endWorkerCapture } from '@veyrum/capture/worker'
 import {
   type CheckRef,
   checkKey,
   type Decision,
+  digest,
   forcedDecisions,
   listRepoFiles,
   needsPlan,
@@ -191,11 +193,21 @@ export async function runJest(options: JestRunOptions): Promise<RunResult> {
   const ignored = [...veyrumDirs(path.dirname(here)), scratch + path.sep, ...storeFiles(options.store.file)]
   const ownRequire = createRequire(import.meta.url)
 
-  // The wrapper lives under a node_modules directory so no project transform applies to it.
-  const environmentPath = path.join(scratch, 'node_modules', 'veyrum-environment.cjs')
-  fs.mkdirSync(path.dirname(environmentPath), { recursive: true })
-  const environmentSource = fs.readFileSync(path.join(here, 'environment.cjs'), 'utf8')
-  fs.writeFileSync(environmentPath, environmentSource.replace(/\n\/\/# sourceMappingURL=.*$/m, '\n'))
+  // The wrapper lives under a node_modules directory so no project transform applies to it, at a
+  // path that depends only on its content: the path is part of the project config, which Jest's
+  // transformers put in their cache keys, so a per-run path would defeat the transform cache.
+  const environmentSource = fs
+    .readFileSync(path.join(here, 'environment.cjs'), 'utf8')
+    .replace(/\n\/\/# sourceMappingURL=.*$/m, '\n')
+  const environmentDir = path.join(root, '.veyrum', 'jest', digest(environmentSource), 'node_modules')
+  const environmentPath = path.join(environmentDir, 'veyrum-environment.cjs')
+  if (!fs.existsSync(environmentPath)) {
+    fs.mkdirSync(environmentDir, { recursive: true })
+    const temporary = `${environmentPath}.${runId}`
+    fs.writeFileSync(temporary, environmentSource)
+    fs.renameSync(temporary, environmentPath)
+  }
+  ignored.push(path.dirname(environmentDir) + path.sep)
   const reporterPath = path.join(here, 'reporter.js')
 
   const recorder = new MainRecorder({ root, ignoredPrefixes: ignored, volatileEnv: VOLATILE_ENV })
@@ -319,6 +331,8 @@ export async function runJest(options: JestRunOptions): Promise<RunResult> {
         [root],
       )
       runError = results.runExecError != null
+      // Files that ran in band left a coverage session open in this process.
+      await endWorkerCapture()
     }
     const runMs = performance.now() - runStarted
     const main = recorder.stop()
@@ -330,24 +344,27 @@ export async function runJest(options: JestRunOptions): Promise<RunResult> {
     const outcomes = [...session.outcomes.values()].filter((o) =>
       known.has(checkKey({ path: toRepoPath(root, o.file), project: o.project })),
     )
-    const { run, records } = assemble({
-      root,
-      runId,
-      runtimeKey,
-      runtime: facts,
-      revision: options.revision ?? null,
-      createdAt,
-      outDir: scratch,
-      outcomes,
-      main,
-      files,
-      store: options.store,
-      fs: rawFs,
-      runner: { name: 'jest', version: target.version, isolate: true, pool: 'workers' },
-      sharedWorkerProjects: new Set(),
-      ignored,
-      configFiles: [...configFiles],
-    })
+    // One transaction: assembly caches a digest for every file it reads.
+    const { run, records } = options.store.transaction(() =>
+      assemble({
+        root,
+        runId,
+        runtimeKey,
+        runtime: facts,
+        revision: options.revision ?? null,
+        createdAt,
+        outDir: scratch,
+        outcomes,
+        main,
+        files,
+        store: options.store,
+        fs: rawFs,
+        runner: { name: 'jest', version: target.version, isolate: true, pool: 'workers' },
+        sharedWorkerProjects: new Set(),
+        ignored,
+        configFiles: [...configFiles],
+      }),
+    )
     options.store.transaction(() => {
       options.store.putRun(run)
       for (const record of records) options.store.putRecord(record)

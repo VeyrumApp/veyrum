@@ -8,9 +8,9 @@ import { type Decision, makePolicy, type RunMode, type RunResult, Store } from '
 const HELP = `veyrum - run only the tests whose evidence is no longer valid
 
 Usage:
-  veyrum run [options]          Run test files whose inputs changed; reuse evidence for the rest
-  veyrum run --full [options]   Run every test file and record evidence
-  veyrum plan [options]         Show what would run and why, without running anything
+  veyrum run [files] [options]  Run test files whose inputs changed; reuse evidence for the rest
+  veyrum run --full [files]     Run every test file (or the named ones) and record evidence
+  veyrum plan [files] [options] Show what would run and why, without running anything
   veyrum explain <file>         Explain the decision for one test file
   veyrum stats [options]        Show evidence store statistics
 
@@ -200,8 +200,9 @@ async function main(argv: string[]): Promise<number> {
   }
 
   const mode: RunMode = args.command === 'run' ? (args.full ? 'full' : 'affected') : 'plan'
+  // Test files named on the command line restrict every command to them.
   const only =
-    args.command === 'explain'
+    args.positionals.length > 0
       ? args.positionals.map((p) => path.relative(args.root, path.resolve(p)).split(path.sep).join('/'))
       : undefined
   if (args.command === 'explain' && (!only || only.length === 0)) {

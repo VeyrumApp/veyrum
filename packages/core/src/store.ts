@@ -1,6 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import { DatabaseSync } from 'node:sqlite'
+import { DatabaseSync, type StatementSync } from 'node:sqlite'
 import { brotliCompressSync, brotliDecompressSync, constants as zlibConstants } from 'node:zlib'
 import { type Digest, digest } from './hash.ts'
 import type { CheckRef, ClosureEntry, EvidenceRecord, RunInfo, TestOutcome } from './types.ts'
@@ -85,6 +85,18 @@ export class Store {
     this.db.close()
   }
 
+  private readonly statements = new Map<string, StatementSync>()
+
+  /** A prepared statement, compiled once per store: statements run once per file or record. */
+  private sql(text: string): StatementSync {
+    let statement = this.statements.get(text)
+    if (!statement) {
+      statement = this.db.prepare(text)
+      this.statements.set(text, statement)
+    }
+    return statement
+  }
+
   transaction<T>(fn: () => T): T {
     this.db.exec('BEGIN IMMEDIATE')
     try {
@@ -98,17 +110,13 @@ export class Store {
   }
 
   putRun(run: RunInfo): void {
-    this.db
-      .prepare(
-        'INSERT OR REPLACE INTO runs (id, created_at, revision, runtime_key, info) VALUES (?, ?, ?, ?, ?)',
-      )
-      .run(run.id, run.createdAt, run.revision, run.runtimeKey, pack(run))
+    this.sql(
+      'INSERT OR REPLACE INTO runs (id, created_at, revision, runtime_key, info) VALUES (?, ?, ?, ?, ?)',
+    ).run(run.id, run.createdAt, run.revision, run.runtimeKey, pack(run))
   }
 
   getRun(id: string): RunInfo | undefined {
-    const row = this.db.prepare('SELECT info FROM runs WHERE id = ?').get(id) as
-      | { info: Uint8Array }
-      | undefined
+    const row = this.sql('SELECT info FROM runs WHERE id = ?').get(id) as { info: Uint8Array } | undefined
     return row ? (unpack(row.info) as RunInfo) : undefined
   }
 
@@ -116,31 +124,27 @@ export class Store {
     const closureJson = JSON.stringify(record.closure)
     const closureDigest = digest(closureJson)
     // Unchanged checks produce identical closures run after run; store each distinct one once.
-    const known = this.db.prepare('SELECT 1 FROM blobs WHERE digest = ?').get(closureDigest)
+    const known = this.sql('SELECT 1 FROM blobs WHERE digest = ?').get(closureDigest)
     if (!known)
-      this.db
-        .prepare('INSERT INTO blobs (digest, data) VALUES (?, ?)')
-        .run(closureDigest, compress(closureJson))
-    this.db
-      .prepare(
-        `INSERT OR REPLACE INTO records (id, check_path, project, run_id, runtime_key, verdict, reusable, created_at,
+      this.sql('INSERT INTO blobs (digest, data) VALUES (?, ?)').run(closureDigest, compress(closureJson))
+    this.sql(
+      `INSERT OR REPLACE INTO records (id, check_path, project, run_id, runtime_key, verdict, reusable, created_at,
           revision, duration_ms, flags, tests, closure_digest) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        record.id,
-        record.check,
-        record.project,
-        record.runId,
-        record.runtimeKey,
-        record.verdict,
-        record.reusable ? 1 : 0,
-        record.createdAt,
-        record.revision,
-        record.durationMs,
-        JSON.stringify(record.flags),
-        JSON.stringify(record.tests),
-        closureDigest,
-      )
+    ).run(
+      record.id,
+      record.check,
+      record.project,
+      record.runId,
+      record.runtimeKey,
+      record.verdict,
+      record.reusable ? 1 : 0,
+      record.createdAt,
+      record.revision,
+      record.durationMs,
+      JSON.stringify(record.flags),
+      JSON.stringify(record.tests),
+      closureDigest,
+    )
   }
 
   /** Records for a check, newest first. */
@@ -151,11 +155,11 @@ export class Store {
   forgetRevision(revision: string): number {
     let runs = 0
     this.transaction(() => {
-      this.db
-        .prepare('DELETE FROM verifications WHERE run_id IN (SELECT id FROM runs WHERE revision = ?)')
-        .run(revision)
-      this.db.prepare('DELETE FROM records WHERE revision = ?').run(revision)
-      runs = Number(this.db.prepare('DELETE FROM runs WHERE revision = ?').run(revision).changes)
+      this.sql('DELETE FROM verifications WHERE run_id IN (SELECT id FROM runs WHERE revision = ?)').run(
+        revision,
+      )
+      this.sql('DELETE FROM records WHERE revision = ?').run(revision)
+      runs = Number(this.sql('DELETE FROM runs WHERE revision = ?').run(revision).changes)
     })
     return runs
   }
@@ -165,32 +169,26 @@ export class Store {
    * that stops at the first reusable record never decompresses the others.
    */
   *candidates(check: CheckRef, limit = 20): Generator<EvidenceRecord> {
-    const rows = this.db
-      .prepare(
-        'SELECT * FROM records WHERE check_path = ? AND project = ? ORDER BY created_at DESC, id LIMIT ?',
-      )
-      .all(check.path, check.project, limit) as unknown as RecordRow[]
+    const rows = this.sql(
+      'SELECT * FROM records WHERE check_path = ? AND project = ? ORDER BY created_at DESC, id LIMIT ?',
+    ).all(check.path, check.project, limit) as unknown as RecordRow[]
     for (const row of rows) yield this.hydrate(row)
   }
 
   recordsFor(check: CheckRef, limit = 20): EvidenceRecord[] {
-    const rows = this.db
-      .prepare(
-        'SELECT * FROM records WHERE check_path = ? AND project = ? ORDER BY created_at DESC, id LIMIT ?',
-      )
-      .all(check.path, check.project, limit) as unknown as RecordRow[]
+    const rows = this.sql(
+      'SELECT * FROM records WHERE check_path = ? AND project = ? ORDER BY created_at DESC, id LIMIT ?',
+    ).all(check.path, check.project, limit) as unknown as RecordRow[]
     return rows.map((r) => this.hydrate(r))
   }
 
   getRecord(id: string): EvidenceRecord | undefined {
-    const row = this.db.prepare('SELECT * FROM records WHERE id = ?').get(id) as RecordRow | undefined
+    const row = this.sql('SELECT * FROM records WHERE id = ?').get(id) as RecordRow | undefined
     return row ? this.hydrate(row) : undefined
   }
 
   checks(): CheckRef[] {
-    const rows = this.db
-      .prepare('SELECT DISTINCT check_path, project FROM records ORDER BY check_path')
-      .all() as {
+    const rows = this.sql('SELECT DISTINCT check_path, project FROM records ORDER BY check_path').all() as {
       check_path: string
       project: string
     }[]
@@ -208,12 +206,10 @@ export class Store {
     kind: string,
     outcome: 'pass' | 'fail',
   ): void {
-    this.db
-      .prepare(
-        `INSERT OR REPLACE INTO verifications (run_id, check_path, project, record_id, kind, outcome, created_at)
+    this.sql(
+      `INSERT OR REPLACE INTO verifications (run_id, check_path, project, record_id, kind, outcome, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(runId, check.path, check.project, recordId, kind, outcome, new Date().toISOString())
+    ).run(runId, check.path, check.project, recordId, kind, outcome, new Date().toISOString())
   }
 
   /** The escape record: how many reuse decisions were verified, and how many would have been wrong. */
@@ -222,9 +218,9 @@ export class Store {
     escapes: number
     byKind: Record<string, { verified: number; escapes: number }>
   } {
-    const rows = this.db
-      .prepare('SELECT kind, outcome, COUNT(*) AS n FROM verifications GROUP BY kind, outcome')
-      .all() as { kind: string; outcome: string; n: number }[]
+    const rows = this.sql(
+      'SELECT kind, outcome, COUNT(*) AS n FROM verifications GROUP BY kind, outcome',
+    ).all() as { kind: string; outcome: string; n: number }[]
     const byKind: Record<string, { verified: number; escapes: number }> = {}
     let verified = 0
     let escapes = 0
@@ -243,47 +239,45 @@ export class Store {
 
   stats(): { runs: number; records: number; closures: number; bytes: number } {
     const count = (table: string): number =>
-      (this.db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n
+      (this.sql(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n
     const bytes = this.file === ':memory:' ? 0 : fileSize(this.file) + fileSize(`${this.file}-wal`)
     return { runs: count('runs'), records: count('records'), closures: count('blobs'), bytes }
   }
 
   getStat(p: string): { size: number; mtimeNs: string; ino: number; digest: Digest | null } | undefined {
-    const row = this.db.prepare('SELECT size, mtime_ns, ino, digest FROM stat_cache WHERE path = ?').get(p) as
+    const row = this.sql('SELECT size, mtime_ns, ino, digest FROM stat_cache WHERE path = ?').get(p) as
       | { size: number; mtime_ns: string; ino: number; digest: string | null }
       | undefined
     return row ? { size: row.size, mtimeNs: row.mtime_ns, ino: row.ino, digest: row.digest } : undefined
   }
 
   putStat(p: string, size: number, mtimeNs: string, ino: number, value: Digest | null): void {
-    this.db
-      .prepare('INSERT OR REPLACE INTO stat_cache (path, size, mtime_ns, ino, digest) VALUES (?, ?, ?, ?, ?)')
-      .run(p, size, mtimeNs, ino, value)
+    this.sql(
+      'INSERT OR REPLACE INTO stat_cache (path, size, mtime_ns, ino, digest) VALUES (?, ?, ?, ?, ?)',
+    ).run(p, size, mtimeNs, ino, value)
   }
 
   getUnits(key: string): Record<string, Digest> | undefined {
-    const row = this.db.prepare('SELECT units FROM unit_cache WHERE key = ?').get(key) as
+    const row = this.sql('SELECT units FROM unit_cache WHERE key = ?').get(key) as
       | { units: string }
       | undefined
     return row ? (JSON.parse(row.units) as Record<string, Digest>) : undefined
   }
 
   putUnits(key: string, units: Record<string, Digest>): void {
-    this.db
-      .prepare('INSERT OR REPLACE INTO unit_cache (key, units) VALUES (?, ?)')
-      .run(key, JSON.stringify(units))
+    this.sql('INSERT OR REPLACE INTO unit_cache (key, units) VALUES (?, ?)').run(key, JSON.stringify(units))
   }
 
   /** Raw cached text (for example serialized module units keyed by code digest). */
   getCached(key: string): string | undefined {
-    const row = this.db.prepare('SELECT units FROM unit_cache WHERE key = ?').get(key) as
+    const row = this.sql('SELECT units FROM unit_cache WHERE key = ?').get(key) as
       | { units: string }
       | undefined
     return row?.units
   }
 
   putCached(key: string, text: string): void {
-    this.db.prepare('INSERT OR REPLACE INTO unit_cache (key, units) VALUES (?, ?)').run(key, text)
+    this.sql('INSERT OR REPLACE INTO unit_cache (key, units) VALUES (?, ?)').run(key, text)
   }
 
   private closure(digest: string): readonly ClosureEntry[] {
@@ -293,7 +287,7 @@ export class Store {
       this.closureCache.set(digest, cached)
       return cached
     }
-    const blob = this.db.prepare('SELECT data FROM blobs WHERE digest = ?').get(digest) as
+    const blob = this.sql('SELECT data FROM blobs WHERE digest = ?').get(digest) as
       | { data: Uint8Array }
       | undefined
     const closure = blob
