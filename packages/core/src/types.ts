@@ -108,6 +108,12 @@ export interface RunInfo {
   readonly shared: readonly ClosureEntry[]
   /** Environment variables injected into workers by the runner, name to value digest. */
   readonly injectedEnv: Readonly<Record<string, Digest | null>>
+  /**
+   * Variables the runner set in workers to values that differed between files, for example
+   * Vitest's SSR, which depends on each file's test environment. Their value follows from the
+   * runner's configuration and the file's own source, both inputs already.
+   */
+  readonly injectedVaryingEnv?: readonly string[]
   /** Repository-relative files that existed when the run started (for shadowing checks). */
   readonly files: readonly string[]
   readonly runner: {

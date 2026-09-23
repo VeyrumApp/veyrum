@@ -376,17 +376,21 @@ export function assemble(input: AssembleInput): Assembled {
     shared.push(entry)
   }
 
-  // Variables the runner injects into workers, with the values workers saw.
+  // Variables the runner sets in workers: those whose value in some worker differs from the main
+  // process's. When every worker saw the same value it is recorded; when workers saw different
+  // values (Vitest's SSR differs by test environment), the value follows from each file's own
+  // configuration, and the planner does not compare it. Values equal to the main process's count
+  // too: a DOM file's SSR="" matches a main process that has SSR="" while server files see "1".
   const injected: Record<string, Digest | null> = {}
   const conflicting = new Set<string>()
-  for (const p of payloads) {
-    for (const [n, h] of Object.entries(p.envBaseline)) {
-      if (input.main.envBaseline[n] === h) continue
-      if (Object.hasOwn(injected, n) && injected[n] !== h) conflicting.add(n)
-      injected[n] = h
-    }
+  const names = new Set(payloads.flatMap((p) => Object.keys(p.envBaseline)))
+  for (const n of names) {
+    const main = input.main.envBaseline[n] ?? null
+    const seen = new Set(payloads.map((p) => p.envBaseline[n] ?? null))
+    if (![...seen].some((h) => h !== main)) continue
+    if (seen.size > 1) conflicting.add(n)
+    else injected[n] = [...seen][0] ?? null
   }
-  for (const n of conflicting) delete injected[n]
 
   // Environment the main process read, and (under Jest) what the runner and its toolchain read in
   // workers. Variables the runner injected into workers derive from the runner itself.
@@ -407,6 +411,7 @@ export function assemble(input: AssembleInput): Assembled {
     runtime: input.runtime,
     shared,
     injectedEnv: injected,
+    ...(conflicting.size > 0 ? { injectedVaryingEnv: [...conflicting].sort() } : {}),
     files: input.files,
     runner: input.runner,
   }

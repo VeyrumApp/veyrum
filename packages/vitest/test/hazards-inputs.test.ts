@@ -131,6 +131,21 @@ describe('environment', () => {
     expect(sandbox.actions({ VEY_OPTIONAL: 'set' })['test/unset.test.ts']).toBe('run')
   })
 
+  test('a variable the runner sets differently per test environment does not invalidate', () => {
+    // Vitest sets SSR to "1" in server environments and to "" in DOM environments.
+    sandbox = new Sandbox('env-injected-varying', { modules: ['happy-dom'] })
+      .write(
+        'test/server.test.ts',
+        "import { expect, test } from 'vitest'\ntest('ssr', () => expect(process.env.SSR).toBe('1'))\n",
+      )
+      .write(
+        'test/dom.test.ts',
+        "// @vitest-environment happy-dom\nimport { expect, test } from 'vitest'\ntest('dom', () => expect(process.env.SSR).toBe(''))\n",
+      )
+    sandbox.capture()
+    expect(sandbox.actions()).toEqual({ 'test/dom.test.ts': 'skip', 'test/server.test.ts': 'skip' })
+  })
+
   test('enumerating the environment is recorded but does not block reuse', () => {
     sandbox = new Sandbox('env-enum').write(
       'test/enum.test.ts',

@@ -20,6 +20,8 @@ export interface SandboxOptions {
   readonly runner?: 'vitest' | 'jest'
   /** Worker count passed to the runner (Jest runs in the main process with one worker). */
   readonly workers?: number
+  /** Packages from the repository's own node_modules to link in, for example a DOM environment. */
+  readonly modules?: readonly string[]
 }
 
 export interface CliResult {
@@ -44,6 +46,8 @@ export class Sandbox {
     this.dir = path.join(base, `${name}-${crypto.randomBytes(4).toString('hex')}`)
     fs.mkdirSync(path.join(this.dir, 'node_modules'), { recursive: true })
     fs.symlinkSync(runnerModules[this.runner], path.join(this.dir, 'node_modules', this.runner))
+    for (const name of options.modules ?? [])
+      fs.symlinkSync(path.join(repoRoot, 'node_modules', name), path.join(this.dir, 'node_modules', name))
     if (this.runner === 'vitest') {
       this.write('package.json', JSON.stringify({ name, private: true, type: 'module' }, null, 2))
       this.write(

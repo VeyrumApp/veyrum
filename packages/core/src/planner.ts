@@ -128,7 +128,7 @@ export async function plan(options: PlanOptions): Promise<Decision[]> {
         const change = await checkModule(entry, check.project, strict, run)
         if (change) changes.push(change)
       } else {
-        const change = checkPlainEntry(entry, state, run.injectedEnv)
+        const change = checkPlainEntry(entry, state, run.injectedEnv, run.injectedVaryingEnv)
         if (change) changes.push(change)
       }
       if (changes.length >= MAX_DETAILS) return changes
@@ -265,6 +265,7 @@ function checkPlainEntry(
   entry: ClosureEntry,
   state: CurrentState,
   injected: Readonly<Record<string, Digest | null>>,
+  injectedVarying: readonly string[] = [],
 ): string | null {
   switch (entry.k) {
     case 'dep':
@@ -291,6 +292,7 @@ function checkPlainEntry(
       return now === entry.h ? null : `directory listing of ${entry.p} changed`
     }
     case 'env': {
+      if (injectedVarying.includes(entry.n)) return null
       const now = state.envDigest(entry.n, injected)
       return now === entry.h ? null : `environment variable ${entry.n} changed`
     }

@@ -170,9 +170,14 @@ These produce no capture, so they always run. Both are safe and cost little:
    them can observe line numbers that formatting edits change.
 5. **Benign source readers.** Vitest's own reading of test callback source (fixture detection)
    is treated as benign.
-6. **Volatile environment variables.** Variables in the volatile list (CI run identifiers,
+6. **Runner-set environment variables.** A variable the runner sets in workers to values that
+   differ between files (Vitest's `SSR`, `"1"` in server environments and `""` in DOM
+   environments) is not compared: its value follows from the runner's configuration, a shared
+   input, and each file's own environment choice, part of its source. A variable every worker
+   sees with the same value is compared as usual.
+7. **Volatile environment variables.** Variables in the volatile list (CI run identifiers,
    Vitest worker ids, terminal session variables) do not affect outcomes.
-7. **Manifest readers.** Code in the runner's main process, and the known manifest readers in
+8. **Manifest readers.** Code in the runner's main process, and the known manifest readers in
    workers, use neither dependency version ranges nor scripts from a repository manifest. A
    plugin that did would change what it emits, which the transform-output fingerprints observe.
 
