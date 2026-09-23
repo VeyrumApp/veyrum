@@ -197,12 +197,18 @@ const urlPaths = new Map<string, string>()
 const MANIFEST_STACK_LIMIT = 40
 
 /**
+ * Enough for the reader: Veyrum's own hook frames and Node's fs frames come first, then the caller.
+ * A deeper caller is classified as other code, which records the read as an input.
+ */
+const READER_STACK_LIMIT = 8
+
+/**
  * Who called into fs: the runner's module loader, Node's module loader, a manifest reader (for a
  * package manifest), or other code. The first caller outside Veyrum and Node decides, except that a
  * manifest read by other code counts as a manifest read when a manifest reader is anywhere below.
  */
 function classifyReader(isManifest: boolean): Reader {
-  const files = callerFiles(isManifest ? MANIFEST_STACK_LIMIT : 16)
+  const files = callerFiles(isManifest ? MANIFEST_STACK_LIMIT : READER_STACK_LIMIT)
   for (const file of files) {
     if (file.startsWith(OWN_DIR)) continue
     if (file.startsWith('node:internal/modules/')) return 'node-loader'
