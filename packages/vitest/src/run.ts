@@ -188,9 +188,20 @@ export async function runVitest(options: VitestRunOptions): Promise<VitestRunRes
   const ownDirs = veyrumDirs()
   const ignored = [...ownDirs, scratch + path.sep, path.dirname(options.store.file) + path.sep]
   const preloadUrl = pathToFileURL(path.join(path.dirname(fileURLToPath(import.meta.url)), 'preload.js')).href
-  const setupPath = path.join(path.dirname(fileURLToPath(import.meta.url)), 'setup.js')
+  // The setup file must be a project file for Vite; it is copied into the run's scratch directory.
+  const setupPath = path.join(scratch, 'veyrum-setup.mjs')
+  fs.mkdirSync(scratch, { recursive: true })
+  fs.copyFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), 'setup.js'), setupPath)
+  const ownRequire = createRequire(import.meta.url)
 
-  const captureConfig: CaptureConfig = { root, outDir: scratch, ignored, vitestEntry: target.entryUrl }
+  const captureConfig: CaptureConfig = {
+    root,
+    outDir: scratch,
+    ignored,
+    vitestEntry: target.entryUrl,
+    captureIndex: ownRequire.resolve('@veyrum/capture'),
+    captureWorker: ownRequire.resolve('@veyrum/capture/worker'),
+  }
   const previousCaptureEnv = process.env[CAPTURE_ENV]
   process.env[CAPTURE_ENV] = JSON.stringify(captureConfig)
   const recorder = new MainRecorder({ root, ignoredPrefixes: ignored, volatileEnv: VOLATILE_ENV })
@@ -206,7 +217,10 @@ export async function runVitest(options: VitestRunOptions): Promise<VitestRunRes
   recorder.start()
   let vitest: Vitest | undefined
   try {
-    vitest = await createVitest({
+    // The (mode, options) form works on Vitest 4 and 5 (5 keeps it as a deprecated overload).
+    vitest = await (
+      createVitest as unknown as (mode: 'test', options: Record<string, unknown>) => Promise<Vitest>
+    )('test', {
       root,
       ...(options.config ? { config: options.config } : {}),
       watch: false,

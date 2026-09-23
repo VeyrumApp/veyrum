@@ -6,6 +6,9 @@ export interface CaptureConfig {
   readonly ignored: readonly string[]
   /** File URL of the target project's `vitest` entry, so hooks register on the right runner. */
   readonly vitestEntry: string
+  /** Absolute paths of Veyrum's capture modules, loaded natively by the setup file. */
+  readonly captureIndex: string
+  readonly captureWorker: string
 }
 
 export const CAPTURE_ENV = 'VEYRUM_CAPTURE'

@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { brotliCompressSync, brotliDecompressSync } from 'node:zlib'
+import { brotliCompressSync, brotliDecompressSync, constants as zlibConstants } from 'node:zlib'
 import { type Digest, digest } from './hash.ts'
 import type { CheckRef, ClosureEntry, EvidenceRecord, RunInfo, TestOutcome } from './types.ts'
 
@@ -105,9 +105,12 @@ export class Store {
   putRecord(record: EvidenceRecord): void {
     const closureJson = JSON.stringify(record.closure)
     const closureDigest = digest(closureJson)
-    this.db
-      .prepare('INSERT OR IGNORE INTO blobs (digest, data) VALUES (?, ?)')
-      .run(closureDigest, brotliCompressSync(closureJson))
+    // Unchanged checks produce identical closures run after run; store each distinct one once.
+    const known = this.db.prepare('SELECT 1 FROM blobs WHERE digest = ?').get(closureDigest)
+    if (!known)
+      this.db
+        .prepare('INSERT INTO blobs (digest, data) VALUES (?, ?)')
+        .run(closureDigest, compress(closureJson))
     this.db
       .prepare(
         `INSERT OR REPLACE INTO records (id, check_path, project, run_id, runtime_key, verdict, reusable, created_at,
@@ -215,8 +218,15 @@ export class Store {
   }
 }
 
+/** Fast Brotli: the default quality (11) costs a fraction of a second per closure. */
+const BROTLI_FAST = { params: { [zlibConstants.BROTLI_PARAM_QUALITY]: 4 } }
+
+function compress(text: string): Uint8Array {
+  return brotliCompressSync(text, BROTLI_FAST)
+}
+
 function pack(value: unknown): Uint8Array {
-  return brotliCompressSync(JSON.stringify(value))
+  return compress(JSON.stringify(value))
 }
 
 function unpack(data: Uint8Array): unknown {

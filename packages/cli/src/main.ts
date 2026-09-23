@@ -20,6 +20,7 @@ Options:
   --config <file>      Vitest config file
   --store <file>       Evidence store (default: <root>/.veyrum/store.sqlite)
   --max-workers <n>    Vitest worker count
+  --project <name>     Vitest project filter (repeatable, wildcards allowed)
   --json <file>        Write decisions and records as JSON
   --explain            Print the reason for every decision
   --quiet              Do not print Vitest's test output
@@ -34,6 +35,7 @@ interface Args {
   config: string | undefined
   store: string
   maxWorkers: number | undefined
+  projects: string[]
   json: string | undefined
   explain: boolean
   quiet: boolean
@@ -50,6 +52,7 @@ function parse(argv: string[]): Args | null {
       config: { type: 'string' },
       store: { type: 'string' },
       'max-workers': { type: 'string' },
+      project: { type: 'string', multiple: true },
       json: { type: 'string' },
       explain: { type: 'boolean', default: false },
       quiet: { type: 'boolean', default: false },
@@ -69,6 +72,7 @@ function parse(argv: string[]): Args | null {
     config: values.config,
     store: path.resolve(values.store ?? path.join(root, '.veyrum', 'store.sqlite')),
     maxWorkers: maxWorkers && Number.isFinite(maxWorkers) ? maxWorkers : undefined,
+    projects: values.project ?? [],
     json: values.json,
     explain: values.explain,
     quiet: values.quiet,
@@ -163,7 +167,10 @@ async function main(argv: string[]): Promise<number> {
       revision: gitRevision(args.root),
       printTests: !args.quiet && mode !== 'plan',
       ...(args.config ? { config: args.config } : {}),
-      ...(args.maxWorkers ? { vitestOptions: { maxWorkers: args.maxWorkers } } : {}),
+      vitestOptions: {
+        ...(args.maxWorkers ? { maxWorkers: args.maxWorkers } : {}),
+        ...(args.projects.length > 0 ? { project: args.projects } : {}),
+      },
       ...(only ? { only } : {}),
       keepScratch: args.keepScratch,
     })
@@ -187,6 +194,14 @@ async function main(argv: string[]): Promise<number> {
   } finally {
     store.close()
   }
+}
+
+// A closed pipe (for example `veyrum plan | head`) is not an error.
+for (const stream of [process.stdout, process.stderr]) {
+  stream.on('error', (error: NodeJS.ErrnoException) => {
+    if (error.code === 'EPIPE') process.exit(process.exitCode ?? 0)
+    throw error
+  })
 }
 
 process.exitCode = await main(process.argv.slice(2))

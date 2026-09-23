@@ -28,7 +28,7 @@ const WRAPPER_OPEN = ')=>{{'
 const WRAPPER_CLOSE = '\n}}'
 
 interface IsolateState {
-  session: Session
+  session: Session | null
   files: number
 }
 
@@ -83,9 +83,19 @@ class FileRecorder implements HookSink {
   }
 }
 
+/**
+ * Returns the code strings a runner evaluated for a file (a file can be evaluated more than once).
+ * Reading them from the runner avoids the Debugger domain, which slows execution noticeably.
+ */
+export type ModuleSources = (absolutePath: string) => readonly string[] | undefined
+
 export interface WorkerCapture {
   /** Collects coverage and writes the payload for the test file that just ran. */
-  finish(testFile: string, snapshot: { added: number; updated: number }): Promise<void>
+  finish(
+    testFile: string,
+    snapshot: { added: number; updated: number },
+    sources?: ModuleSources,
+  ): Promise<void>
 }
 
 /**
@@ -102,17 +112,17 @@ export async function beginWorkerCapture(options: WorkerCaptureOptions): Promise
       ignoredPrefixes: [...options.ignoredPrefixes, path.resolve(options.outDir) + path.sep],
       observeSource: true,
     })
-    const session = new Session()
-    session.connect()
-    await session.post('Profiler.enable')
-    await session.post('Debugger.enable')
-    await session.post('Profiler.startPreciseCoverage', { callCount: false, detailed: false })
-    isolate = { session, files: 0 }
+    isolate = { session: null, files: 0 }
     g[ISOLATE_KEY] = isolate
-  } else {
-    // Isolation is off: start from a clean slate for this file. Modules cached by earlier files
-    // will not re-execute, so the payload is marked as coming from a reused isolate.
-    await isolate.session.post('Profiler.takePreciseCoverage').catch((e: unknown) => errors.push(String(e)))
+  }
+  if (!isolate.session) {
+    // A second file in the same isolate (isolation off) gets a fresh session, but modules cached
+    // by earlier files will not re-execute, so its payload is marked as coming from a reused isolate.
+    const fresh = new Session()
+    fresh.connect()
+    await fresh.post('Profiler.enable')
+    await fresh.post('Profiler.startPreciseCoverage', { callCount: false, detailed: false })
+    isolate.session = fresh
   }
   isolate.files++
   const reused = isolate.files > 1
@@ -125,9 +135,34 @@ export async function beginWorkerCapture(options: WorkerCaptureOptions): Promise
   const recorder = new FileRecorder(options.volatileEnv)
   setSink(recorder)
   const session = isolate.session
+  const state = isolate
 
   return {
-    async finish(testFile, snapshot) {
+    async finish(testFile, snapshot, sources) {
+      let debuggerEnabled = false
+      /** The executed module code and its offset inside the script, or null if not a wrapped module. */
+      const moduleCode = async (
+        absolute: string,
+        scriptId: string,
+        scriptLength: number,
+      ): Promise<{ code: string; offset: number } | null> => {
+        // The script is WRAPPER_START + args + WRAPPER_OPEN + code + WRAPPER_CLOSE.
+        for (const code of sources?.(absolute) ?? []) {
+          const offset = scriptLength - WRAPPER_CLOSE.length - code.length
+          if (offset > WRAPPER_START.length + WRAPPER_OPEN.length) return { code, offset }
+        }
+        if (!debuggerEnabled) {
+          await session.post('Debugger.enable')
+          debuggerEnabled = true
+        }
+        const source = (
+          (await session.post('Debugger.getScriptSource', { scriptId })) as { scriptSource: string }
+        ).scriptSource
+        const open = source.startsWith(WRAPPER_START) ? source.indexOf(WRAPPER_OPEN) : -1
+        if (open < 0 || !source.endsWith(WRAPPER_CLOSE)) return null
+        const offset = open + WRAPPER_OPEN.length
+        return { code: source.slice(offset, source.length - WRAPPER_CLOSE.length), offset }
+      }
       setSink(null)
       const modules: PayloadModule[] = []
       const natives = new Set<string>()
@@ -159,18 +194,13 @@ export async function beginWorkerCapture(options: WorkerCaptureOptions): Promise
             natives.add(absolute)
             continue
           }
-          const source = (
-            (await session.post('Debugger.getScriptSource', { scriptId: script.scriptId })) as {
-              scriptSource: string
-            }
-          ).scriptSource
-          const open = source.startsWith(WRAPPER_START) ? source.indexOf(WRAPPER_OPEN) : -1
-          if (open < 0 || !source.endsWith(WRAPPER_CLOSE)) {
+          const scriptLength = Math.max(0, ...script.functions.map((f) => f.ranges[0]?.endOffset ?? 0))
+          const found = await moduleCode(absolute, script.scriptId, scriptLength)
+          if (!found) {
             natives.add(absolute)
             continue
           }
-          const offset = open + WRAPPER_OPEN.length
-          const code = source.slice(offset, source.length - WRAPPER_CLOSE.length)
+          const { code, offset } = found
           const codeDigest = digest(code)
           const blob = path.join(blobDir, `${codeDigest}.js`)
           unobserved(() => {
@@ -219,6 +249,16 @@ export async function beginWorkerCapture(options: WorkerCaptureOptions): Promise
         snapshot,
         captureErrors: errors,
       }
+      // Detach so the worker can terminate promptly (an attached inspector keeps threads alive).
+      try {
+        await session.post('Profiler.stopPreciseCoverage')
+        if (debuggerEnabled) await session.post('Debugger.disable')
+        await session.post('Profiler.disable')
+      } catch {
+        // Nothing to clean up if the session already failed.
+      }
+      session.disconnect()
+      state.session = null
       unobserved(() => {
         const dir = path.join(options.outDir, 'payloads')
         fs.mkdirSync(dir, { recursive: true })
