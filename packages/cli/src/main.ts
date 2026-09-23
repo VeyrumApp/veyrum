@@ -3,7 +3,8 @@ import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { parseArgs } from 'node:util'
-import { type Decision, makePolicy, type RunMode, type RunResult, Store } from '@veyrum/core'
+import { type Decision, makePolicy, type RunMode, type RunOptions, type RunResult, Store } from '@veyrum/core'
+import { openStoreOrReset, runPlain } from './fallback.ts'
 import { markdownSummary } from './summary.ts'
 
 const HELP = `veyrum - run only the tests whose evidence is no longer valid
@@ -32,6 +33,9 @@ Options:
   --allow <flag>       Allow reuse despite a flag (repeatable), for example spawn; at your own risk
   --isolate            Vitest: run each test file in its own isolate even if the project
                        disables isolation (evidence from shared isolates is never reused)
+  --strict             Fail on Veyrum's own errors. By default, if Veyrum fails before tests
+                       run, the project's own runner runs every test instead; if recording
+                       evidence fails, the test results stand and nothing is reused later
   --keep-scratch       Keep raw worker payloads under .veyrum/tmp (debugging)
   -h, --help           Show this help
 `
@@ -51,6 +55,7 @@ interface Args {
   quiet: boolean
   full: boolean
   keepScratch: boolean
+  strict: boolean
   isolate: boolean
   audit: boolean
   canary: number
@@ -74,6 +79,7 @@ function parse(argv: string[]): Args | null {
       quiet: { type: 'boolean', default: false },
       full: { type: 'boolean', default: false },
       'keep-scratch': { type: 'boolean', default: false },
+      strict: { type: 'boolean', default: false },
       isolate: { type: 'boolean', default: false },
       audit: { type: 'boolean', default: false },
       canary: { type: 'string' },
@@ -103,6 +109,7 @@ function parse(argv: string[]): Args | null {
     quiet: values.quiet,
     full: values.full,
     keepScratch: values['keep-scratch'],
+    strict: values.strict,
     isolate: values.isolate,
     audit: values.audit,
     canary: values.canary ? Math.max(0, Math.min(1, Number(values.canary))) : 0,
@@ -133,6 +140,31 @@ function detectRunner(root: string): 'vitest' | 'jest' {
   if ('vitest' in deps) return 'vitest'
   if (pkg.jest !== undefined || 'jest' in deps) return 'jest'
   return 'vitest'
+}
+
+/** Runs through the adapter for the project's runner. */
+async function runWith(runner: 'vitest' | 'jest', args: Args, common: RunOptions): Promise<RunResult> {
+  // Fault injection for the fail-open tests.
+  if (process.env.VEYRUM_FAULT === 'before-run') throw new Error('injected fault before the run')
+  if (runner === 'jest') {
+    const { runJest } = await import('@veyrum/jest')
+    return runJest({
+      ...common,
+      ...(args.config ? { config: args.config } : {}),
+      ...(args.maxWorkers ? { maxWorkers: args.maxWorkers } : {}),
+      ...(args.projects.length > 0 ? { projects: args.projects } : {}),
+    })
+  }
+  const { runVitest } = await import('@veyrum/vitest')
+  return runVitest({
+    ...common,
+    ...(args.config ? { config: args.config } : {}),
+    vitestOptions: {
+      ...(args.maxWorkers ? { maxWorkers: args.maxWorkers } : {}),
+      ...(args.projects.length > 0 ? { project: args.projects } : {}),
+    },
+    forceIsolation: args.isolate,
+  })
 }
 
 function gitRevision(root: string): string | null {
@@ -215,9 +247,11 @@ async function main(argv: string[]): Promise<number> {
     return 2
   }
 
-  const store = Store.open(args.store)
+  const store = args.strict ? Store.open(args.store) : openStoreOrReset(args.store)
+  const runner = args.runner ?? detectRunner(args.root)
   try {
     const common = {
+      strict: args.strict,
       root: args.root,
       store,
       mode,
@@ -229,26 +263,24 @@ async function main(argv: string[]): Promise<number> {
       canary: args.canary,
       ...(args.allow.length > 0 ? { policy: makePolicy({ allow: args.allow }) } : {}),
     }
-    const runner = args.runner ?? detectRunner(args.root)
     let result: RunResult
-    if (runner === 'jest') {
-      const { runJest } = await import('@veyrum/jest')
-      result = await runJest({
-        ...common,
+    try {
+      result = await runWith(runner, args, common)
+    } catch (error) {
+      // Fail open: Veyrum's own failure must never stand between a project and its tests.
+      if (args.strict || mode === 'plan') throw error
+      const message = error instanceof Error ? error.message : String(error)
+      process.stderr.write(
+        `veyrum: internal error (${message}); running the tests with ${runner} directly, without Veyrum\n`,
+      )
+      return runPlain({
+        root: args.root,
+        runner,
         ...(args.config ? { config: args.config } : {}),
+        projects: args.projects,
         ...(args.maxWorkers ? { maxWorkers: args.maxWorkers } : {}),
-        ...(args.projects.length > 0 ? { projects: args.projects } : {}),
-      })
-    } else {
-      const { runVitest } = await import('@veyrum/vitest')
-      result = await runVitest({
-        ...common,
-        ...(args.config ? { config: args.config } : {}),
-        vitestOptions: {
-          ...(args.maxWorkers ? { maxWorkers: args.maxWorkers } : {}),
-          ...(args.projects.length > 0 ? { project: args.projects } : {}),
-        },
-        forceIsolation: args.isolate,
+        ...(only ? { only } : {}),
+        quiet: args.quiet,
       })
     }
     if (args.explain || mode === 'plan') {

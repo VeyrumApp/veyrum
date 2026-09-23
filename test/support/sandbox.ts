@@ -79,10 +79,18 @@ export class Sandbox {
     return this
   }
 
-  cli(args: readonly string[], env: Record<string, string> = {}): CliResult {
-    const json = path.join(this.dir, '.veyrum', `out-${crypto.randomBytes(4).toString('hex')}.json`)
-    fs.mkdirSync(path.dirname(json), { recursive: true })
-    // The child must not inherit this test runner's own Vitest variables.
+  /** Runs the CLI as a user would (without --strict) and returns only its exit code and output. */
+  raw(args: readonly string[], env: Record<string, string> = {}): { code: number; output: string } {
+    const result = spawnSync(process.execPath, [cli, ...args, '--max-workers', String(this.workers)], {
+      cwd: this.dir,
+      encoding: 'utf8',
+      env: this.childEnv(env),
+      timeout: 120_000,
+    })
+    return { code: result.status ?? -1, output: `${result.stdout ?? ''}${result.stderr ?? ''}` }
+  }
+
+  private childEnv(env: Record<string, string>): NodeJS.ProcessEnv {
     const childEnv: NodeJS.ProcessEnv = { ...process.env, ...env }
     for (const key of Object.keys(childEnv)) {
       if (key.startsWith('VITEST') || key.startsWith('JEST') || key === 'NODE_ENV' || key === 'TEST')
@@ -91,9 +99,17 @@ export class Sandbox {
     // Scenarios decide snapshot behavior themselves; CI systems set CI=true, which forbids writes.
     if (!('CI' in env)) delete childEnv.CI
     if (!('GITHUB_ACTIONS' in env)) delete childEnv.GITHUB_ACTIONS
+    return childEnv
+  }
+
+  cli(args: readonly string[], env: Record<string, string> = {}): CliResult {
+    const json = path.join(this.dir, '.veyrum', `out-${crypto.randomBytes(4).toString('hex')}.json`)
+    fs.mkdirSync(path.dirname(json), { recursive: true })
+    // The child must not inherit this test runner's own Vitest variables.
+    const childEnv = this.childEnv(env)
     const result = spawnSync(
       process.execPath,
-      [cli, ...args, '--quiet', '--max-workers', String(this.workers), '--json', json],
+      [cli, ...args, '--quiet', '--strict', '--max-workers', String(this.workers), '--json', json],
       {
         cwd: this.dir,
         encoding: 'utf8',

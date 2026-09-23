@@ -16,6 +16,7 @@ import {
   plan,
   type RunOptions,
   type RunResult,
+  recordEvidence,
   recordVerifications,
   runtimeFacts,
   runtimeKeyOf,
@@ -265,40 +266,47 @@ export async function runVitest(options: VitestRunOptions): Promise<VitestRunRes
 
     const recordStarted = performance.now()
     const pool = String((vitest.config as unknown as { pool?: string }).pool ?? '')
-    // One transaction: assembly caches a digest for every file it reads.
-    const { run, records } = options.store.transaction(() =>
-      assemble({
-        root,
-        runId,
-        runtimeKey,
-        runtime: facts,
-        revision: options.revision ?? null,
-        createdAt,
-        outDir: scratch,
-        outcomes: reporter.outcomes.values(),
-        main,
-        files,
-        store: options.store,
-        fs: rawFs,
-        runner: {
-          name: 'vitest',
-          version: target.version,
-          isolate: sharedWorkerProjects.size === 0,
-          pool,
-        },
-        sharedWorkerProjects,
-        ignored,
-        configFiles: [...configFiles],
-      }),
-    )
-    options.store.transaction(() => {
-      options.store.putRun(run)
-      for (const record of records) options.store.putRecord(record)
+    const recording = recordEvidence(options.strict, () => {
+      // One transaction: assembly caches a digest for every file it reads.
+      const { run, records } = options.store.transaction(() =>
+        assemble({
+          root,
+          runId,
+          runtimeKey,
+          runtime: facts,
+          revision: options.revision ?? null,
+          createdAt,
+          outDir: scratch,
+          outcomes: reporter.outcomes.values(),
+          main,
+          files,
+          store: options.store,
+          fs: rawFs,
+          runner: {
+            name: 'vitest',
+            version: target.version,
+            isolate: sharedWorkerProjects.size === 0,
+            pool,
+          },
+          sharedWorkerProjects,
+          ignored,
+          configFiles: [...configFiles],
+        }),
+      )
+      options.store.transaction(() => {
+        options.store.putRun(run)
+        for (const record of records) options.store.putRecord(record)
+      })
+      return { records, verifications: recordVerifications(options.store, runId, execution, records) }
     })
+    const { records, verifications } = recording
     const recordMs = performance.now() - recordStarted
-    const verifications = recordVerifications(options.store, runId, execution, records)
+    const outcomes = [...reporter.outcomes.values()]
     const failed =
-      records.some((r) => r.verdict === 'fail') || unhandled > 0 || records.length < selected.length
+      unhandled > 0 ||
+      (recording.recorded
+        ? records.some((r) => r.verdict === 'fail') || records.length < selected.length
+        : outcomes.some((o) => o.verdict === 'fail') || outcomes.length < selected.length)
     return {
       runId,
       runtimeKey,

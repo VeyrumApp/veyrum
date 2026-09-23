@@ -227,3 +227,14 @@ describe('outcomes and channels', () => {
     expect(s.plan()['test/spawn.test.js']?.reason).toBe('blocked-flag')
   })
 })
+
+describe('failing open', () => {
+  test('an internal error before the run falls back to running every test with Jest', () => {
+    const s = jest('fail-open').write('test/a.test.js', PLAIN_TEST)
+    const passing = s.raw(['run'], { VEYRUM_FAULT: 'before-run' })
+    expect(passing.output).toContain('running the tests with jest directly, without Veyrum')
+    expect(passing.code).toBe(0)
+    s.write('test/b.test.js', "test('broken', () => expect(1).toBe(2))\n")
+    expect(s.raw(['run'], { VEYRUM_FAULT: 'before-run' }).code).toBe(1)
+  })
+})

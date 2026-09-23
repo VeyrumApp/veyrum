@@ -228,3 +228,42 @@ describe('unobservable channels', () => {
     expect(sandbox.actions()['test/a.test.ts']).toBe('run')
   })
 })
+
+describe('failing open', () => {
+  const PASSING = "import { expect, test } from 'vitest'\ntest('ok', () => expect(1).toBe(1))\n"
+  const FAILING = "import { expect, test } from 'vitest'\ntest('broken', () => expect(1).toBe(2))\n"
+
+  test('an internal error before the run falls back to running every test with the runner', () => {
+    sandbox = new Sandbox('fail-open-before').write('test/a.test.ts', PASSING)
+    const passing = sandbox.raw(['run'], { VEYRUM_FAULT: 'before-run' })
+    expect(passing.output).toContain('running the tests with vitest directly, without Veyrum')
+    expect(passing.code).toBe(0)
+    sandbox.write('test/b.test.ts', FAILING)
+    // The fallback keeps the runner's verdict: a failing test still fails the job.
+    expect(sandbox.raw(['run'], { VEYRUM_FAULT: 'before-run' }).code).toBe(1)
+  })
+
+  test('with --strict an internal error fails instead of falling back', () => {
+    sandbox = new Sandbox('fail-open-strict').write('test/a.test.ts', PASSING)
+    const result = sandbox.raw(['run', '--strict'], { VEYRUM_FAULT: 'before-run' })
+    expect(result.code).not.toBe(0)
+    expect(result.output).not.toContain('without Veyrum')
+  })
+
+  test('a failure while recording keeps the verdict and leaves no evidence', () => {
+    sandbox = new Sandbox('fail-open-record').write('test/a.test.ts', PASSING)
+    const result = sandbox.raw(['run'], { VEYRUM_FAULT: 'record' })
+    expect(result.code).toBe(0)
+    expect(result.output).toContain('recording evidence failed')
+    expect(sandbox.plan()['test/a.test.ts']?.reason).toBe('no-evidence')
+  })
+
+  test('an unusable evidence store is set aside and replaced', () => {
+    sandbox = new Sandbox('fail-open-store').write('test/a.test.ts', PASSING)
+    sandbox.write('.veyrum/store.sqlite', 'this is not a database')
+    const result = sandbox.raw(['run', '--full'])
+    expect(result.code).toBe(0)
+    expect(result.output).toContain('could not be opened')
+    expect(sandbox.actions()['test/a.test.ts']).toBe('skip')
+  })
+})

@@ -30,6 +30,8 @@ function veyrum(corpus: Corpus, repo: string, store: string, args: readonly stri
       corpus.runner,
       ...(corpus.config ? ['--config', corpus.config] : []),
       '--quiet',
+      // A degraded run (Veyrum falling back to the plain runner) must never become a measurement.
+      '--strict',
       '--store',
       store,
       '--max-workers',

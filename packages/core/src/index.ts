@@ -24,6 +24,7 @@ export {
   type RunMode,
   type RunOptions,
   type RunResult,
+  recordEvidence,
   recordVerifications,
   seededRandom,
   selectExecution,

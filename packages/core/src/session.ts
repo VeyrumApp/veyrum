@@ -32,6 +32,11 @@ export interface RunOptions {
   readonly audit?: boolean
   /** With mode 'affected': also run this fraction of reusable files as canaries (0 to 1). */
   readonly canary?: number
+  /**
+   * Fail on Veyrum's own errors instead of degrading. By default a failure while recording evidence
+   * leaves the test results standing and only loses that run's evidence.
+   */
+  readonly strict?: boolean
 }
 
 /** A reused (or would-be reused) file that was executed anyway to check the decision. */
@@ -139,6 +144,32 @@ export function recordVerifications(
     })
   }
   return out
+}
+
+/**
+ * Records a run's evidence. Recording happens after the tests ran, so its failure must not change
+ * their verdict: unless strict, the error is reported and the run simply leaves no evidence.
+ */
+export function recordEvidence(
+  strict: boolean | undefined,
+  record: () => { readonly records: readonly EvidenceRecord[]; readonly verifications: Verification[] },
+): {
+  readonly records: readonly EvidenceRecord[]
+  readonly verifications: Verification[]
+  readonly recorded: boolean
+} {
+  try {
+    // Fault injection for the fail-open tests.
+    if (process.env.VEYRUM_FAULT === 'record') throw new Error('injected fault while recording')
+    return { ...record(), recorded: true }
+  } catch (error) {
+    if (strict) throw error
+    const message = error instanceof Error ? error.message : String(error)
+    process.stderr.write(
+      `veyrum: recording evidence failed, so nothing from this run will be reused (the test results stand): ${message}\n`,
+    )
+    return { records: [], verifications: [], recorded: false }
+  }
 }
 
 /** Small deterministic PRNG (mulberry32), seeded from a string. */

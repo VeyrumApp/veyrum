@@ -18,6 +18,7 @@ import {
   plan,
   type RunOptions,
   type RunResult,
+  recordEvidence,
   recordVerifications,
   runtimeFacts,
   runtimeKeyOf,
@@ -345,37 +346,46 @@ export async function runJest(options: JestRunOptions): Promise<RunResult> {
     const outcomes = [...session.outcomes.values()].filter((o) =>
       known.has(checkKey({ path: toRepoPath(root, o.file), project: o.project })),
     )
-    // One transaction: assembly caches a digest for every file it reads.
-    const { run, records } = options.store.transaction(() =>
-      assemble({
-        root,
-        runId,
-        runtimeKey,
-        runtime: facts,
-        revision: options.revision ?? null,
-        createdAt,
-        outDir: scratch,
-        outcomes,
-        main,
-        files,
-        store: options.store,
-        fs: rawFs,
-        runner: { name: 'jest', version: target.version, isolate: true, pool: 'workers' },
-        sharedWorkerProjects: new Set(),
-        ignored,
-        configFiles: [...configFiles],
-      }),
-    )
-    options.store.transaction(() => {
-      options.store.putRun(run)
-      for (const record of records) options.store.putRecord(record)
+    const recording = recordEvidence(options.strict, () => {
+      // One transaction: assembly caches a digest for every file it reads.
+      const { run, records } = options.store.transaction(() =>
+        assemble({
+          root,
+          runId,
+          runtimeKey,
+          runtime: facts,
+          revision: options.revision ?? null,
+          createdAt,
+          outDir: scratch,
+          outcomes,
+          main,
+          files,
+          store: options.store,
+          fs: rawFs,
+          runner: { name: 'jest', version: target.version, isolate: true, pool: 'workers' },
+          sharedWorkerProjects: new Set(),
+          ignored,
+          configFiles: [...configFiles],
+        }),
+      )
+      options.store.transaction(() => {
+        options.store.putRun(run)
+        for (const record of records) options.store.putRecord(record)
+      })
+      return { records, verifications: recordVerifications(options.store, runId, execution, records) }
     })
+    const { records, verifications } = recording
     const recordMs = performance.now() - recordStarted
-    const verifications = recordVerifications(options.store, runId, execution, records)
-    const ranKeys = new Set(records.map((r) => checkKey({ path: r.check, project: r.project })))
+    const ranKeys = new Set(
+      recording.recorded
+        ? records.map((r) => checkKey({ path: r.check, project: r.project }))
+        : outcomes.map((o) => checkKey({ path: toRepoPath(root, o.file), project: o.project })),
+    )
     const failed =
       runError ||
-      records.some((r) => r.verdict === 'fail') ||
+      (recording.recorded
+        ? records.some((r) => r.verdict === 'fail')
+        : outcomes.some((o) => o.verdict === 'fail')) ||
       selected.some((s) => !ranKeys.has(checkKey(s.check)))
     return {
       runId,
