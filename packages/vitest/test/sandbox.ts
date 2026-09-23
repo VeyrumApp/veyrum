@@ -80,6 +80,7 @@ export class Sandbox {
     )
     const output = `${result.stdout ?? ''}${result.stderr ?? ''}`
     let decisions: Decision[] = []
+    if (args[0] === 'stats') return { code: result.status ?? -1, output, decisions }
     try {
       decisions = (JSON.parse(fs.readFileSync(json, 'utf8')) as { decisions: Decision[] }).decisions
     } catch {

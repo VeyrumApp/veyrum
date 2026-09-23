@@ -49,6 +49,41 @@ describe('verdicts', () => {
   })
 })
 
+describe('audit and canaries', () => {
+  const SPAWN_READ =
+    "import { execFileSync } from 'node:child_process'\nimport { expect, test } from 'vitest'\ntest('reads through a child process', () => expect(execFileSync('cat', ['fixtures/x.txt']).toString()).toBe('a'))\n"
+
+  test('the audit catches a reuse that an allowed unobservable channel made wrong', () => {
+    sandbox = new Sandbox('audit')
+      .write('fixtures/x.txt', 'a')
+      .write('test/spawn-read.test.ts', SPAWN_READ)
+      .write('test/plain.test.ts', PLAIN_TEST)
+    expect(sandbox.cli(['run', '--full', '--allow', 'spawn']).code).toBe(0)
+    // The child process's read is invisible, so with spawn allowed the change goes unnoticed...
+    sandbox.write('fixtures/x.txt', 'b')
+    const plan = Object.fromEntries(
+      sandbox.cli(['plan', '--allow', 'spawn']).decisions.map((d) => [d.check.path, d.action]),
+    )
+    expect(plan['test/spawn-read.test.ts']).toBe('skip')
+    // ...and the audit (a full run that also plans) reports the wrong reuse as an escape.
+    const audit = sandbox.cli(['run', '--full', '--audit', '--allow', 'spawn'])
+    expect(audit.code).toBe(1)
+    expect(audit.output).toContain('ESCAPE test/spawn-read.test.ts')
+    expect(sandbox.cli(['stats']).output).toMatch(/escapes 1/)
+  })
+
+  test('canaries run a share of reusable files and record the verification', () => {
+    sandbox = new Sandbox('canary').write('test/a.test.ts', PLAIN_TEST).write('test/b.test.ts', PLAIN_TEST)
+    sandbox.capture()
+    const run = sandbox.cli(['run', '--canary', '1'])
+    expect(run.code).toBe(0)
+    expect(run.output).toContain(
+      'canaries: 2 reuse decisions verified by running them, 0 would have been wrong',
+    )
+    expect(sandbox.cli(['stats']).output).toMatch(/verified reuse decisions 2\nescapes 0/)
+  })
+})
+
 describe('evidence store placement', () => {
   test('a store in a parent directory of the project does not hide the project', () => {
     sandbox = new Sandbox('store-above')
@@ -88,6 +123,17 @@ describe('unobservable channels', () => {
     expect(plan['test/spawn.test.ts']?.action).toBe('run')
     expect(plan['test/spawn.test.ts']?.reason).toBe('blocked-flag')
     expect(plan['test/plain.test.ts']?.action).toBe('skip')
+  })
+
+  test('starting a worker thread blocks reuse', () => {
+    sandbox = new Sandbox('worker-thread').write(
+      'test/thread.test.ts',
+      "import { Worker } from 'node:worker_threads'\nimport { expect, test } from 'vitest'\ntest('thread', async () => {\n  const w = new Worker('require(\"node:worker_threads\").parentPort.postMessage(42)', { eval: true })\n  const n = await new Promise((r) => w.once('message', r))\n  await w.terminate()\n  expect(n).toBe(42)\n})\n",
+    )
+    sandbox.capture()
+    const decision = sandbox.plan()['test/thread.test.ts']
+    expect(decision?.action).toBe('run')
+    expect(decision?.reason).toBe('blocked-flag')
   })
 
   test('a remote connection blocks reuse; a loopback server does not', () => {

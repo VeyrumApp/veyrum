@@ -15,6 +15,8 @@ export interface Corpus {
   readonly install: readonly string[]
   /** Files whose change triggers a reinstall. */
   readonly lockfiles: readonly string[]
+  /** Directory (relative to the repository) where the tests run; defaults to the repository root. */
+  readonly cwd: string
   /** Extra Vitest arguments (for example project filters). */
   readonly vitestArgs: readonly string[]
   readonly maxWorkers: number
@@ -32,6 +34,7 @@ export function loadCorpus(file: string): Corpus {
   const required: (keyof Corpus)[] = ['name', 'repo', 'branch', 'commits', 'install', 'lockfiles']
   for (const key of required) if (raw[key] === undefined) throw new Error(`${file}: missing "${key}"`)
   return {
+    cwd: '',
     vitestArgs: [],
     maxWorkers: 2,
     forceIsolation: false,

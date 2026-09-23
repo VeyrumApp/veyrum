@@ -3,7 +3,7 @@ import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { parseArgs } from 'node:util'
-import { type Decision, Store } from '@veyrum/core'
+import { type Decision, makePolicy, Store } from '@veyrum/core'
 import { type RunMode, runVitest, type VitestRunResult } from '@veyrum/vitest'
 
 const HELP = `veyrum - run only the tests whose evidence is no longer valid
@@ -24,6 +24,9 @@ Options:
   --json <file>        Write decisions and records as JSON
   --explain            Print the reason for every decision
   --quiet              Do not print Vitest's test output
+  --audit              With --full: also report files the plan would have reused that fail
+  --canary <fraction>  Also run this fraction of reusable files and report any that fail
+  --allow <flag>       Allow reuse despite a flag (repeatable), for example spawn; at your own risk
   --isolate            Run each test file in its own isolate even if the project disables
                        isolation (evidence from shared isolates is never reused)
   --keep-scratch       Keep raw worker payloads under .veyrum/tmp (debugging)
@@ -44,6 +47,9 @@ interface Args {
   full: boolean
   keepScratch: boolean
   isolate: boolean
+  audit: boolean
+  canary: number
+  allow: string[]
 }
 
 function parse(argv: string[]): Args | null {
@@ -62,6 +68,9 @@ function parse(argv: string[]): Args | null {
       full: { type: 'boolean', default: false },
       'keep-scratch': { type: 'boolean', default: false },
       isolate: { type: 'boolean', default: false },
+      audit: { type: 'boolean', default: false },
+      canary: { type: 'string' },
+      allow: { type: 'string', multiple: true },
       help: { type: 'boolean', short: 'h', default: false },
     },
   })
@@ -83,6 +92,9 @@ function parse(argv: string[]): Args | null {
     full: values.full,
     keepScratch: values['keep-scratch'],
     isolate: values.isolate,
+    audit: values.audit,
+    canary: values.canary ? Math.max(0, Math.min(1, Number(values.canary))) : 0,
+    allow: values.allow ?? [],
   }
 }
 
@@ -141,9 +153,11 @@ async function main(argv: string[]): Promise<number> {
     }
     const store = Store.open(args.store)
     const s = store.stats()
+    const v = store.verificationStats()
     store.close()
     process.stdout.write(
-      `store ${args.store}\nruns ${s.runs}\nrecords ${s.records}\ndistinct closures ${s.closures}\nsize ${(s.bytes / 1024 / 1024).toFixed(2)} MB\n`,
+      `store ${args.store}\nruns ${s.runs}\nrecords ${s.records}\ndistinct closures ${s.closures}\nsize ${(s.bytes / 1024 / 1024).toFixed(2)} MB\n` +
+        `verified reuse decisions ${v.verified}\nescapes ${v.escapes}\n`,
     )
     return 0
   }
@@ -179,6 +193,9 @@ async function main(argv: string[]): Promise<number> {
       ...(only ? { only } : {}),
       keepScratch: args.keepScratch,
       forceIsolation: args.isolate,
+      audit: args.audit,
+      canary: args.canary,
+      ...(args.allow.length > 0 ? { policy: makePolicy({ allow: args.allow }) } : {}),
     })
     if (args.explain || mode === 'plan') {
       for (const d of [...result.decisions].sort((a, b) => a.check.path.localeCompare(b.check.path))) {
@@ -186,6 +203,18 @@ async function main(argv: string[]): Promise<number> {
       }
     }
     process.stdout.write(`${summarize(result, mode)}\n`)
+    if (result.verifications.length > 0) {
+      const escapes = result.verifications.filter((v) => v.outcome === 'fail')
+      const kind = result.verifications[0]?.kind === 'audit' ? 'audit' : 'canaries'
+      process.stdout.write(
+        `veyrum: ${kind}: ${result.verifications.length} reuse decisions verified by running them, ${escapes.length} would have been wrong\n`,
+      )
+      for (const e of escapes) {
+        process.stdout.write(
+          `veyrum: ESCAPE ${e.check.path} was reusable (evidence ${e.recordId.slice(0, 8)}) but fails\n`,
+        )
+      }
+    }
     if (args.json) {
       fs.writeFileSync(
         args.json,

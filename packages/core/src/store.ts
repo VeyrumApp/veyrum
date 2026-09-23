@@ -58,6 +58,11 @@ export class Store {
         path TEXT PRIMARY KEY, size INTEGER NOT NULL, mtime_ns TEXT NOT NULL, ino INTEGER NOT NULL, digest TEXT
       );
       CREATE TABLE IF NOT EXISTS unit_cache (key TEXT PRIMARY KEY, units TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS verifications (
+        run_id TEXT NOT NULL, check_path TEXT NOT NULL, project TEXT NOT NULL, record_id TEXT NOT NULL,
+        kind TEXT NOT NULL, outcome TEXT NOT NULL, created_at TEXT NOT NULL,
+        PRIMARY KEY (run_id, check_path, project)
+      );
     `)
     const row = db.prepare('SELECT value FROM meta WHERE key = ?').get('schema') as
       | { value: string }
@@ -156,6 +161,49 @@ export class Store {
       project: string
     }[]
     return rows.map((r) => ({ path: r.check_path, project: r.project }))
+  }
+
+  /**
+   * Records that a reuse decision was checked by running the file anyway. A failing outcome is an
+   * escape: the file would have been reused although it fails.
+   */
+  putVerification(
+    runId: string,
+    check: CheckRef,
+    recordId: string,
+    kind: string,
+    outcome: 'pass' | 'fail',
+  ): void {
+    this.db
+      .prepare(
+        `INSERT OR REPLACE INTO verifications (run_id, check_path, project, record_id, kind, outcome, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(runId, check.path, check.project, recordId, kind, outcome, new Date().toISOString())
+  }
+
+  /** The escape record: how many reuse decisions were verified, and how many would have been wrong. */
+  verificationStats(): {
+    verified: number
+    escapes: number
+    byKind: Record<string, { verified: number; escapes: number }>
+  } {
+    const rows = this.db
+      .prepare('SELECT kind, outcome, COUNT(*) AS n FROM verifications GROUP BY kind, outcome')
+      .all() as { kind: string; outcome: string; n: number }[]
+    const byKind: Record<string, { verified: number; escapes: number }> = {}
+    let verified = 0
+    let escapes = 0
+    for (const r of rows) {
+      const k = (byKind[r.kind] ??= { verified: 0, escapes: 0 })
+      k.verified += r.n
+      verified += r.n
+      if (r.outcome === 'fail') {
+        k.escapes += r.n
+        escapes += r.n
+      }
+    }
+    return { verified, escapes, byKind }
   }
 
   stats(): { runs: number; records: number; closures: number; bytes: number } {

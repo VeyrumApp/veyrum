@@ -67,6 +67,8 @@ export type ResultLine = CommitResult | MutantResult
 interface ReplayPaths {
   readonly work: string
   readonly repo: string
+  /** Where the tests run (the repository, or a package inside it). */
+  readonly testRoot: string
   readonly store: string
   readonly results: string
   readonly scratch: string
@@ -77,6 +79,7 @@ export function pathsFor(corpus: Corpus, benchRoot: string): ReplayPaths {
   return {
     work,
     repo: path.join(work, 'repo'),
+    testRoot: path.join(work, 'repo', corpus.cwd),
     store: path.join(work, 'store.sqlite'),
     results: path.join(work, 'results.jsonl'),
     scratch: path.join(work, 'scratch'),
@@ -150,12 +153,22 @@ async function selectAll(
   since: string | null,
   veyrumSelection: Set<string>,
 ): Promise<Record<BaselineName, Set<string> | null>> {
-  const ctx: SelectionContext = { repo: paths.repo, store, checks, changed, lockfiles: corpus.lockfiles }
+  // Git paths are relative to the repository; selectors work relative to the test root.
+  const relative = changed.map((f) =>
+    path.relative(paths.testRoot, path.join(paths.repo, f)).split(path.sep).join('/'),
+  )
+  const ctx: SelectionContext = {
+    repo: paths.testRoot,
+    store,
+    checks,
+    changed: relative,
+    lockfileChanged: changed.some((f) => corpus.lockfiles.includes(f)),
+  }
   const runtimeKey = latestRuntimeKey(store, checks)
   return {
     all: new Set(checks.map((c) => c.path)),
     naive: selectNaive(ctx),
-    'vitest-changed': vitestChanged(corpus, paths.repo, paths.scratch, since),
+    'vitest-changed': vitestChanged(corpus, paths.testRoot, paths.scratch, since),
     'file-coverage': selectFileCoverage(ctx),
     'file-closure': runtimeKey ? await selectFileClosure(ctx, runtimeKey) : null,
     veyrum: veyrumSelection,
@@ -222,7 +235,7 @@ export async function replay(corpus: Corpus, benchRoot: string, options: ReplayO
       let veyrumPlanMs: number | null = null
       let checks: CheckRef[] = []
       if (parent) {
-        const p = veyrumPlan(corpus, paths.repo, paths.store, paths.scratch)
+        const p = veyrumPlan(corpus, paths.testRoot, paths.store, paths.scratch)
         veyrumPlanMs = p.planMs
         checks = p.decisions.map((d) => d.check)
         const veyrumSelection = new Set(
@@ -235,13 +248,13 @@ export async function replay(corpus: Corpus, benchRoot: string, options: ReplayO
       //    since both runs are sequential on the same tree).
       let plainWallMs: number | null = null
       if (options.overheadEvery > 0 && index % options.overheadEvery === 0) {
-        plainWallMs = plainRun(corpus, paths.repo, paths.scratch).wallMs
+        plainWallMs = plainRun(corpus, paths.testRoot, paths.scratch).wallMs
       }
 
       // 3. Ground truth and evidence for the next commit.
-      const capture = captureRun(corpus, paths.repo, paths.store, paths.scratch)
+      const capture = captureRun(corpus, paths.testRoot, paths.store, paths.scratch)
       const outcomes = capture.outcomes
-      const flaky = detectFlaky(corpus, paths.repo, paths.scratch, outcomes)
+      const flaky = detectFlaky(corpus, paths.testRoot, paths.scratch, outcomes)
       const prevOutcomes = new Map(Object.entries(prev?.outcomes ?? {}))
       const flips: string[] = []
       for (const [file, o] of outcomes) {
@@ -338,7 +351,7 @@ function* runMutants(
       const original = fs.readFileSync(absolute, 'utf8')
       fs.writeFileSync(absolute, applyMutant(original, m))
       try {
-        const plan = veyrumPlan(corpus, paths.repo, paths.store, paths.scratch)
+        const plan = veyrumPlan(corpus, paths.testRoot, paths.store, paths.scratch)
         const planChecks = plan.decisions.map((d) => d.check)
         const veyrumSelection = new Set(
           plan.decisions.filter((d) => d.action === 'run').map((d) => d.check.path),
@@ -357,7 +370,7 @@ function* runMutants(
         try {
           const kill = plainRun(
             corpus,
-            paths.repo,
+            paths.testRoot,
             paths.scratch,
             [],
             Math.round(Math.max(120_000, captureWallMs * 3)),

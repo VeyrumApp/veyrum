@@ -5,6 +5,7 @@ import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import workerThreads from 'node:worker_threads'
 
 export type PathKind = 'read' | 'stat' | 'dir'
 export type PathType = 'file' | 'dir' | 'other' | 'absent'
@@ -338,6 +339,26 @@ function installNetHooks(): void {
   }
 }
 
+/**
+ * Code in a worker thread runs in another isolate: its reads are not attributed to the test file,
+ * so starting one is treated like starting a child process.
+ */
+function installWorkerThreadHook(): void {
+  const Original = workerThreads.Worker
+  class ObservedWorker extends Original {
+    constructor(...args: ConstructorParameters<typeof Original>) {
+      try {
+        state.sink.spawn('worker_threads')
+      } catch {
+        // Observation must never change behavior.
+      }
+      super(...args)
+    }
+  }
+  Object.defineProperty(ObservedWorker, 'name', { value: 'Worker' })
+  ;(workerThreads as { Worker: typeof Original }).Worker = ObservedWorker
+}
+
 function installProcessHooks(): void {
   for (const name of [
     'spawn',
@@ -412,6 +433,7 @@ export function installHooks(options: InstallOptions = {}): void {
   installEnvProxy()
   installNetHooks()
   installProcessHooks()
+  installWorkerThreadHook()
   if (options.observeSource) installToStringHook()
   syncBuiltinESMExports()
 }

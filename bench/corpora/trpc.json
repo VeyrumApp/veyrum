@@ -1,0 +1,13 @@
+{
+  "name": "trpc",
+  "repo": "https://github.com/trpc/trpc.git",
+  "branch": "main",
+  "commits": 40,
+  "install": ["pnpm", "install", "--frozen-lockfile", "--prefer-offline"],
+  "lockfiles": ["pnpm-lock.yaml"],
+  "vitestArgs": [],
+  "maxWorkers": 2,
+  "mutationSources": ["^packages/(server|client|react-query)/src/.+\\.tsx?$"],
+  "mutantsPerCommit": 6,
+  "mutationEvery": 4
+}

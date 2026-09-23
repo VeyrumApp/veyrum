@@ -14,10 +14,10 @@ export interface SelectionContext {
   readonly store: Store
   /** Every test file at the commit being planned. */
   readonly checks: readonly CheckRef[]
-  /** Repository paths changed since the evidence was recorded. */
+  /** Paths (relative to the test root) changed since the evidence was recorded. */
   readonly changed: readonly string[]
-  /** Lockfiles, tracked by the coverage baseline like Datadog's "tracked files". */
-  readonly lockfiles: readonly string[]
+  /** Whether a lockfile changed: tracked by the coverage baseline like Datadog's "tracked files". */
+  readonly lockfileChanged: boolean
 }
 
 const DOC_LIKE = /\.(md|mdx|txt|png|jpe?g|gif|svg|ico|webp)$|(^|\/)(LICENSE|CHANGELOG[^/]*|\.github\/.*)$/i
@@ -76,7 +76,7 @@ export async function selectFileClosure(ctx: SelectionContext, runtimeKey: strin
 export function selectFileCoverage(ctx: SelectionContext): Set<string> {
   const state = new CurrentState(ctx.repo, ctx.store)
   const trackedChanged = new Map<string, boolean>()
-  const lockfileChanged = ctx.changed.some((f) => ctx.lockfiles.includes(f))
+  const lockfileChanged = ctx.lockfileChanged
   const tracked = (run: RunInfo): boolean => {
     let changed = trackedChanged.get(run.id)
     if (changed === undefined) {

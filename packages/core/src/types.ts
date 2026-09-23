@@ -40,7 +40,7 @@ export const FLAGS = {
   netRemote: 'net-remote',
   /** Opened a loopback network connection (usually a server the test started itself). */
   netLocal: 'net-local',
-  /** Spawned a child process; its behavior is not observed. */
+  /** Spawned a child process or worker thread; its behavior is not observed. */
   spawn: 'spawn',
   /** Loaded a native addon (its binary is recorded as a dependency). */
   native: 'native-addon',

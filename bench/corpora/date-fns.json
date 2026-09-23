@@ -1,0 +1,15 @@
+{
+  "name": "date-fns",
+  "repo": "https://github.com/date-fns/date-fns.git",
+  "branch": "main",
+  "commits": 40,
+  "cwd": "pkgs/core",
+  "install": ["pnpm", "install", "--frozen-lockfile", "--prefer-offline"],
+  "lockfiles": ["pnpm-lock.yaml"],
+  "vitestArgs": ["--project", "main"],
+  "maxWorkers": 2,
+  "forceIsolation": true,
+  "mutationSources": ["^pkgs/core/src/[^/]+/index\\.ts$"],
+  "mutantsPerCommit": 6,
+  "mutationEvery": 4
+}
