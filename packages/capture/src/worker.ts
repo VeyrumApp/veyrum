@@ -198,6 +198,34 @@ function installCompileHooks(isolate: IsolateState): void {
 
 const ISOLATE_KEY = Symbol.for('veyrum.capture.isolate')
 
+interface ScriptLocation {
+  readonly absolute: string
+  readonly ignored: boolean
+  /** Inside the repository and outside node_modules: a module whose code is fingerprinted. */
+  readonly repositoryModule: boolean
+}
+
+/**
+ * Where a script's URL points, computed once per URL: a worker that hosts many files (Jest) sees
+ * the same thousands of scripts in every coverage result.
+ */
+const scriptLocations = new Map<string, ScriptLocation>()
+
+function scriptLocation(url: string, options: WorkerCaptureOptions): ScriptLocation {
+  let where = scriptLocations.get(url)
+  if (!where) {
+    const absolute = url.startsWith('file://') ? fileURLToPath(url) : url
+    where = {
+      absolute,
+      ignored: options.ignoredPrefixes.some((p) => absolute.startsWith(p)),
+      repositoryModule:
+        isInside(options.root, absolute) && !absolute.includes(`${path.sep}node_modules${path.sep}`),
+    }
+    scriptLocations.set(url, where)
+  }
+  return where
+}
+
 /**
  * Diagnostics: a directory to write a CPU profile of each test file's capture window into. Runners
  * end their workers without letting `--cpu-prof` write, so the profile is taken here.
@@ -464,14 +492,15 @@ export async function beginWorkerCapture(options: WorkerCaptureOptions): Promise
             continue
           }
           if (!url.startsWith('file://') && !url.startsWith('/')) continue
-          const absolute = url.startsWith('file://') ? fileURLToPath(url) : url
-          if (options.ignoredPrefixes.some((p) => absolute.startsWith(p))) continue
+          const where = scriptLocation(url, options)
+          if (where.ignored) continue
+          const absolute = where.absolute
           const executed = script.functions.some((f) => (f.ranges[0]?.count ?? 0) > 0)
           // Jest keeps earlier files' scripts in the isolate; only those that ran now belong to this
           // file. Scripts Jest did not compile into the test context during this file are the runner
           // and its toolchain (transformers), recorded as shared inputs instead.
           if (layout === 'jest' && (!executed || !compiled?.has(absolute))) continue
-          if (!isInside(options.root, absolute) || absolute.includes(`${path.sep}node_modules${path.sep}`)) {
+          if (!where.repositoryModule) {
             natives.add(absolute)
             continue
           }

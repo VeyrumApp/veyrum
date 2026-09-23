@@ -133,8 +133,13 @@ function typeOf(absolute: string): PathType {
   }
 }
 
+/** Already absolute and normalized: no `.` or `..` segments, doubled or trailing separators. */
+const NOT_NORMAL = /\/\.\.?(\/|$)|\/\/|.\/$/
+
 function toAbsolute(p: unknown): string | null {
-  if (typeof p === 'string') return path.resolve(p)
+  // Most paths the runner and its toolchain pass are already absolute and normal (POSIX only).
+  if (typeof p === 'string')
+    return path.sep === '/' && p.startsWith('/') && !NOT_NORMAL.test(p) ? p : path.resolve(p)
   if (p instanceof URL) return p.protocol === 'file:' ? fileURLToPath(p) : null
   if (Buffer.isBuffer(p)) return path.resolve(p.toString('utf8'))
   return null
@@ -175,9 +180,18 @@ function callerFiles(limit: number): string[] {
   return sites.map((site) => {
     // ES modules report file URLs.
     const file = site.getFileName() ?? ''
-    return file.startsWith('file://') ? fileURLToPath(file) : file
+    if (!file.startsWith('file://')) return file
+    let converted = urlPaths.get(file)
+    if (converted === undefined) {
+      converted = fileURLToPath(file)
+      urlPaths.set(file, converted)
+    }
+    return converted
   })
 }
+
+/** File URLs of call sites, converted once: the same few modules read files over and over. */
+const urlPaths = new Map<string, string>()
 
 /** Deep enough to reach a manifest reader behind its fs abstraction (Babel reads through gensync). */
 const MANIFEST_STACK_LIMIT = 40
