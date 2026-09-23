@@ -81,6 +81,35 @@ describe('code', () => {
     expect(s.actions()['test/source.test.js']).toBe('run')
   })
 
+  test('a function an earlier file made hot is still recorded for a later file that calls it once', () => {
+    // One worker runs both files in turn. The large file sorts first (Jest runs bigger files
+    // first), and makes hot() hot enough for V8 to optimize it.
+    const s = jest('hot-function')
+      .write(
+        'src/lib.js',
+        'function hot(x) { return x * 2 + 1 }\nfunction other(x) { return x - 1 }\nmodule.exports = { hot, other }\n',
+      )
+      .write(
+        'test/a.test.js',
+        `${'// padding\n'.repeat(400)}const { hot } = require('../src/lib')\ntest('loop', () => { let x = 0; for (let i = 0; i < 2e6; i++) x += hot(i); expect(x).toBeGreaterThan(0) })\n`,
+      )
+      .write(
+        'test/b.test.js',
+        "const { hot } = require('../src/lib')\ntest('once', () => expect(hot(1)).toBe(3))\n",
+      )
+      .write(
+        'test/c.test.js',
+        "const { other } = require('../src/lib')\ntest('other', () => expect(other(1)).toBe(0))\n",
+      )
+    s.capture()
+    s.edit('src/lib.js', 'x * 2 + 1', 'x * 2 + 2')
+    expect(s.actions()).toEqual({
+      'test/a.test.js': 'run',
+      'test/b.test.js': 'run',
+      'test/c.test.js': 'skip',
+    })
+  })
+
   test('a dependency change invalidates only the files that loaded it', () => {
     const s = jest('dependency')
       .write(

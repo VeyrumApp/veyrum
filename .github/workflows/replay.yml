@@ -24,6 +24,10 @@ on:
       mutation-every:
         description: Sample mutants every Nth commit (empty for the corpus default)
         default: ''
+      cpu-profile:
+        description: Write a CPU profile of every capture window (diagnostics; use a short range)
+        type: boolean
+        default: false
 
 # Replays execute third-party code (every commit's install scripts and tests), so the workflow
 # token is read-only and never left in the checkout.
@@ -88,6 +92,7 @@ jobs:
           COMMITS: ${{ inputs.commits }}
           MUTANTS: ${{ inputs.mutants-per-commit }}
           EVERY: ${{ inputs.mutation-every }}
+          VEYRUM_CPU_PROFILE: ${{ inputs.cpu-profile && format('{0}/profiles', runner.temp) || '' }}
         run: |
           args=(--bench "$RUNNER_TEMP/bench" --overhead-every 4 --shard "$SHARD" --until "$UNTIL")
           if [ -n "$COMMITS" ]; then args+=(--commits "$COMMITS"); fi
@@ -101,6 +106,7 @@ jobs:
           path: |
             ${{ runner.temp }}/bench/${{ matrix.corpus }}/results.jsonl
             ${{ runner.temp }}/replay.log
+            ${{ runner.temp }}/profiles
           if-no-files-found: warn
 
   merge:
