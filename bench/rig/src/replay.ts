@@ -126,6 +126,13 @@ function install(corpus: Corpus, repo: string): void {
   if (r.code !== 0) throw new Error(`install failed:\n${r.stdout.slice(-3000)}\n${r.stderr.slice(-3000)}`)
 }
 
+function prepare(corpus: Corpus, repo: string): void {
+  const [cmd, ...args] = corpus.prepare ?? []
+  if (!cmd) return
+  const r = exec(cmd, args, { cwd: repo })
+  if (r.code !== 0) throw new Error(`prepare failed:\n${r.stdout.slice(-3000)}\n${r.stderr.slice(-3000)}`)
+}
+
 /** Reruns failing files twice; any that pass are flaky and excluded from safety scoring. */
 function detectFlaky(corpus: Corpus, repo: string, scratch: string, outcomes: Outcomes): Set<string> {
   const failing = [...outcomes].filter(([, o]) => o.verdict === 'fail').map(([f]) => f)
@@ -224,6 +231,7 @@ export async function replay(corpus: Corpus, benchRoot: string, options: ReplayO
         install(corpus, paths.repo)
         installedLock = lock
       }
+      prepare(corpus, paths.repo)
 
       const parent = prev?.sha ?? null
       const changed = parent
@@ -360,6 +368,7 @@ function* runMutants(
       const original = fs.readFileSync(absolute, 'utf8')
       fs.writeFileSync(absolute, applyMutant(original, m))
       try {
+        prepare(corpus, paths.repo)
         const plan = veyrumPlan(corpus, paths.testRoot, paths.store, paths.scratch)
         const planChecks = plan.decisions.map((d) => d.check)
         const veyrumSelection = new Set(
@@ -417,6 +426,7 @@ function* runMutants(
         }
       } finally {
         fs.writeFileSync(absolute, original)
+        prepare(corpus, paths.repo)
       }
     })()
   }

@@ -13,6 +13,11 @@ export interface Corpus {
   readonly until?: string
   /** Dependency installation command, run whenever a lockfile changes. */
   readonly install: readonly string[]
+  /**
+   * Command run at every commit after installing, and around each mutant, for projects whose
+   * tests run built output (for example a build of workspace packages).
+   */
+  readonly prepare?: readonly string[]
   /** Files whose change triggers a reinstall. */
   readonly lockfiles: readonly string[]
   /** Directory (relative to the repository) where the tests run; defaults to the repository root. */
