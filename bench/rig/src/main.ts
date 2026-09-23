@@ -4,6 +4,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 import { loadCorpus } from './corpus.ts'
+import { EXIT_KILLED, KilledError } from './exec.ts'
 import { pathsFor, replay } from './replay.ts'
 import { readLines, renderReport } from './report.ts'
 
@@ -52,4 +53,11 @@ async function main(argv: string[]): Promise<number> {
   return 2
 }
 
-process.exitCode = await main(process.argv.slice(2))
+try {
+  process.exitCode = await main(process.argv.slice(2))
+} catch (error) {
+  // Killed from outside after every retry: exit so bench/replay.sh resumes the replay later.
+  if (!(error instanceof KilledError)) throw error
+  process.stderr.write(`${error.message}\n`)
+  process.exitCode = EXIT_KILLED
+}

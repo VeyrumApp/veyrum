@@ -10,9 +10,9 @@ for attempt in 1 2 3 4 5 6 7 8; do
   node --max-old-space-size=1024 "$here/rig/dist/main.js" replay "$@"
   code=$?
   (( code == 0 )) && exit 0
-  # 137/143: killed by a signal (SIGKILL/SIGTERM); anything else is a real failure.
-  (( code == 137 || code == 143 )) || exit "$code"
+  # 137/143: the rig itself was killed; 75: a test run kept being killed. Anything else is a real failure.
+  (( code == 137 || code == 143 || code == 75 )) || exit "$code"
   echo "[replay.sh] killed (exit $code), resuming (attempt $((attempt + 1)))" >&2
-  sleep 30
+  sleep 120
 done
 exit 1

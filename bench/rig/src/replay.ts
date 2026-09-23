@@ -3,7 +3,7 @@ import path from 'node:path'
 import { type CheckRef, digest, Store } from '@veyrum/core'
 import { type SelectionContext, selectFileClosure, selectFileCoverage, selectNaive } from './baselines.ts'
 import type { Corpus } from './corpus.ts'
-import { exec, git } from './exec.ts'
+import { exec, git, KilledError } from './exec.ts'
 import { applyMutant, type Mutant, mutationSites, rng } from './mutate.ts'
 import { captureRun, type Outcomes, plainRun, runnerChanged, veyrumPlan } from './runners.ts'
 
@@ -386,6 +386,7 @@ function* runMutants(
             .filter(([f, o]) => o.verdict === 'fail' && outcomes.get(f)?.verdict === 'pass')
             .map(([f]) => f)
         } catch (error) {
+          if (error instanceof KilledError) throw error
           timedOut = true
           log(`  mutant run failed: ${String(error).slice(0, 600)}`)
         }
