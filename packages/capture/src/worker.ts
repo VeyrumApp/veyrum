@@ -6,7 +6,15 @@ import { threadId } from 'node:worker_threads'
 import { digest } from '@veyrum/core/hash'
 import { isInside } from '@veyrum/core/paths'
 import { hashEnvValue } from '@veyrum/core/state'
-import { type HookSink, installHooks, type PathKind, type PathType, setSink, unobserved } from './hooks.ts'
+import {
+  getSink,
+  type HookSink,
+  installHooks,
+  type PathKind,
+  type PathType,
+  setSink,
+  unobserved,
+} from './hooks.ts'
 import type { PayloadModule, WorkerPayload } from './payload.ts'
 
 export type { WorkerPayload } from './payload.ts'
@@ -20,6 +28,13 @@ export interface WorkerCaptureOptions {
   readonly ignoredPrefixes: readonly string[]
   /** Environment variable names never recorded (values differ on every run). */
   readonly volatileEnv: RegExp
+  /**
+   * How the runner evaluates modules:
+   * - 'vitest': a fresh isolate per file; every repository module is wrapped by Vite's evaluator;
+   * - 'jest': an isolate is reused across files but modules are re-evaluated per file with
+   *   vm.compileFunction (no wrapper), so a file's modules are the scripts executed during it.
+   */
+  readonly layout?: 'vitest' | 'jest'
 }
 
 /** The prefix Vitest wraps every transformed module in; offsets are shifted by its length. */
@@ -133,6 +148,9 @@ export async function beginWorkerCapture(options: WorkerCaptureOptions): Promise
     return out
   })
   const recorder = new FileRecorder(options.volatileEnv)
+  const layout = options.layout ?? 'vitest'
+  // Restored at finish: tests can run inside the runner's main process, whose recorder is active.
+  const outerSink = getSink()
   setSink(recorder)
   const session = isolate.session
   const state = isolate
@@ -163,7 +181,18 @@ export async function beginWorkerCapture(options: WorkerCaptureOptions): Promise
         const offset = open + WRAPPER_OPEN.length
         return { code: source.slice(offset, source.length - WRAPPER_CLOSE.length), offset }
       }
-      setSink(null)
+      /** Scripts compiled with vm.compileFunction have exactly the module code as their source. */
+      const unwrappedCode = async (scriptId: string): Promise<{ code: string; offset: number }> => {
+        if (!debuggerEnabled) {
+          await session.post('Debugger.enable')
+          debuggerEnabled = true
+        }
+        const source = (
+          (await session.post('Debugger.getScriptSource', { scriptId })) as { scriptSource: string }
+        ).scriptSource
+        return { code: source, offset: 0 }
+      }
+      setSink(outerSink)
       const modules: PayloadModule[] = []
       const natives = new Set<string>()
       let evalScripts = 0
@@ -190,12 +219,18 @@ export async function beginWorkerCapture(options: WorkerCaptureOptions): Promise
           if (!url.startsWith('file://') && !url.startsWith('/')) continue
           const absolute = url.startsWith('file://') ? fileURLToPath(url) : url
           if (options.ignoredPrefixes.some((p) => absolute.startsWith(p))) continue
+          const executed = script.functions.some((f) => (f.ranges[0]?.count ?? 0) > 0)
+          // Jest keeps earlier files' scripts in the isolate; only those that ran now belong to this file.
+          if (layout === 'jest' && !executed) continue
           if (!isInside(options.root, absolute) || absolute.includes(`${path.sep}node_modules${path.sep}`)) {
             natives.add(absolute)
             continue
           }
           const scriptLength = Math.max(0, ...script.functions.map((f) => f.ranges[0]?.endOffset ?? 0))
-          const found = await moduleCode(absolute, script.scriptId, scriptLength)
+          const found =
+            layout === 'jest'
+              ? await unwrappedCode(script.scriptId)
+              : await moduleCode(absolute, script.scriptId, scriptLength)
           if (!found) {
             natives.add(absolute)
             continue
@@ -217,8 +252,9 @@ export async function beginWorkerCapture(options: WorkerCaptureOptions): Promise
             if (!range || range.count === 0) continue
             const start = range.startOffset - offset
             const end = range.endOffset - offset
-            // The script function and the wrapper arrow extend past the module code: they are the top level.
-            if (start < 0 || end > code.length) continue
+            // The script function and any wrapper extend past or span the module code: they are the
+            // top level, which is always recorded.
+            if (start < 0 || end > code.length || (start === 0 && end === code.length)) continue
             mod.executed.set(`${start}:${end}`, [start, end])
           }
         }
@@ -232,7 +268,8 @@ export async function beginWorkerCapture(options: WorkerCaptureOptions): Promise
         testFile,
         pid: process.pid,
         threadId,
-        isolateReused: reused,
+        // Jest re-evaluates every module per file, so reusing its worker process is not sharing.
+        isolateReused: layout === 'vitest' && reused,
         modules,
         natives: [...natives],
         paths: [...recorder.paths.values()],

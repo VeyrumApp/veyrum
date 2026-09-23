@@ -125,6 +125,14 @@ describe('fingerprint sensitivity', () => {
     expect(units('String.raw`a\\n`')[TOP_UNIT]).not.toBe(units('String.raw`a\\x0a`')[TOP_UNIT])
   })
 
+  test('CommonJS with a top-level return is fingerprinted, not opaque', () => {
+    const m = fingerprintModule(
+      '"use strict";\nif (typeof x === "undefined") return;\nexports.f = function f() { return 1 }',
+    )
+    expect(m.opaque).toBe(false)
+    expect([...m.units.keys()]).toContain('@top/fn:f#0')
+  })
+
   test('unparseable code becomes one opaque unit', () => {
     const m = fingerprintModule('function (')
     expect(m.opaque).toBe(true)

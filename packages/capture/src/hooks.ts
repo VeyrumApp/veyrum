@@ -84,6 +84,11 @@ export function setSink(sink: HookSink | null): void {
   state.sink = sink ?? noop
 }
 
+/** The active sink, so a nested capture can restore it (tests running in the main process). */
+export function getSink(): HookSink | null {
+  return state.sink === noop ? null : state.sink
+}
+
 /** Runs fn without recording anything (for the capture layer's own I/O). */
 export function unobserved<T>(fn: () => T): T {
   state.depth++
@@ -256,9 +261,9 @@ function installFsHooks(): void {
   wrap(p, 'open', openHook)
 }
 
-function installEnvProxy(): void {
-  const real = process.env
-  if ((real as any)[STATE_KEY]) return
+/** Wraps an environment object so reads, enumerations and writes are reported to the sink. */
+export function observeEnv<T extends Record<string, string | undefined>>(real: T): T {
+  if ((real as any)[STATE_KEY]) return real
   // Spreads and Object.assign enumerate keys, then read every property in the same tick.
   let copying = false
   const noteEnumeration = (): void => {
@@ -268,7 +273,7 @@ function installEnvProxy(): void {
       copying = false
     })
   }
-  const proxy = new Proxy(real, {
+  return new Proxy(real, {
     get(target, key, receiver) {
       if (key === STATE_KEY) return true
       const value = Reflect.get(target, key, receiver)
@@ -279,7 +284,7 @@ function installEnvProxy(): void {
     has(target, key) {
       const present = Reflect.has(target, key)
       if (typeof key === 'string' && state.depth === 0)
-        state.sink.env(key, present ? target[key] : undefined, copying)
+        state.sink.env(key, present ? (target as any)[key] : undefined, copying)
       return present
     },
     getOwnPropertyDescriptor(target, key) {
@@ -303,7 +308,10 @@ function installEnvProxy(): void {
       return Reflect.deleteProperty(target, key)
     },
   })
-  process.env = proxy
+}
+
+function installEnvProxy(): void {
+  process.env = observeEnv(process.env as Record<string, string | undefined>) as NodeJS.ProcessEnv
 }
 
 const LOOPBACK = /^(localhost|127\.\d+\.\d+\.\d+|::1|0\.0\.0\.0|::|\[::1\])$/i

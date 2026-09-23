@@ -1,6 +1,8 @@
 export {
+  getSink,
   type HookSink,
   installHooks,
+  observeEnv,
   type PathKind,
   type PathType,
   type RawFs,

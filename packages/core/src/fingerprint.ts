@@ -63,7 +63,10 @@ function isFunction(n: AstNode): boolean {
 export function fingerprintModule(code: string, options: FingerprintOptions = {}): ModuleUnits {
   let program: AstNode
   try {
-    const result = parseSync('module.js', code, { sourceType: 'module', lang: 'js' })
+    // ES modules first; CommonJS (Jest's compiled modules) allows top-level return.
+    let result = parseSync('module.js', code, { sourceType: 'module', lang: 'js' })
+    if (result.errors.length > 0)
+      result = parseSync('module.js', code, { sourceType: 'commonjs', lang: 'js' })
     if (result.errors.length > 0) return opaqueModule(code)
     program = result.program as unknown as AstNode
   } catch {
