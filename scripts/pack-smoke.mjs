@@ -55,8 +55,8 @@ function project(name, devDependencies, files) {
   const overrides = ['core', 'capture', 'vitest', 'jest'].map(
     (p) => `  '@veyrum/${p}': '${tarball(`veyrum-${p}`)}'`,
   )
-  // Jest's optional native helpers need no install scripts (as in the repository's own workspace).
-  const allowBuilds = "allowBuilds:\n  '@parcel/watcher': false\n  unrs-resolver: false\n"
+  // Optional native helpers (Jest's, and esbuild for Vite 7) need no install scripts.
+  const allowBuilds = "allowBuilds:\n  '@parcel/watcher': false\n  unrs-resolver: false\n  esbuild: false\n"
   fs.writeFileSync(
     path.join(dir, 'pnpm-workspace.yaml'),
     `overrides:\n${overrides.join('\n')}\n${allowBuilds}`,

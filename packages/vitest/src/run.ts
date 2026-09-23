@@ -264,7 +264,9 @@ export async function runVitest(options: VitestRunOptions): Promise<VitestRunRes
       if (/(^|\/)(tsconfig|jsconfig)[^/]*\.json$/.test(f)) configFiles.add(path.join(root, f))
 
     // Initializes reporters (and the coverage provider, which Veyrum disables) without running.
-    await vitest.standalone()
+    // Vitest 4.1 renamed init() to standalone().
+    const legacy = vitest as unknown as { standalone?: () => Promise<void>; init: () => Promise<void> }
+    await (legacy.standalone ? legacy.standalone() : legacy.init())
     let specs = await vitest.globTestSpecifications()
     if (options.only) {
       const wanted = new Set(options.only)

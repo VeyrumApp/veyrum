@@ -32,7 +32,7 @@
     "@veyrum/core": "workspace:*"
   },
   "peerDependencies": {
-    "vitest": ">=4.1.0"
+    "vitest": ">=4.0.0"
   },
   "peerDependenciesMeta": {
     "vitest": {

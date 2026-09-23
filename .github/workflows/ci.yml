@@ -34,7 +34,7 @@ jobs:
         if: matrix.node != 24
         run: node scripts/pack-smoke.mjs
         env:
-          SMOKE_VITEST: 4.1.10
+          SMOKE_VITEST: 4.0.18
           SMOKE_JEST: 29.7.0
       # Veyrum runs its own suite in shadow mode: everything runs, the job summary reports what it
       # would have reused and whether any of that fails.

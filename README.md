@@ -43,7 +43,7 @@ veyrum stats             Evidence store statistics
 Evidence is stored in `.veyrum/store.sqlite`. It holds digests, repository paths, test names,
 outcomes and durations, never source code or environment variable values.
 
-Vitest 4.1 and later and Jest 29 and later are supported on Node 22.15 or later. The runner is detected from the
+Vitest 4 and later and Jest 29 and later are supported on Node 22.15 or later. The runner is detected from the
 project's configuration; `--runner vitest|jest` overrides it.
 
 ## Repository layout
