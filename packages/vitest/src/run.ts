@@ -184,7 +184,10 @@ export async function runVitest(options: VitestRunOptions): Promise<VitestRunRes
   const files = listRepoFiles(root)
   const target = resolveTargetVitest(root)
   const ownDirs = veyrumDirs()
-  const ignored = [...ownDirs, scratch + path.sep, path.dirname(options.store.file) + path.sep]
+  // Only the store's own files are ignored, never its directory: a store kept next to (or above)
+  // the project would otherwise hide the whole project from capture.
+  const storeFiles = ['', '-wal', '-shm', '-journal'].map((suffix) => `${options.store.file}${suffix}`)
+  const ignored = [...ownDirs, scratch + path.sep, ...storeFiles]
   const preloadUrl = pathToFileURL(path.join(path.dirname(fileURLToPath(import.meta.url)), 'preload.js')).href
   // The setup file must be a project file for Vite; it is copied into the run's scratch directory.
   const setupPath = path.join(scratch, 'veyrum-setup.mjs')

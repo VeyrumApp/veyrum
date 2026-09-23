@@ -195,9 +195,10 @@ export async function replay(corpus: Corpus, benchRoot: string, options: ReplayO
   let prev: CommitResult | undefined = done[done.length - 1]
   let installedLock = ''
   const store = Store.open(paths.store)
-  const out = fs.createWriteStream(paths.results, { flags: 'a' })
+  // Synchronous appends: everything else in the loop is synchronous, so a buffered stream would
+  // never flush, and results must survive an interrupted replay.
   const write = (line: ResultLine): void => {
-    out.write(`${JSON.stringify(line)}\n`)
+    fs.appendFileSync(paths.results, `${JSON.stringify(line)}\n`)
   }
 
   try {
@@ -298,7 +299,6 @@ export async function replay(corpus: Corpus, benchRoot: string, options: ReplayO
       prev = result
     }
   } finally {
-    await new Promise<void>((resolve) => out.end(resolve))
     store.close()
   }
 }

@@ -243,6 +243,9 @@ export function assemble(input: AssembleInput): Assembled {
       }
     }
 
+    // Tripwire: a test file always executes itself. If it is missing from its own closure, capture
+    // observed the wrong thing (for example, the project was ignored) and the pass is not evidence.
+    if (!closure.some((e) => e.k === 'mod' && e.p === check)) flags.add(FLAGS.captureIncomplete)
     if (outcome.retries > 0) flags.add(FLAGS.flakySuspect)
     const verdict = outcome.state === 'passed' || outcome.state === 'skipped' ? 'pass' : 'fail'
     const reusable =

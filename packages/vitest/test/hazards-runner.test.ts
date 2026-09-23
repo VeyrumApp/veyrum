@@ -1,3 +1,5 @@
+import fs from 'node:fs'
+import path from 'node:path'
 import { afterEach, describe, expect, test } from 'vitest'
 import { Sandbox } from './sandbox.ts'
 
@@ -44,6 +46,32 @@ describe('verdicts', () => {
     expect(sandbox.actions()['test/stack.test.ts']).toBe('skip')
     sandbox.edit('src/thrower.ts', 'export function boom', '// moved down one line\nexport function boom')
     expect(sandbox.actions()['test/stack.test.ts']).toBe('run')
+  })
+})
+
+describe('evidence store placement', () => {
+  test('a store in a parent directory of the project does not hide the project', () => {
+    sandbox = new Sandbox('store-above')
+      .write('src/a.ts', 'export function a(): number {\n  return 1\n}\n')
+      .write(
+        'test/a.test.ts',
+        "import { expect, test } from 'vitest'\nimport { a } from '../src/a'\ntest('a', () => expect(a()).toBe(1))\n",
+      )
+      .write('test/plain.test.ts', PLAIN_TEST)
+    const store = path.join(path.dirname(sandbox.dir), `${path.basename(sandbox.dir)}.sqlite`)
+    try {
+      const captured = sandbox.cli(['run', '--full', '--store', store])
+      expect(captured.code).toBe(0)
+      const plan = () =>
+        Object.fromEntries(
+          sandbox!.cli(['plan', '--store', store]).decisions.map((d) => [d.check.path, d.action]),
+        )
+      expect(plan()).toEqual({ 'test/a.test.ts': 'skip', 'test/plain.test.ts': 'skip' })
+      sandbox.edit('src/a.ts', 'return 1', 'return 2')
+      expect(plan()).toEqual({ 'test/a.test.ts': 'run', 'test/plain.test.ts': 'skip' })
+    } finally {
+      for (const suffix of ['', '-wal', '-shm']) fs.rmSync(`${store}${suffix}`, { force: true })
+    }
   })
 })
 
