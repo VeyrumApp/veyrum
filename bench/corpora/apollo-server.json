@@ -1,0 +1,17 @@
+{
+  "name": "apollo-server",
+  "repo": "https://github.com/apollographql/apollo-server.git",
+  "branch": "main",
+  "commits": 40,
+  "runner": "jest",
+  "install": ["npm", "ci", "--no-audit", "--no-fund", "--prefer-offline"],
+  "prepare": ["npm", "run", "compile"],
+  "lockfiles": ["package-lock.json"],
+  "runnerArgs": [],
+  "maxWorkers": 2,
+  "mutationSources": [
+    "^packages/(?:server|plugin-response-cache)/src/(?!(?:.*/)?(?:__tests__|generated|externalTypes)/).+\\.ts$"
+  ],
+  "mutantsPerCommit": 6,
+  "mutationEvery": 4
+}

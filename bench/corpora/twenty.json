@@ -1,0 +1,17 @@
+{
+  "name": "twenty",
+  "repo": "https://github.com/twentyhq/twenty.git",
+  "branch": "main",
+  "commits": 40,
+  "cwd": "packages/twenty-shared",
+  "runner": "jest",
+  "install": ["yarn", "install", "--immutable"],
+  "lockfiles": ["yarn.lock"],
+  "runnerArgs": [],
+  "maxWorkers": 2,
+  "mutationSources": [
+    "^packages/twenty-shared/src/(?:utils|workflow|application|ai|logic-function|i18n|timeline|translations|workspace)/(?!.*(?:__tests__|__mocks__)/)(?!(?:.*/)?(?:types|constants)/)(?!.*\\.(?:test|spec|d)\\.ts$)(?!.*/index\\.ts$).+\\.ts$"
+  ],
+  "mutantsPerCommit": 6,
+  "mutationEvery": 4
+}

@@ -1,4 +1,5 @@
 import fs from 'node:fs'
+import { createRequire } from 'node:module'
 import path from 'node:path'
 import type { Decision, EvidenceRecord } from '@veyrum/core'
 import type { Corpus } from './corpus.ts'
@@ -96,8 +97,14 @@ export function veyrumPlan(
   return { decisions: data.decisions, runtimeKey: data.runtimeKey, planMs: data.timings.planMs, wallMs: r.ms }
 }
 
-const VITEST_BIN = ['node_modules', 'vitest', 'vitest.mjs']
-const JEST_BIN = ['node_modules', 'jest', 'bin', 'jest.js']
+/**
+ * The project's own runner entry point, resolved the way Node resolves it from the test root, so
+ * a workspace package that inherits the runner from the repository root finds it too.
+ */
+function runnerBin(testRoot: string, runner: 'vitest' | 'jest'): string {
+  const manifest = createRequire(path.join(testRoot, 'package.json')).resolve(`${runner}/package.json`)
+  return path.join(path.dirname(manifest), ...(runner === 'vitest' ? ['vitest.mjs'] : ['bin', 'jest.js']))
+}
 
 /** Jest takes project filters as --selectProjects. */
 function jestArgs(corpus: Corpus): string[] {
@@ -124,7 +131,7 @@ export function plainRun(
     corpus.runner === 'jest'
       ? [
           ...corpus.nodeArgs,
-          path.join(repo, ...JEST_BIN),
+          runnerBin(repo, 'jest'),
           ...jestArgs(corpus),
           `--maxWorkers=${corpus.maxWorkers}`,
           '--ci',
@@ -136,7 +143,7 @@ export function plainRun(
         ]
       : [
           ...corpus.nodeArgs,
-          path.join(repo, ...VITEST_BIN),
+          runnerBin(repo, 'vitest'),
           'run',
           ...corpus.runnerArgs,
           ...(corpus.config ? ['--config', corpus.config] : []),
@@ -182,7 +189,7 @@ export function runnerChanged(
       process.execPath,
       [
         ...corpus.nodeArgs,
-        path.join(repo, ...JEST_BIN),
+        runnerBin(repo, 'jest'),
         ...jestArgs(corpus),
         '--listTests',
         '--json',
@@ -207,7 +214,7 @@ export function runnerChanged(
     process.execPath,
     [
       ...corpus.nodeArgs,
-      path.join(repo, ...VITEST_BIN),
+      runnerBin(repo, 'vitest'),
       'list',
       ...corpus.runnerArgs,
       ...(corpus.config ? ['--config', corpus.config] : []),

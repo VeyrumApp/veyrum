@@ -1,0 +1,17 @@
+{
+  "name": "docusaurus",
+  "repo": "https://github.com/facebook/docusaurus.git",
+  "branch": "main",
+  "commits": 40,
+  "install": ["pnpm", "install", "--frozen-lockfile", "--prefer-offline"],
+  "prepare": ["env", "pnpm_config_verify_deps_before_run=warn", "pnpm", "build:packages"],
+  "lockfiles": ["pnpm-lock.yaml"],
+  "runnerArgs": [],
+  "maxWorkers": 2,
+  "mutationSources": [
+    "^packages/(docusaurus-logger|docusaurus-utils|docusaurus-utils-common|docusaurus-utils-validation|docusaurus-mdx-loader|docusaurus-plugin-content-(docs|blog|pages)|docusaurus-plugin-client-redirects|docusaurus-plugin-sitemap|docusaurus-theme-common)/src/(?!.*(__tests__|__fixtures__|__mocks__)/)(?!.*testUtils\\.tsx?$).+(?<!\\.d|\\.test)\\.tsx?$",
+    "^packages/docusaurus/src/(server|webpack|client/exports|commands/swizzle)/(?!.*(__tests__|__fixtures__|__mocks__)/)(?!.*testUtils\\.tsx?$).+(?<!\\.d|\\.test)\\.tsx?$"
+  ],
+  "mutantsPerCommit": 6,
+  "mutationEvery": 4
+}

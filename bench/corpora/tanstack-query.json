@@ -1,0 +1,14 @@
+{
+  "name": "tanstack-query",
+  "repo": "https://github.com/TanStack/query.git",
+  "branch": "main",
+  "commits": 40,
+  "cwd": "packages/query-core",
+  "install": ["pnpm", "install", "--frozen-lockfile", "--prefer-offline"],
+  "lockfiles": ["pnpm-lock.yaml"],
+  "runnerArgs": [],
+  "maxWorkers": 2,
+  "mutationSources": ["^packages/query-core/src/(?!__tests__/|types\\.ts$|index\\.ts$)[^/]+\\.ts$"],
+  "mutantsPerCommit": 6,
+  "mutationEvery": 4
+}

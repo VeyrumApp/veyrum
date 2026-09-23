@@ -347,7 +347,8 @@ export async function replay(corpus: Corpus, benchRoot: string, options: ReplayO
       // 4. Mutants on sampled commits, using evidence recorded at this commit.
       if (scored && corpus.mutantsPerCommit > 0 && index % corpus.mutationEvery === 0) {
         for (const m of runMutants(corpus, paths, store, sha, changed, outcomes, capture.wallMs)) {
-          write(await m)
+          const result = await m
+          if (result) write(result)
         }
       }
       prev = result
@@ -365,7 +366,7 @@ function* runMutants(
   changed: readonly string[],
   outcomes: Outcomes,
   captureWallMs: number,
-): Generator<Promise<MutantResult>> {
+): Generator<Promise<MutantResult | null>> {
   const patterns = corpus.mutationSources.map((p) => new RegExp(p))
   const sources = git(paths.repo, 'ls-files')
     .split('\n')
@@ -387,12 +388,18 @@ function* runMutants(
     }
     if (!mutant) continue
     const m = mutant
-    yield (async (): Promise<MutantResult> => {
+    yield (async (): Promise<MutantResult | null> => {
       const absolute = path.join(paths.repo, m.file)
       const original = fs.readFileSync(absolute, 'utf8')
       fs.writeFileSync(absolute, applyMutant(original, m))
       try {
-        prepare(corpus, paths.repo)
+        try {
+          prepare(corpus, paths.repo)
+        } catch {
+          // A mutant that does not build tests nothing about selection.
+          log(`  mutant ${m.file}:${m.line} ${m.kind}: does not build, skipped`)
+          return null
+        }
         const plan = veyrumPlan(corpus, paths.testRoot, paths.store, paths.scratch)
         const planChecks = plan.decisions.map((d) => d.check)
         const veyrumSelection = new Set(
