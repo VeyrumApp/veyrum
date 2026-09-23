@@ -78,7 +78,7 @@ export function veyrumPlan(
   repo: string,
   store: string,
   scratch: string,
-): { decisions: Decision[]; planMs: number; wallMs: number } {
+): { decisions: Decision[]; runtimeKey: string; planMs: number; wallMs: number } {
   const json = path.join(scratch, 'plan.json')
   fs.rmSync(json, { force: true })
   const r = veyrum(corpus, repo, store, ['plan'], json)
@@ -88,9 +88,10 @@ export function veyrumPlan(
     )
   const data = JSON.parse(fs.readFileSync(json, 'utf8')) as {
     decisions: Decision[]
+    runtimeKey: string
     timings: { planMs: number }
   }
-  return { decisions: data.decisions, planMs: data.timings.planMs, wallMs: r.ms }
+  return { decisions: data.decisions, runtimeKey: data.runtimeKey, planMs: data.timings.planMs, wallMs: r.ms }
 }
 
 const VITEST_BIN = ['node_modules', 'vitest', 'vitest.mjs']

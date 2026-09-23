@@ -242,6 +242,7 @@ export async function runVitest(options: VitestRunOptions): Promise<VitestRunRes
       recorder.stop()
       return {
         runId,
+        runtimeKey,
         decisions,
         records: [],
         ran: [],
@@ -300,6 +301,7 @@ export async function runVitest(options: VitestRunOptions): Promise<VitestRunRes
       records.some((r) => r.verdict === 'fail') || unhandled > 0 || records.length < selected.length
     return {
       runId,
+      runtimeKey,
       decisions,
       records,
       ran: selected.map((s) => checkOf(root, s)),

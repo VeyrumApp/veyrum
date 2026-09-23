@@ -268,7 +268,12 @@ async function main(argv: string[]): Promise<number> {
       fs.writeFileSync(
         args.json,
         JSON.stringify(
-          { decisions: result.decisions, records: result.records, timings: result.timings },
+          {
+            runtimeKey: result.runtimeKey,
+            decisions: result.decisions,
+            records: result.records,
+            timings: result.timings,
+          },
           null,
           2,
         ),

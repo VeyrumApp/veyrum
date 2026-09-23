@@ -152,6 +152,8 @@ async function selectAll(
   changed: readonly string[],
   since: string | null,
   veyrumSelection: Set<string>,
+  /** The runtime key Veyrum planned with: whole-file closure identity must honor it too. */
+  runtimeKey: string,
 ): Promise<Record<BaselineName, Set<string> | null>> {
   // Git paths are relative to the repository; selectors work relative to the test root.
   const relative = changed.map((f) =>
@@ -164,23 +166,14 @@ async function selectAll(
     changed: relative,
     lockfileChanged: changed.some((f) => corpus.lockfiles.includes(f)),
   }
-  const runtimeKey = latestRuntimeKey(store, checks)
   return {
     all: new Set(checks.map((c) => c.path)),
     naive: selectNaive(ctx),
     'runner-changed': runnerChanged(corpus, paths.testRoot, paths.scratch, since),
     'file-coverage': selectFileCoverage(ctx),
-    'file-closure': runtimeKey ? await selectFileClosure(ctx, runtimeKey) : null,
+    'file-closure': await selectFileClosure(ctx, runtimeKey),
     veyrum: veyrumSelection,
   }
-}
-
-function latestRuntimeKey(store: Store, checks: readonly CheckRef[]): string | null {
-  for (const c of checks) {
-    const r = store.recordsFor(c, 1)[0]
-    if (r) return r.runtimeKey
-  }
-  return null
 }
 
 export interface ReplayOptions {
@@ -245,7 +238,16 @@ export async function replay(corpus: Corpus, benchRoot: string, options: ReplayO
         const veyrumSelection = new Set(
           p.decisions.filter((d) => d.action === 'run').map((d) => d.check.path),
         )
-        selections = await selectAll(corpus, paths, store, checks, changed, parent, veyrumSelection)
+        selections = await selectAll(
+          corpus,
+          paths,
+          store,
+          checks,
+          changed,
+          parent,
+          veyrumSelection,
+          p.runtimeKey,
+        )
       }
 
       // 2. Optional uninstrumented run for overhead (before capture, alternating order is not needed
@@ -368,6 +370,7 @@ function* runMutants(
           [m.file],
           null,
           veyrumSelection,
+          plan.runtimeKey,
         )
         let timedOut = false
         let killed: string[] = []

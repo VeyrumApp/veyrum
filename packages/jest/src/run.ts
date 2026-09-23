@@ -305,6 +305,7 @@ export async function runJest(options: JestRunOptions): Promise<RunResult> {
     if (options.mode === 'plan') {
       return {
         runId,
+        runtimeKey,
         decisions,
         records: [],
         ran: [],
@@ -378,6 +379,7 @@ export async function runJest(options: JestRunOptions): Promise<RunResult> {
       selected.some((s) => !ranKeys.has(checkKey(s.check)))
     return {
       runId,
+      runtimeKey,
       decisions,
       records,
       ran: selected.map((s) => s.check),

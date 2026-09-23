@@ -44,6 +44,8 @@ export interface Verification {
 
 export interface RunResult {
   readonly runId: string
+  /** Key of the runtime this run planned and recorded against (Node, platform, runner versions). */
+  readonly runtimeKey: string
   readonly decisions: readonly Decision[]
   readonly records: readonly EvidenceRecord[]
   readonly ran: readonly CheckRef[]
