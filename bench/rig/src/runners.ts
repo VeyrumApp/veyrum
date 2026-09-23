@@ -118,6 +118,15 @@ function jestArgs(corpus: Corpus): string[] {
 }
 
 /** Plain runner invocation (no capture) with per-file results, for mutant kill sets and overhead. */
+/**
+ * A test file's verdict from its JSON status. Jest reports `skipped` when every test in the file
+ * was skipped and `focused` when the tests that ran passed but some were skipped; only `failed`
+ * is a failure (Vitest reports only `passed` and `failed`).
+ */
+export function fileVerdict(status: string): 'pass' | 'fail' {
+  return status === 'failed' ? 'fail' : 'pass'
+}
+
 export function plainRun(
   corpus: Corpus,
   repo: string,
@@ -167,7 +176,7 @@ export function plainRun(
   for (const t of data.testResults) {
     const rel = path.relative(repo, t.name).split(path.sep).join('/')
     outcomes.set(rel, {
-      verdict: t.status === 'passed' ? 'pass' : 'fail',
+      verdict: fileVerdict(t.status),
       durationMs: (t.endTime ?? 0) - (t.startTime ?? 0),
     })
   }
