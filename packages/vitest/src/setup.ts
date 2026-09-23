@@ -55,6 +55,9 @@ const raw = process.env.VEYRUM_CAPTURE
 const config = raw ? (JSON.parse(raw) as SetupConfig) : null
 
 if (config) {
+  // Vitest's entry is imported before capture starts: no project code runs while it loads, and
+  // under precise coverage its compilation costs several times more.
+  const vitest = (await import(/* @vite-ignore */ config.vitestEntry)) as typeof import('vitest')
   const nativeRequire = createRequire(import.meta.url)
   const { VOLATILE_ENV } = nativeRequire(config.captureIndex) as typeof Capture
   const { beginWorkerCapture } = nativeRequire(config.captureWorker) as typeof CaptureWorker
@@ -72,7 +75,6 @@ if (config) {
       volatileEnv: VOLATILE_ENV,
     })
   g[PENDING] = undefined
-  const vitest = (await import(/* @vite-ignore */ config.vitestEntry)) as typeof import('vitest')
   const capture = await pending
   vitest.afterAll(async () => {
     const state = vitest.expect.getState() as unknown as {
