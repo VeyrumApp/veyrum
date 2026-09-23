@@ -3,8 +3,7 @@ import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { parseArgs } from 'node:util'
-import { type Decision, makePolicy, Store } from '@veyrum/core'
-import { type RunMode, runVitest, type VitestRunResult } from '@veyrum/vitest'
+import { type Decision, makePolicy, type RunMode, type RunResult, Store } from '@veyrum/core'
 
 const HELP = `veyrum - run only the tests whose evidence is no longer valid
 
@@ -17,18 +16,20 @@ Usage:
 
 Options:
   --root <dir>         Project root (default: current directory)
-  --config <file>      Vitest config file
+  --runner <name>      vitest or jest (default: detected from the project)
+  --config <file>      Runner config file
   --store <file>       Evidence store (default: <root>/.veyrum/store.sqlite)
-  --max-workers <n>    Vitest worker count
-  --project <name>     Vitest project filter (repeatable, wildcards allowed)
+  --max-workers <n>    Worker count
+  --project <name>     Project filter (repeatable; Vitest allows wildcards, Jest matches
+                       display names)
   --json <file>        Write decisions and records as JSON
   --explain            Print the reason for every decision
-  --quiet              Do not print Vitest's test output
+  --quiet              Do not print the runner's test output
   --audit              With --full: also report files the plan would have reused that fail
   --canary <fraction>  Also run this fraction of reusable files and report any that fail
   --allow <flag>       Allow reuse despite a flag (repeatable), for example spawn; at your own risk
-  --isolate            Run each test file in its own isolate even if the project disables
-                       isolation (evidence from shared isolates is never reused)
+  --isolate            Vitest: run each test file in its own isolate even if the project
+                       disables isolation (evidence from shared isolates is never reused)
   --keep-scratch       Keep raw worker payloads under .veyrum/tmp (debugging)
   -h, --help           Show this help
 `
@@ -37,6 +38,7 @@ interface Args {
   command: string
   positionals: string[]
   root: string
+  runner: 'vitest' | 'jest' | undefined
   config: string | undefined
   store: string
   maxWorkers: number | undefined
@@ -58,6 +60,7 @@ function parse(argv: string[]): Args | null {
     allowPositionals: true,
     options: {
       root: { type: 'string' },
+      runner: { type: 'string' },
       config: { type: 'string' },
       store: { type: 'string' },
       'max-workers': { type: 'string' },
@@ -78,10 +81,14 @@ function parse(argv: string[]): Args | null {
   if (values.help || !command) return null
   const root = path.resolve(values.root ?? process.cwd())
   const maxWorkers = values['max-workers'] ? Number(values['max-workers']) : undefined
+  if (values.runner !== undefined && values.runner !== 'vitest' && values.runner !== 'jest') {
+    throw new Error(`Unknown runner "${values.runner}" (expected vitest or jest)`)
+  }
   return {
     command,
     positionals: rest,
     root,
+    runner: values.runner,
     config: values.config,
     store: path.resolve(values.store ?? path.join(root, '.veyrum', 'store.sqlite')),
     maxWorkers: maxWorkers && Number.isFinite(maxWorkers) ? maxWorkers : undefined,
@@ -96,6 +103,31 @@ function parse(argv: string[]): Args | null {
     canary: values.canary ? Math.max(0, Math.min(1, Number(values.canary))) : 0,
     allow: values.allow ?? [],
   }
+}
+
+const VITEST_CONFIG = /^vitest\.(config|workspace)\.[cm]?[jt]s$/
+const JEST_CONFIG = /^jest\.config\.([cm]?[jt]s|json)$/
+
+/** Picks the runner from configuration files, then from declared dependencies. */
+function detectRunner(root: string): 'vitest' | 'jest' {
+  let names: string[] = []
+  try {
+    names = fs.readdirSync(root)
+  } catch {
+    // An unreadable root fails later with a clearer error.
+  }
+  if (names.some((n) => VITEST_CONFIG.test(n))) return 'vitest'
+  if (names.some((n) => JEST_CONFIG.test(n))) return 'jest'
+  let pkg: { jest?: unknown; dependencies?: object; devDependencies?: object } = {}
+  try {
+    pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'))
+  } catch {
+    // No manifest: default below.
+  }
+  const deps = { ...pkg.dependencies, ...pkg.devDependencies }
+  if ('vitest' in deps) return 'vitest'
+  if (pkg.jest !== undefined || 'jest' in deps) return 'jest'
+  return 'vitest'
 }
 
 function gitRevision(root: string): string | null {
@@ -120,7 +152,7 @@ function describe(decision: Decision): string {
   return `${head}\n${decision.details.map((d) => `        ${d}`).join('\n')}`
 }
 
-function summarize(result: VitestRunResult, mode: RunMode): string {
+function summarize(result: RunResult, mode: RunMode): string {
   const reused = result.decisions.filter((d) => d.action === 'skip')
   const savedMs = reused.reduce((sum, d) => sum + d.durationMs, 0)
   const lines = [
@@ -179,24 +211,40 @@ async function main(argv: string[]): Promise<number> {
 
   const store = Store.open(args.store)
   try {
-    const result = await runVitest({
+    const common = {
       root: args.root,
       store,
       mode,
       revision: gitRevision(args.root),
       printTests: !args.quiet && mode !== 'plan',
-      ...(args.config ? { config: args.config } : {}),
-      vitestOptions: {
-        ...(args.maxWorkers ? { maxWorkers: args.maxWorkers } : {}),
-        ...(args.projects.length > 0 ? { project: args.projects } : {}),
-      },
       ...(only ? { only } : {}),
       keepScratch: args.keepScratch,
-      forceIsolation: args.isolate,
       audit: args.audit,
       canary: args.canary,
       ...(args.allow.length > 0 ? { policy: makePolicy({ allow: args.allow }) } : {}),
-    })
+    }
+    const runner = args.runner ?? detectRunner(args.root)
+    let result: RunResult
+    if (runner === 'jest') {
+      const { runJest } = await import('@veyrum/jest')
+      result = await runJest({
+        ...common,
+        ...(args.config ? { config: args.config } : {}),
+        ...(args.maxWorkers ? { maxWorkers: args.maxWorkers } : {}),
+        ...(args.projects.length > 0 ? { projects: args.projects } : {}),
+      })
+    } else {
+      const { runVitest } = await import('@veyrum/vitest')
+      result = await runVitest({
+        ...common,
+        ...(args.config ? { config: args.config } : {}),
+        vitestOptions: {
+          ...(args.maxWorkers ? { maxWorkers: args.maxWorkers } : {}),
+          ...(args.projects.length > 0 ? { project: args.projects } : {}),
+        },
+        forceIsolation: args.isolate,
+      })
+    }
     if (args.explain || mode === 'plan') {
       for (const d of [...result.decisions].sort((a, b) => a.check.path.localeCompare(b.check.path))) {
         process.stdout.write(`${describe(d)}\n`)

@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { afterEach, describe, expect, test } from 'vitest'
-import { Sandbox } from './sandbox.ts'
+import { Sandbox } from '../../../test/support/sandbox.ts'
 
 /** Runner behavior and unobservable channels: when a pass must not be treated as evidence. */
 

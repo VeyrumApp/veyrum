@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, test } from 'vitest'
-import { Sandbox } from './sandbox.ts'
+import { Sandbox } from '../../../test/support/sandbox.ts'
 
 /** Non-code inputs: files, directories, environment, dependencies and configuration. */
 
@@ -73,7 +73,7 @@ describe('files and directories', () => {
   })
 
   test('a repository inside the OS temporary directory still records its fixture reads', () => {
-    sandbox = new Sandbox('in-tmp', fs.mkdtempSync(path.join(os.tmpdir(), 'veyrum-')))
+    sandbox = new Sandbox('in-tmp', { base: fs.mkdtempSync(path.join(os.tmpdir(), 'veyrum-')) })
       .write('fixtures/data.json', '{"n": 1}\n')
       .write(
         'test/fixture.test.ts',

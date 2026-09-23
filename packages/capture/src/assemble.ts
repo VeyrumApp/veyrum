@@ -9,6 +9,7 @@ import {
   type EvidenceRecord,
   FLAGS,
   fingerprintModule,
+  isInside,
   type ModuleUnits,
   OPAQUE_UNIT,
   type RunInfo,
@@ -175,7 +176,7 @@ export function assemble(input: AssembleInput): Assembled {
     const candidates = byTestFile.get(outcome.file) ?? []
     // A file can run more than once in a run (repeats); the last payload describes the final attempt.
     const payload = candidates[candidates.length - 1]
-    if (!payload) flags.add(FLAGS.captureIncomplete)
+    if (!payload || !input.main.loadsObserved) flags.add(FLAGS.captureIncomplete)
     if (candidates.length > 1) flags.add(FLAGS.sharedWorker)
 
     if (payload) {
@@ -329,7 +330,9 @@ export function assemble(input: AssembleInput): Assembled {
     sharedSeen.add(key)
     shared.push(entry)
   }
-  for (const manifest of input.main.loadedPackages) {
+  const toolchain = new Set(input.main.loadedPackages)
+  for (const p of payloads) for (const manifest of p.toolchain ?? []) toolchain.add(manifest)
+  for (const manifest of [...toolchain].sort()) {
     const p = toRepoPath(root, manifest)
     const entry: ClosureEntry = { k: 'dep', p, h: state.fileDigest(p) }
     const key = entryKey(entry)
@@ -337,7 +340,9 @@ export function assemble(input: AssembleInput): Assembled {
     sharedSeen.add(key)
     shared.push(entry)
   }
-  for (const absolute of input.configFiles) {
+  const toolchainFiles = payloads.flatMap((p) => p.toolchainFiles ?? [])
+  for (const absolute of [...input.configFiles, ...input.main.loadedFiles, ...toolchainFiles]) {
+    if (ignored(absolute) || testFiles.has(absolute) || !isInside(root, absolute)) continue
     const p = toRepoPath(root, absolute)
     const entry: ClosureEntry = { k: 'file', p, h: state.fileDigest(p) }
     const key = entryKey(entry)
@@ -345,8 +350,6 @@ export function assemble(input: AssembleInput): Assembled {
     sharedSeen.add(key)
     shared.push(entry)
   }
-  for (const e of input.main.env) shared.push({ k: 'env', n: e.n, h: e.h })
-  shared.sort((a, b) => entryKey(a).localeCompare(entryKey(b)))
 
   // Variables the runner injects into workers, with the values workers saw.
   const injected: Record<string, Digest | null> = {}
@@ -359,6 +362,17 @@ export function assemble(input: AssembleInput): Assembled {
     }
   }
   for (const n of conflicting) delete injected[n]
+
+  // Environment the main process read, and (under Jest) what the runner and its toolchain read in
+  // workers. Variables the runner injected into workers derive from the runner itself.
+  const sharedEnv = new Map<string, Digest | null>()
+  for (const e of input.main.env) sharedEnv.set(e.n, e.h)
+  for (const p of payloads)
+    for (const e of p.toolchainEnv ?? [])
+      if (!sharedEnv.has(e.n) && !Object.hasOwn(injected, e.n) && !conflicting.has(e.n))
+        sharedEnv.set(e.n, e.h)
+  for (const [n, h] of sharedEnv) shared.push({ k: 'env', n, h })
+  shared.sort((a, b) => entryKey(a).localeCompare(entryKey(b)))
 
   const run: RunInfo = {
     id: input.runId,

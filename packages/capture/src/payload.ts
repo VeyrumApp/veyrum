@@ -19,6 +19,11 @@ export interface WorkerPayload {
   readonly env: readonly { readonly n: string; readonly h: string | null }[]
   /** Digest of every variable present when the worker started, to detect runner-injected variables. */
   readonly envBaseline: Readonly<Record<string, string | null>>
+  /**
+   * Jest layout: variables the runner and its toolchain read from the worker's own environment
+   * during this file (tests read their context's copy). Shared inputs of the run.
+   */
+  readonly toolchainEnv: readonly { readonly n: string; readonly h: string | null }[]
   readonly envEnumerated: boolean
   readonly envWritten: readonly string[]
   readonly net: readonly { readonly host: string; readonly port: number | null; readonly local: boolean }[]
@@ -28,6 +33,14 @@ export interface WorkerPayload {
   readonly evalScripts: number
   readonly sourceObserved: boolean
   readonly snapshot: { readonly added: number; readonly updated: number }
+  /**
+   * Manifests of packages the worker loaded natively, outside the runner's module system. Under the
+   * Jest layout these are the toolchain (transformers and their plugins), since test code loads
+   * through Jest's runtime; they are shared inputs of the run. Empty under the Vitest layout.
+   */
+  readonly toolchain: readonly string[]
+  /** Jest layout: files outside node_modules loaded natively (local transformers, plugins). */
+  readonly toolchainFiles: readonly string[]
   /** Errors inside the capture layer itself; any error makes the record non-reusable. */
   readonly captureErrors: readonly string[]
 }

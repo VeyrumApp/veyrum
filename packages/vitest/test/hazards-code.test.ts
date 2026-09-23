@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'vitest'
-import { Sandbox } from './sandbox.ts'
+import { Sandbox } from '../../../test/support/sandbox.ts'
 
 /** Code-level hazards: which edits to executed code must and must not invalidate evidence. */
 

@@ -5,6 +5,7 @@ import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { MainRecorder, rawFs, VOLATILE_ENV } from '@veyrum/capture'
 import { assemble } from '@veyrum/capture/assemble'
+import { packageJsonAbove, storeFiles, veyrumDirs } from '@veyrum/capture/host'
 import {
   type CheckRef,
   checkKey,
@@ -47,24 +48,6 @@ interface TargetVitest {
   readonly entryUrl: string
   readonly version: string
   readonly viteVersion: string
-}
-
-function packageJsonAbove(file: string, name: string): { version: string; dir: string } | null {
-  let dir = path.dirname(file)
-  while (dir !== path.dirname(dir)) {
-    const candidate = path.join(dir, 'package.json')
-    try {
-      const pkg = JSON.parse(rawFs.readFileSync(candidate, 'utf8') as string) as {
-        name?: string
-        version?: string
-      }
-      if (pkg.name === name) return { version: pkg.version ?? '', dir }
-    } catch {
-      // keep walking
-    }
-    dir = path.dirname(dir)
-  }
-  return null
 }
 
 /** Resolves a package export for ESM consumers (conditions node, import, default). */
@@ -129,26 +112,6 @@ export function resolveTargetVitest(root: string): TargetVitest {
   }
 }
 
-function veyrumDirs(): string[] {
-  const here = path.dirname(fileURLToPath(import.meta.url))
-  const require = createRequire(import.meta.url)
-  const dirs = new Set<string>([path.dirname(here)])
-  for (const pkg of ['@veyrum/capture', '@veyrum/core']) {
-    const found = packageJsonAbove(require.resolve(pkg), pkg)
-    if (found) dirs.add(found.dir)
-  }
-  const out: string[] = []
-  for (const d of dirs) {
-    out.push(d + path.sep)
-    try {
-      out.push(fs.realpathSync(d) + path.sep)
-    } catch {
-      // not a symlink
-    }
-  }
-  return [...new Set(out)]
-}
-
 function checkOf(root: string, spec: TestSpecification): CheckRef {
   return { path: toRepoPath(root, spec.moduleId), project: spec.project.name }
 }
@@ -163,11 +126,10 @@ export async function runVitest(options: VitestRunOptions): Promise<VitestRunRes
   const scratch = path.join(root, '.veyrum', 'tmp', runId)
   const files = listRepoFiles(root)
   const target = resolveTargetVitest(root)
-  const ownDirs = veyrumDirs()
+  const ownDirs = veyrumDirs(path.dirname(path.dirname(fileURLToPath(import.meta.url))))
   // Only the store's own files are ignored, never its directory: a store kept next to (or above)
   // the project would otherwise hide the whole project from capture.
-  const storeFiles = ['', '-wal', '-shm', '-journal'].map((suffix) => `${options.store.file}${suffix}`)
-  const ignored = [...ownDirs, scratch + path.sep, ...storeFiles]
+  const ignored = [...ownDirs, scratch + path.sep, ...storeFiles(options.store.file)]
   const preloadUrl = pathToFileURL(path.join(path.dirname(fileURLToPath(import.meta.url)), 'preload.js')).href
   // The setup file must be a project file for Vite; it is copied into the run's scratch directory.
   const setupPath = path.join(scratch, 'veyrum-setup.mjs')

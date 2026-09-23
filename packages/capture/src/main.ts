@@ -15,12 +15,22 @@ export interface MainObservations {
    * plugins and whatever they use. Their versions decide how every module is transformed.
    */
   readonly loadedPackages: readonly string[]
+  /**
+   * Files outside node_modules the main process loaded as code through Node's loader: runner
+   * configuration and its local imports, global setup, custom environments and reporters.
+   */
+  readonly loadedFiles: readonly string[]
+  /**
+   * False when module loads could not be observed (Node without module.registerHooks): shared
+   * inputs are then incomplete and no record of the run is evidence.
+   */
+  readonly loadsObserved: boolean
 }
 
 const NODE_MODULES = `${path.sep}node_modules${path.sep}`
 
 /** The package root of a file inside node_modules (handles scopes and nested node_modules). */
-function packageRootOf(file: string): string | null {
+export function packageRootOf(file: string): string | null {
   const at = file.lastIndexOf(NODE_MODULES)
   if (at < 0) return null
   const rest = file.slice(at + NODE_MODULES.length).split(path.sep)
@@ -39,12 +49,16 @@ export class MainRecorder implements HookSink {
   private readonly envMap = new Map<string, Digest | null>()
   private readonly envWritten = new Set<string>()
   private readonly packages = new Set<string>()
+  private readonly files = new Set<string>()
   private hooks: { deregister(): void } | null = null
+  private loadsObserved = false
   /** The environment as it was when capture was created, before the runner changed anything. */
   readonly initialEnv: Readonly<Record<string, string | undefined>>
   private readonly volatileEnv: RegExp
   private readonly baseline: Record<string, Digest | null>
   private active = false
+  /** While positive, reads and environment accesses are not inputs (see pause). */
+  private paused = 0
 
   constructor(options: { root: string; ignoredPrefixes: readonly string[]; volatileEnv: RegExp }) {
     this.volatileEnv = options.volatileEnv
@@ -63,16 +77,33 @@ export class MainRecorder implements HookSink {
     setSink(this)
     const register = (module as unknown as { registerHooks?: (hooks: object) => { deregister(): void } })
       .registerHooks
+    this.loadsObserved = typeof register === 'function'
     if (register && !this.hooks) {
       this.hooks = register({
         load: (url: string, context: unknown, nextLoad: (url: string, context: unknown) => unknown) => {
           if (this.active && url.startsWith('file:')) {
-            const root = packageRootOf(fileURLToPath(url))
+            const file = fileURLToPath(url)
+            const root = packageRootOf(file)
             if (root) this.packages.add(path.join(root, 'package.json'))
+            else this.files.add(file)
           }
           return nextLoad(url, context)
         },
       })
+    }
+  }
+
+  /**
+   * Stops recording reads and environment accesses until the returned function is called. For
+   * runner work whose reads are not inputs of any check, such as crawling the repository to index
+   * files (Jest's haste map reads every source file to extract dependencies).
+   */
+  pause(): () => void {
+    this.paused++
+    let resumed = false
+    return () => {
+      if (!resumed) this.paused--
+      resumed = true
     }
   }
 
@@ -83,6 +114,8 @@ export class MainRecorder implements HookSink {
     this.hooks = null
     return {
       loadedPackages: [...this.packages].sort(),
+      loadedFiles: [...this.files].sort(),
+      loadsObserved: this.loadsObserved,
       // A path the process itself wrote is its own output (a cache, a report), not an input.
       paths: [...this.pathMap.values()].filter((o) => !this.written.has(o.p)),
       env: [...this.envMap].map(([n, h]) => ({ n, h })),
@@ -91,7 +124,7 @@ export class MainRecorder implements HookSink {
   }
 
   path(absolute: string, kind: PathKind, type: PathType): void {
-    if (!this.active || this.written.has(absolute)) return
+    if (!this.active || this.paused > 0 || this.written.has(absolute)) return
     const key = `${kind}\u0000${absolute}`
     if (!this.pathMap.has(key)) this.pathMap.set(key, { p: absolute, kind, type })
   }
@@ -101,7 +134,13 @@ export class MainRecorder implements HookSink {
   env(name: string, value: string | undefined, copying: boolean): void {
     // The runner copies the whole environment to hand it to workers; workers record what tests read.
     if (copying) return
-    if (!this.active || this.envMap.has(name) || this.envWritten.has(name) || this.volatileEnv.test(name))
+    if (
+      !this.active ||
+      this.paused > 0 ||
+      this.envMap.has(name) ||
+      this.envWritten.has(name) ||
+      this.volatileEnv.test(name)
+    )
       return
     this.envMap.set(name, hashEnvValue(value))
   }

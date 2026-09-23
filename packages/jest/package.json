@@ -1,0 +1,33 @@
+{
+  "name": "@veyrum/jest",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Veyrum adapter for Jest: capture, planning and selective execution",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "dependencies": {
+    "@veyrum/capture": "workspace:*",
+    "@veyrum/core": "workspace:*"
+  },
+  "peerDependencies": {
+    "jest": ">=29.0.0"
+  },
+  "devDependencies": {
+    "@jest/core": "30.5.2",
+    "@jest/environment": "30.5.2",
+    "@jest/test-result": "30.5.2",
+    "@jest/transform": "30.5.2",
+    "@jest/types": "30.5.1",
+    "jest": "30.5.2",
+    "jest-config": "30.5.2",
+    "jest-environment-node": "30.5.2"
+  }
+}

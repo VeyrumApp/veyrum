@@ -8,15 +8,27 @@ import { fileURLToPath } from 'node:url'
 import workerThreads from 'node:worker_threads'
 
 export type PathKind = 'read' | 'stat' | 'dir'
+/**
+ * Which environment object a read went through: the process's own `process.env`, or a copy a
+ * runner made for test code (Jest gives each test file's context its own copy). Under Jest, reads
+ * of the process's environment come from the runner and its transformers, not from tests.
+ */
+export type EnvScope = 'process' | 'test'
+
+export type Reader = 'runner' | 'node-loader' | 'other'
 export type PathType = 'file' | 'dir' | 'other' | 'absent'
 
 /** Receives observations from the hooks. Swapped per test file by the runner adapter. */
 export interface HookSink {
-  path(absolute: string, kind: PathKind, type: PathType): void
+  /**
+   * `reader` says who read the file when the hooks classify reads (InstallOptions.runnerReaders):
+   * the runner's module loader, Node's own module loader, or anything else (test code).
+   */
+  path(absolute: string, kind: PathKind, type: PathType, reader: Reader): void
   write(absolute: string): void
   /** `copying` is true when the read is part of copying the whole environment ({...process.env}). */
-  env(name: string, value: string | undefined, copying: boolean): void
-  envEnumerated(): void
+  env(name: string, value: string | undefined, copying: boolean, scope: EnvScope): void
+  envEnumerated(scope: EnvScope): void
   envWrite(name: string): void
   net(host: string, port: number | undefined, local: boolean): void
   spawn(command: string): void
@@ -55,6 +67,8 @@ interface HookState {
   tempPrefixes: string[]
   /** Repository root prefix; paths inside it are always observed unless explicitly ignored. */
   rootPrefix: string | null
+  /** Callers whose reads are the runner loading modules (see InstallOptions.runnerReaders). */
+  runnerReaders: RegExp[]
 }
 
 const STATE_KEY = Symbol.for('veyrum.capture.hooks')
@@ -70,6 +84,7 @@ function sharedState(): HookState {
     ignoredPrefixes: [],
     tempPrefixes: [],
     rootPrefix: null,
+    runnerReaders: [],
   }
   g[STATE_KEY] = created
   return created
@@ -127,13 +142,37 @@ function ignored(absolute: string): boolean {
   return false
 }
 
+/** This package's directory: stack frames inside it are the hooks themselves. */
+const OWN_DIR = path.dirname(path.dirname(fileURLToPath(import.meta.url))) + path.sep
+
+const NODE_LOADER_FRAME = /\(?node:internal\/modules\//
+
+/** Who called into fs: the runner's module loader, Node's module loader, or other code. */
+function classifyReader(): Reader {
+  const limit = Error.stackTraceLimit
+  Error.stackTraceLimit = 16
+  const stack = new Error().stack ?? ''
+  Error.stackTraceLimit = limit
+  const frames = stack.split('\n')
+  for (let i = 1; i < frames.length; i++) {
+    const frame = frames[i]!
+    if (frame.includes(OWN_DIR)) continue
+    if (NODE_LOADER_FRAME.test(frame)) return 'node-loader'
+    // Skip Node's own fs internals (readFileSync calls openSync, which is hooked too).
+    if (frame.includes('(node:') || frame.includes(' node:')) continue
+    return state.runnerReaders.some((re) => re.test(frame)) ? 'runner' : 'other'
+  }
+  return 'other'
+}
+
 function observePath(p: unknown, kind: PathKind): void {
   if (state.depth > 0) return
   const absolute = toAbsolute(p)
   if (!absolute || ignored(absolute)) return
   state.depth++
   try {
-    state.sink.path(absolute, kind, typeOf(absolute))
+    const reader = kind === 'read' && state.runnerReaders.length > 0 ? classifyReader() : 'other'
+    state.sink.path(absolute, kind, typeOf(absolute), reader)
   } finally {
     state.depth--
   }
@@ -262,7 +301,10 @@ function installFsHooks(): void {
 }
 
 /** Wraps an environment object so reads, enumerations and writes are reported to the sink. */
-export function observeEnv<T extends Record<string, string | undefined>>(real: T): T {
+export function observeEnv<T extends Record<string, string | undefined>>(
+  real: T,
+  scope: EnvScope = 'process',
+): T {
   if ((real as any)[STATE_KEY]) return real
   // Spreads and Object.assign enumerate keys, then read every property in the same tick.
   let copying = false
@@ -278,23 +320,23 @@ export function observeEnv<T extends Record<string, string | undefined>>(real: T
       if (key === STATE_KEY) return true
       const value = Reflect.get(target, key, receiver)
       if (typeof key === 'string' && state.depth === 0)
-        state.sink.env(key, typeof value === 'string' ? value : undefined, copying)
+        state.sink.env(key, typeof value === 'string' ? value : undefined, copying, scope)
       return value
     },
     has(target, key) {
       const present = Reflect.has(target, key)
       if (typeof key === 'string' && state.depth === 0)
-        state.sink.env(key, present ? (target as any)[key] : undefined, copying)
+        state.sink.env(key, present ? (target as any)[key] : undefined, copying, scope)
       return present
     },
     getOwnPropertyDescriptor(target, key) {
       const desc = Reflect.getOwnPropertyDescriptor(target, key)
       if (typeof key === 'string' && state.depth === 0)
-        state.sink.env(key, desc ? String(desc.value) : undefined, copying)
+        state.sink.env(key, desc ? String(desc.value) : undefined, copying, scope)
       return desc
     },
     ownKeys(target) {
-      if (state.depth === 0) state.sink.envEnumerated()
+      if (state.depth === 0) state.sink.envEnumerated(scope)
       noteEnumeration()
       return Reflect.ownKeys(target)
     },
@@ -406,8 +448,15 @@ function sourceReaderIsBenign(): boolean {
   return BENIGN_SOURCE_READERS.some((re) => re.test(caller))
 }
 
-function installToStringHook(): void {
-  const original = Function.prototype.toString
+/**
+ * Observes Function.prototype.toString in a realm. The worker's own realm is hooked by
+ * installHooks; runners that evaluate tests in a vm context (Jest) hook that context's realm too,
+ * because functions defined there inherit its Function.prototype.
+ */
+export function observeSourceIn(realmFunction: FunctionConstructor): void {
+  const proto = realmFunction.prototype as unknown as Record<PropertyKey, unknown>
+  if (proto[SOURCE_HOOK_KEY]) return
+  const original = proto.toString as AnyFn
   // A Proxy keeps `Function.prototype.toString.toString()` looking native for feature detection.
   const proxy = new Proxy(original, {
     apply(target, thisArg, args) {
@@ -417,8 +466,11 @@ function installToStringHook(): void {
       return text
     },
   })
-  Object.defineProperty(Function.prototype, 'toString', { value: proxy, writable: true, configurable: true })
+  Object.defineProperty(proto, 'toString', { value: proxy, writable: true, configurable: true })
+  Object.defineProperty(proto, SOURCE_HOOK_KEY, { value: true })
 }
+
+const SOURCE_HOOK_KEY = Symbol.for('veyrum.capture.sourceHook')
 
 export interface InstallOptions {
   /** Absolute repository root; its files are observed even when it lives in a temporary directory. */
@@ -427,6 +479,12 @@ export interface InstallOptions {
   readonly ignoredPrefixes?: readonly string[]
   /** Observe Function.prototype.toString (worker processes only). */
   readonly observeSource?: boolean
+  /**
+   * Callers (matched against stack frames) that read files to load them as modules. Their reads
+   * are reported with `byRunner`, so a recorder can drop the ones for files that were then
+   * compiled as modules (their content is recorded as a module) and keep the rest (JSON, assets).
+   */
+  readonly runnerReaders?: readonly RegExp[]
 }
 
 /** Installs every hook once per isolate. Subsequent calls only update ignored prefixes. */
@@ -435,6 +493,7 @@ export function installHooks(options: InstallOptions = {}): void {
   state.tempPrefixes = [...new Set(tmp.map((t) => t + path.sep))]
   state.rootPrefix = options.root ? path.resolve(options.root) + path.sep : null
   state.ignoredPrefixes = [...new Set(['/proc/', '/dev/', '/sys/', ...(options.ignoredPrefixes ?? [])])]
+  if (options.runnerReaders) state.runnerReaders = [...options.runnerReaders]
   if (state.installed) return
   state.installed = true
   installFsHooks()
@@ -442,7 +501,7 @@ export function installHooks(options: InstallOptions = {}): void {
   installNetHooks()
   installProcessHooks()
   installWorkerThreadHook()
-  if (options.observeSource) installToStringHook()
+  if (options.observeSource) observeSourceIn(Function)
   syncBuiltinESMExports()
 }
 

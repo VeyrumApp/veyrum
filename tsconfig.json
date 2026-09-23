@@ -4,6 +4,7 @@
     { "path": "packages/core" },
     { "path": "packages/capture" },
     { "path": "packages/vitest" },
+    { "path": "packages/jest" },
     { "path": "packages/cli" },
     { "path": "bench/rig" }
   ]

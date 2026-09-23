@@ -13,6 +13,10 @@
       "types": "./dist/assemble.d.ts",
       "default": "./dist/assemble.js"
     },
+    "./host": {
+      "types": "./dist/host.d.ts",
+      "default": "./dist/host.js"
+    },
     "./worker": {
       "types": "./dist/worker.d.ts",
       "default": "./dist/worker.js"

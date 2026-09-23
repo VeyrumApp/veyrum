@@ -31,9 +31,15 @@ export function listRepoFiles(root: string): string[] {
 
 /** Files whose appearance anywhere can change configuration or resolution for every check. */
 const CONFIG_LIKE =
-  /^(package\.json|tsconfig(\..*)?\.json|jsconfig(\..*)?\.json|\.env(\..*)?|vite(st)?\.config\..*|vitest\.(workspace|projects)\..*|\.babelrc(\..*)?|babel\.config\..*|\.npmrc|pnpm-workspace\.yaml|\.swcrc|\.browserslistrc|browserslist)$/
+  /^(package\.json|tsconfig(\..*)?\.json|jsconfig(\..*)?\.json|\.env(\..*)?|vite(st)?\.config\..*|vitest\.(workspace|projects)\..*|jest\.config\..*|jest-preset\..*|\.babelrc(\..*)?|\.babelignore|babel\.config\..*|\.npmrc|pnpm-workspace\.yaml|\.swcrc|\.browserslistrc|browserslist)$/
+
+/**
+ * Manual mocks apply by location: Jest uses a root `__mocks__` file for a node module without any
+ * call to jest.mock, and both runners pick up `__mocks__` siblings when a module is mocked.
+ */
+const MOCKS_DIR = /(^|\/)__mocks__\//
 
 export function isConfigLike(repoPath: string): boolean {
   const base = repoPath.slice(repoPath.lastIndexOf('/') + 1)
-  return CONFIG_LIKE.test(base)
+  return CONFIG_LIKE.test(base) || MOCKS_DIR.test(repoPath)
 }

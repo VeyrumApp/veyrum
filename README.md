@@ -9,7 +9,7 @@ observed has changed. Anything unknown means the file runs.
 
 ## How it works
 
-1. **Capture.** During a normal Vitest run, Veyrum records each test file's input closure:
+1. **Capture.** During a normal Vitest or Jest run, Veyrum records each test file's input closure:
    - the functions it executed, fingerprinted on the code V8 actually ran;
    - every module it loaded;
    - the files, directories and environment variables it read;
@@ -43,7 +43,8 @@ veyrum stats             Evidence store statistics
 Evidence is stored in `.veyrum/store.sqlite`. It holds digests, repository paths, test names,
 outcomes and durations, never source code or environment variable values.
 
-Vitest 4 and 5 are supported on Node 22.13 or later.
+Vitest 4 and 5 and Jest 30 are supported on Node 22.15 or later. The runner is detected from the
+project's configuration; `--runner vitest|jest` overrides it.
 
 ## Repository layout
 
@@ -51,7 +52,8 @@ Vitest 4 and 5 are supported on Node 22.13 or later.
 | --- | --- |
 | `packages/core` | Evidence model, unit fingerprints, store, planner and policy |
 | `packages/capture` | Runner-agnostic input capture: fs, env, network, process and V8 coverage hooks |
-| `packages/vitest` | Vitest adapter: worker preload, setup file, record assembly, plan-time transforms |
+| `packages/vitest` | Vitest adapter: worker preload, setup file, plan-time transforms through Vite |
+| `packages/jest` | Jest adapter: environment wrapper, reporter, plan-time transforms through Jest |
 | `packages/cli` | The `veyrum` command |
 | `bench/rig` | Replay benchmark against baseline selectors, with a mutation oracle |
 | `bench/corpora` | Repositories to replay |
@@ -66,8 +68,8 @@ pnpm test        # unit tests and the end-to-end hazard suite
 pnpm lint
 ```
 
-The hazard suite (`packages/vitest/test/hazards-*.test.ts`) builds small real projects,
-records evidence, applies one edit and asserts the planner's decision. It covers every channel
+The hazard suites (`packages/*/test/hazards*.test.ts`) build small real projects,
+record evidence, apply one edit and assert the planner's decision. They cover every channel
 listed in `docs/design/soundness.md`.
 
 ## Benchmark

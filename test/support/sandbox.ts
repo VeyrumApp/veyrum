@@ -6,9 +6,21 @@ import { fileURLToPath } from 'node:url'
 import type { Decision } from '@veyrum/core'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
-const repoRoot = path.resolve(here, '../../..')
+const repoRoot = path.resolve(here, '../..')
 const cli = path.join(repoRoot, 'packages/cli/dist/main.js')
-const workspaceModules = path.join(repoRoot, 'node_modules')
+/** Runner installs the sandboxes link to (dev dependencies of the adapter packages). */
+const runnerModules = {
+  vitest: path.join(repoRoot, 'node_modules', 'vitest'),
+  jest: path.join(repoRoot, 'packages', 'jest', 'node_modules', 'jest'),
+}
+
+export interface SandboxOptions {
+  /** Parent directory (default: the repository's .sandbox directory). */
+  readonly base?: string
+  readonly runner?: 'vitest' | 'jest'
+  /** Worker count passed to the runner (Jest runs in the main process with one worker). */
+  readonly workers?: number
+}
 
 export interface CliResult {
   readonly code: number
@@ -17,21 +29,31 @@ export interface CliResult {
 }
 
 /**
- * A throwaway Vitest project driven through the real Veyrum CLI. Lives under the repository's
- * .sandbox directory (not the OS temp directory) unless a base is given.
+ * A throwaway Vitest or Jest project driven through the real Veyrum CLI. Lives under the
+ * repository's .sandbox directory (not the OS temp directory) unless a base is given.
  */
 export class Sandbox {
   readonly dir: string
+  readonly runner: 'vitest' | 'jest'
+  private readonly workers: number
 
-  constructor(name: string, base = path.join(repoRoot, '.sandbox')) {
+  constructor(name: string, options: SandboxOptions = {}) {
+    this.runner = options.runner ?? 'vitest'
+    this.workers = options.workers ?? 1
+    const base = options.base ?? path.join(repoRoot, '.sandbox')
     this.dir = path.join(base, `${name}-${crypto.randomBytes(4).toString('hex')}`)
     fs.mkdirSync(path.join(this.dir, 'node_modules'), { recursive: true })
-    fs.symlinkSync(path.join(workspaceModules, 'vitest'), path.join(this.dir, 'node_modules', 'vitest'))
-    this.write('package.json', JSON.stringify({ name: name, private: true, type: 'module' }, null, 2))
-    this.write(
-      'vitest.config.ts',
-      "import { defineConfig } from 'vitest/config'\nexport default defineConfig({ test: {} })\n",
-    )
+    fs.symlinkSync(runnerModules[this.runner], path.join(this.dir, 'node_modules', this.runner))
+    if (this.runner === 'vitest') {
+      this.write('package.json', JSON.stringify({ name, private: true, type: 'module' }, null, 2))
+      this.write(
+        'vitest.config.ts',
+        "import { defineConfig } from 'vitest/config'\nexport default defineConfig({ test: {} })\n",
+      )
+    } else {
+      this.write('package.json', JSON.stringify({ name, private: true }, null, 2))
+      this.write('jest.config.js', "module.exports = { testEnvironment: 'node' }\n")
+    }
   }
 
   write(rel: string, content: string): this {
@@ -63,14 +85,15 @@ export class Sandbox {
     // The child must not inherit this test runner's own Vitest variables.
     const childEnv: NodeJS.ProcessEnv = { ...process.env, ...env }
     for (const key of Object.keys(childEnv)) {
-      if (key.startsWith('VITEST') || key === 'NODE_ENV' || key === 'TEST') delete childEnv[key]
+      if (key.startsWith('VITEST') || key.startsWith('JEST') || key === 'NODE_ENV' || key === 'TEST')
+        if (!(key in env)) delete childEnv[key]
     }
     // Scenarios decide snapshot behavior themselves; CI systems set CI=true, which forbids writes.
     if (!('CI' in env)) delete childEnv.CI
     if (!('GITHUB_ACTIONS' in env)) delete childEnv.GITHUB_ACTIONS
     const result = spawnSync(
       process.execPath,
-      [cli, ...args, '--quiet', '--max-workers', '1', '--json', json],
+      [cli, ...args, '--quiet', '--max-workers', String(this.workers), '--json', json],
       {
         cwd: this.dir,
         encoding: 'utf8',
