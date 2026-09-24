@@ -7,6 +7,7 @@ import { exec, git, KilledError, profiled } from './exec.ts'
 import { applyMutant, type Mutant, mutationSites, rng } from './mutate.ts'
 import {
   type CaptureResult,
+  captureRerun,
   captureRun,
   type Outcomes,
   plainRun,
@@ -46,6 +47,11 @@ export interface CommitResult {
   readonly outcomes: Readonly<Record<string, readonly [verdict: 'pass' | 'fail', ms: number]>>
   readonly flips: readonly string[]
   readonly flaky: readonly string[]
+  /**
+   * Files that failed under capture and passed every plain run: capture changed their verdict.
+   * Each is a Veyrum bug; like flaky files, they are left out of safety scoring.
+   */
+  readonly divergent?: readonly string[]
   readonly baselines: Partial<Record<BaselineName, BaselineScore>> | null
   readonly veyrumPlanMs: number | null
   /** Why Veyrum ran files: count per reason, and the first details of each (diagnostics). */
@@ -143,16 +149,38 @@ function prepare(corpus: Corpus, repo: string): void {
   if (r.code !== 0) throw new Error(`prepare failed:\n${r.stdout.slice(-3000)}\n${r.stderr.slice(-3000)}`)
 }
 
-/** Reruns failing files twice; any that pass are flaky and excluded from safety scoring. */
-function detectFlaky(corpus: Corpus, repo: string, scratch: string, outcomes: Outcomes): Set<string> {
+/**
+ * Reruns the files that failed under capture twice without Veyrum. A file that passes once and
+ * fails once is flaky. One that passes both times is run under capture again: failing again, its
+ * verdict depends on capture (divergent); passing, it is flaky. Both are excluded from safety
+ * scoring.
+ */
+function classifyFailures(
+  corpus: Corpus,
+  repo: string,
+  scratch: string,
+  outcomes: Outcomes,
+): { flaky: Set<string>; divergent: Set<string> } {
   const failing = [...outcomes].filter(([, o]) => o.verdict === 'fail').map(([f]) => f)
   const flaky = new Set<string>()
-  if (failing.length === 0) return flaky
+  const divergent = new Set<string>()
+  if (failing.length === 0) return { flaky, divergent }
+  const passes = new Map<string, number>()
   for (let attempt = 0; attempt < 2; attempt++) {
     const rerun = plainRun(corpus, repo, scratch, failing)
-    for (const f of failing) if (rerun.outcomes.get(f)?.verdict === 'pass') flaky.add(f)
+    for (const f of failing)
+      if (rerun.outcomes.get(f)?.verdict === 'pass') passes.set(f, (passes.get(f) ?? 0) + 1)
   }
-  return flaky
+  const suspects = failing.filter((f) => passes.get(f) === 2)
+  for (const f of failing) if (passes.get(f) === 1) flaky.add(f)
+  if (suspects.length > 0) {
+    const again = captureRerun(corpus, repo, scratch, suspects)
+    for (const f of suspects) {
+      if (again.get(f)?.verdict === 'fail') divergent.add(f)
+      else flaky.add(f)
+    }
+  }
+  return { flaky, divergent }
 }
 
 function durationOf(outcomes: Outcomes, files: Iterable<string>): number {
@@ -345,16 +373,19 @@ export async function replay(corpus: Corpus, benchRoot: string, options: ReplayO
           plainWallMs = runPlain()
         }
         const outcomes = capture.outcomes
-        const flaky = detectFlaky(corpus, paths.testRoot, paths.scratch, outcomes)
+        const { flaky, divergent } = classifyFailures(corpus, paths.testRoot, paths.scratch, outcomes)
+        if (divergent.size > 0)
+          log(`  CAPTURE CHANGED VERDICTS (fail under Veyrum, pass without): ${[...divergent].join(', ')}`)
+        const unscored = new Set([...flaky, ...divergent])
         const prevOutcomes = new Map(Object.entries(prev?.outcomes ?? {}))
         const flips: string[] = []
         for (const [file, o] of outcomes) {
-          if (flaky.has(file)) continue
+          if (unscored.has(file)) continue
           const before = prevOutcomes.get(file)
           if (before ? before[0] !== o.verdict : o.verdict === 'fail') flips.push(file)
         }
         const failing = [...outcomes]
-          .filter(([f, o]) => o.verdict === 'fail' && !flaky.has(f))
+          .filter(([f, o]) => o.verdict === 'fail' && !unscored.has(f))
           .map(([f]) => f)
 
         let baselines: CommitResult['baselines'] = null
@@ -385,6 +416,7 @@ export async function replay(corpus: Corpus, benchRoot: string, options: ReplayO
           ),
           flips,
           flaky: [...flaky],
+          divergent: [...divergent],
           baselines,
           veyrumPlanMs,
           ...(veyrumReasons ? { veyrumReasons } : {}),
@@ -395,7 +427,9 @@ export async function replay(corpus: Corpus, benchRoot: string, options: ReplayO
         const summary = baselines
           ? BASELINES.map((b) => `${b}=${baselines?.[b]?.selected?.length ?? '-'}`).join(' ')
           : 'warm-up'
-        log(`  ${outcomes.size} files, ${flips.length} flips, ${flaky.size} flaky; ${summary}`)
+        log(
+          `  ${outcomes.size} files, ${flips.length} flips, ${flaky.size} flaky, ${divergent.size} divergent; ${summary}`,
+        )
 
         // 4. Mutants on sampled commits, using evidence recorded at this commit.
         if (scored && corpus.mutantsPerCommit > 0 && index % corpus.mutationEvery === 0) {

@@ -130,6 +130,13 @@ export function renderReport(title: string, lines: readonly ResultLine[]): strin
     for (const b of broken) out.push(`- ${b.sha.slice(0, 10)}: ${b.error.split('\n')[0]}`)
     out.push('')
   }
+  const divergent = commits.flatMap((c) => (c.divergent ?? []).map((f) => `${c.sha.slice(0, 10)} ${f}`))
+  out.push(
+    `Verdicts capture changed (failed under Veyrum, passed without it): ${divergent.length}${divergent.length > 0 ? '. Each is a Veyrum bug:' : '.'}`,
+    '',
+  )
+  for (const d of divergent) out.push(`- ${d}`)
+  if (divergent.length > 0) out.push('')
   out.push('## Selection and safety', '')
   out.push(
     '| Selector | Files run (median) | Files run (p90) | Test time run (median) | Test time run (mean) | Mainline escapes | Missed failing | Mutant escapes |',

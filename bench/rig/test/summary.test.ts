@@ -14,6 +14,7 @@ const commit = (
   veyrumMs: number,
   flips: string[],
   veyrumEscapes: string[] = [],
+  divergent: string[] = [],
 ): CommitResult => ({
   kind: 'commit',
   index,
@@ -25,6 +26,7 @@ const commit = (
   outcomes: {},
   flips,
   flaky: [],
+  divergent,
   baselines: { veyrum: score(veyrumMs, veyrumEscapes), 'file-coverage': score(100) },
   veyrumPlanMs: 1,
   capture: { runMs: 0, recordMs: 0, wallMs: 120 },
@@ -52,7 +54,7 @@ test('pools killed mutants and mainline flips into one escape bound', () => {
       name: 'b',
       runner: 'jest',
       lines: [
-        commit(1, 50, ['t2.test.ts'], ['t2.test.ts']),
+        commit(1, 50, ['t2.test.ts'], ['t2.test.ts'], ['t3.test.ts']),
         mutant(['t2.test.ts'], ['t2.test.ts']),
         { kind: 'broken', index: 2, sha: 'c2', error: 'install failed' },
       ],
@@ -60,11 +62,12 @@ test('pools killed mutants and mainline flips into one escape bound', () => {
   ])
   // Repository a: time shares 10% and 30%, one killed mutant (the survivor drops out), one flip.
   expect(summary).toContain(
-    '| a | vitest | 2 | 20.0% / 20.0% | 100.0% / 100.0% | - / - | 1 + 1 | 0 | 0 | 20.0% |',
+    '| a | vitest | 2 | 20.0% / 20.0% | 100.0% / 100.0% | - / - | 1 + 1 | 0 | 0 | 0 | 20.0% |',
   )
-  // Repository b: the mutant escape and the commit escape both count; one commit was unreplayable.
+  // Repository b: the mutant escape and the commit escape both count; one commit was unreplayable;
+  // capture changed one verdict.
   expect(summary).toContain(
-    '| b | jest | 1 (1) | 50.0% / 50.0% | 100.0% / 100.0% | - / - | 1 + 1 | 2 | 0 | 20.0% |',
+    '| b | jest | 1 (1) | 50.0% / 50.0% | 100.0% / 100.0% | - / - | 1 + 1 | 2 | 0 | 1 | 20.0% |',
   )
   expect(summary).toContain('2 of 4 killed mutants and mainline flips')
 })

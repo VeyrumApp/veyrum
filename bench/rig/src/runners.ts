@@ -80,6 +80,30 @@ export function captureRun(corpus: Corpus, repo: string, store: string, scratch:
   return { outcomes, runMs: data.timings.runMs, recordMs: data.timings.recordMs, wallMs: r.ms }
 }
 
+/**
+ * Runs files under capture with a throwaway store: the run is only for its verdicts, and records
+ * nothing the replay's own store reads.
+ */
+export function captureRerun(
+  corpus: Corpus,
+  repo: string,
+  scratch: string,
+  files: readonly string[],
+): Outcomes {
+  const json = path.join(scratch, 'capture-rerun.json')
+  const store = path.join(scratch, 'capture-rerun.sqlite')
+  for (const f of [json, store, `${store}-wal`, `${store}-shm`]) fs.rmSync(f, { force: true })
+  const r = veyrum(corpus, repo, store, ['run', '--full', ...files], json)
+  if (!fs.existsSync(json))
+    throw new Error(
+      `veyrum run --full produced no output (exit ${r.code}, signal ${r.signal ?? 'none'}):\n${r.stdout}\n${r.stderr}`,
+    )
+  const data = JSON.parse(fs.readFileSync(json, 'utf8')) as { outcomes: CheckOutcomeSummary[] }
+  const outcomes: Outcomes = new Map()
+  for (const o of data.outcomes) outcomes.set(o.check.path, { verdict: o.verdict, durationMs: o.durationMs })
+  return outcomes
+}
+
 /** Veyrum's plan (the system under test). */
 export function veyrumPlan(
   corpus: Corpus,

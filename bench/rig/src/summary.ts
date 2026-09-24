@@ -34,9 +34,9 @@ function timeShares(commits: readonly CommitResult[], name: BaselineName): numbe
 export function renderSummary(inputs: readonly SummaryInput[]): string {
   const out: string[] = ['# Veyrum replay summary', '']
   out.push(
-    '| Repository | Runner | Commits (unreplayable) | Veyrum time run (median / mean) | Datadog-style (median / mean) | Runner changed (median / mean) | Killed mutants + mainline flips | Veyrum escapes | Datadog-style escapes | Capture overhead (median) |',
+    '| Repository | Runner | Commits (unreplayable) | Veyrum time run (median / mean) | Datadog-style (median / mean) | Runner changed (median / mean) | Killed mutants + mainline flips | Veyrum escapes | Datadog-style escapes | Verdicts capture changed | Capture overhead (median) |',
   )
-  out.push('| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |')
+  out.push('| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |')
   let oraclesTotal = 0
   let escapesTotal = 0
   for (const input of inputs) {
@@ -60,10 +60,11 @@ export function renderSummary(inputs: readonly SummaryInput[]): string {
       .map((c) => c.capture.wallMs / c.plainWallMs! - 1)
     const brokenCommits = input.lines.filter((l) => l.kind === 'broken').length
     const veyrumEscapes = escapes('veyrum')
+    const divergent = commits.reduce((n, c) => n + (c.divergent?.length ?? 0), 0)
     oraclesTotal += killed.length + flips
     escapesTotal += veyrumEscapes
     out.push(
-      `| ${input.name} | ${input.runner} | ${commits.length}${brokenCommits > 0 ? ` (${brokenCommits})` : ''} | ${cell('veyrum')} | ${cell('file-coverage')} | ${cell('runner-changed')} | ${killed.length} + ${flips} | ${veyrumEscapes} | ${escapes('file-coverage')} | ${pct(quantile(overhead, 0.5))} |`,
+      `| ${input.name} | ${input.runner} | ${commits.length}${brokenCommits > 0 ? ` (${brokenCommits})` : ''} | ${cell('veyrum')} | ${cell('file-coverage')} | ${cell('runner-changed')} | ${killed.length} + ${flips} | ${veyrumEscapes} | ${escapes('file-coverage')} | ${divergent} | ${pct(quantile(overhead, 0.5))} |`,
     )
   }
   out.push('')
