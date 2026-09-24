@@ -65,6 +65,12 @@ export interface AssembleInput {
    */
   readonly configFiles: readonly string[]
   /**
+   * Those of `configFiles` that are project configurations only the runner's native tsconfig
+   * discovery reads. Recorded as scoped (see `RunInfo.projectConfigs`) unless the main process
+   * also read, checked or loaded them in JavaScript, which could be for any purpose.
+   */
+  readonly projectConfigs?: readonly string[]
+  /**
    * Package manifests every check depends on through the fields the toolchain reads from them
    * (for example Jest, Babel and Browserslist configuration). Compared as manifests: dependency
    * version ranges and scripts are left out.
@@ -506,6 +512,18 @@ export function assemble(input: AssembleInput): Assembled {
     shared.push(entry)
   }
   const toolchainFiles = payloads.flatMap((p) => p.toolchainFiles ?? [])
+  const observedInJs = new Set(
+    [...input.main.paths.map((o) => o.p), ...input.main.loadedFiles, ...toolchainFiles].map(
+      normalizeAbsolute,
+    ),
+  )
+  const projectConfigs = (input.projectConfigs ?? [])
+    .filter(
+      (absolute) =>
+        !observedInJs.has(normalizeAbsolute(absolute)) && isInside(root, absolute) && !ignored(absolute),
+    )
+    .map((absolute) => toRepoPath(root, absolute))
+    .sort()
   for (const absolute of [...input.configFiles, ...input.main.loadedFiles, ...toolchainFiles]) {
     if (ignored(absolute) || testFiles.has(absolute) || !isInside(root, absolute)) continue
     const p = toRepoPath(root, absolute)
@@ -559,6 +577,7 @@ export function assemble(input: AssembleInput): Assembled {
     runtimeKey: input.runtimeKey,
     runtime: input.runtime,
     shared,
+    ...(projectConfigs.length > 0 ? { projectConfigs } : {}),
     injectedEnv: injected,
     ...(conflicting.size > 0 ? { injectedVaryingEnv: [...conflicting].sort() } : {}),
     files: input.files,

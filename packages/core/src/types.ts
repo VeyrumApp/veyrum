@@ -143,6 +143,13 @@ export interface RunInfo {
   readonly runtime: Readonly<Record<string, string>>
   /** Inputs read by the runner's main process (config, env files, resolution probes, env). */
   readonly shared: readonly ClosureEntry[]
+  /**
+   * Shared `file` inputs that are project configurations (tsconfig files and the files they extend
+   * or reference) read only by the runner's native tsconfig discovery. A change to one affects only
+   * the checks whose files it can govern (see tsconfig.ts); every other shared input affects all.
+   * Runs recorded before this field existed treat every shared input as affecting all.
+   */
+  readonly projectConfigs?: readonly string[]
   /** Environment variables injected into workers by the runner, name to value digest. */
   readonly injectedEnv: Readonly<Record<string, Digest | null>>
   /**

@@ -179,6 +179,67 @@ describe('plan', () => {
     expect(d.details[0]).toContain('vitest.config.ts')
   })
 
+  describe('project configurations', () => {
+    /** A record of `check` with a module under `dir`, from a run with project configurations. */
+    function configRecord(dir: string, configs: Record<string, string>, extraShared: ClosureEntry[] = []) {
+      const shared: ClosureEntry[] = [...extraShared]
+      for (const [p, text] of Object.entries(configs)) shared.push({ k: 'file', p, h: write(p, text) })
+      const src = write(`${dir}/m.ts`, 'export const v = 1')
+      return record(
+        [{ k: 'mod', p: `${dir}/m.ts`, src, units: {}, env: 'ssr' }],
+        {},
+        {
+          shared,
+          projectConfigs: Object.keys(configs),
+        },
+      )
+    }
+
+    test('a changed configuration reruns only the checks with files it can govern', async () => {
+      configRecord('packages/a', {
+        'packages/a/tsconfig.json': '{ "extends": "../../configs/base.json" }',
+        'configs/base.json': '{}',
+        'examples/nuxt/.nuxt/tsconfig.json': '{}',
+      })
+      write('examples/nuxt/.nuxt/tsconfig.json', '{ "compilerOptions": {} }')
+      expect((await decide()).action).toBe('skip')
+      write('configs/base.json', '{ "compilerOptions": { "strict": true } }')
+      const d = await decide()
+      expect(d.reason).toBe('shared-inputs-changed')
+      expect(d.details).toEqual(['runner input configs/base.json changed'])
+    })
+
+    test('a configuration that does not parse may affect anything', async () => {
+      configRecord('packages/a', { 'examples/tsconfig.json': '{}' })
+      write('examples/tsconfig.json', '{ "compilerOptions": ')
+      expect((await decide()).action).toBe('run')
+    })
+
+    test('a removed configuration affects the files below it', async () => {
+      configRecord('packages/a', { 'packages/a/tsconfig.json': '{}', 'examples/tsconfig.json': '{}' })
+      fs.rmSync(path.join(root, 'examples/tsconfig.json'))
+      expect((await decide()).action).toBe('skip')
+      fs.rmSync(path.join(root, 'packages/a/tsconfig.json'))
+      expect((await decide()).details).toEqual(['runner input packages/a/tsconfig.json was removed'])
+    })
+
+    test('a configuration that governs another shared input affects every check', async () => {
+      const setup = write('examples/setup.ts', 'export default () => {}')
+      configRecord('packages/a', { 'examples/tsconfig.json': '{}' }, [
+        { k: 'file', p: 'examples/setup.ts', h: setup },
+      ])
+      write('examples/tsconfig.json', '{ "compilerOptions": { "strict": true } }')
+      expect((await decide()).action).toBe('run')
+    })
+
+    test('runs recorded without project configurations treat every configuration as shared', async () => {
+      const h = write('examples/tsconfig.json', '{}')
+      record([], {}, { shared: [{ k: 'file', p: 'examples/tsconfig.json', h }] })
+      write('examples/tsconfig.json', '{ "compilerOptions": { "strict": true } }')
+      expect((await decide()).action).toBe('run')
+    })
+  })
+
   test('falls back to an older record whose inputs match (a revert)', async () => {
     const h1 = write('src/x.ts', 'one')
     record([{ k: 'file', p: 'src/x.ts', h: h1 }])
