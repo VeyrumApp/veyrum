@@ -10,7 +10,8 @@ import { fileURLToPath } from 'node:url'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const source = path.join(root, 'packages/capture/native/trace.c')
-const output = path.join(root, 'packages/capture/dist/native/libveyrum-trace.so')
+const nativeDir = path.join(root, 'packages/capture/dist/native', `${process.platform}-${process.arch}`)
+const output = path.join(nativeDir, 'libveyrum-trace.so')
 
 if (!['linux-x64', 'linux-arm64'].includes(`${process.platform}-${process.arch}`)) {
   console.log(`build-native: child-process tracing is not built on ${process.platform}-${process.arch}`)
@@ -50,7 +51,7 @@ fs.renameSync(temporary, output)
 // The launcher for programs the library cannot follow (packages/capture/native/exec.c). Linked
 // statically, so the library is never preloaded into it; without a static C library it is not
 // built, and those programs stay untraceable.
-const launcher = path.join(root, 'packages/capture/dist/native/veyrum-exec')
+const launcher = path.join(nativeDir, 'veyrum-exec')
 const launcherTemporary = `${launcher}.${process.pid}`
 try {
   execFileSync(

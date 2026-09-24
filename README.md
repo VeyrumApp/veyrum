@@ -27,8 +27,8 @@ Once shadow mode shows no wrong reuse, switch to `mode: enforce` and files with 
 are skipped. See `docs/github-actions.md` for the cache keys, inputs and a manual workflow for
 sharded jobs.
 
-Vitest 4 and later and Jest 29 and later are supported, on Node 22.15 or later, on Linux, macOS
-and Windows. Child processes a test starts are traced natively on Linux; Node child processes and
+Vitest 4 and later, Jest 29 and later, and Node's built-in test runner (`node --test`) are
+supported, on Node 22.15 or later, on Linux, macOS and Windows. Child processes a test starts are traced natively on Linux; Node child processes and
 worker threads are traced on every platform.
 
 ## How it works
@@ -79,9 +79,8 @@ starts are traced too, statically linked and Go programs included (see `docs/des
 Evidence is stored in `.veyrum/store.sqlite`. It holds digests, repository paths, test names,
 outcomes and durations, never source code or environment variable values.
 
-Vitest 4 and later and Jest 29 and later are supported on Node 22.15 or later, on Linux, macOS
-and Windows. The runner is
-detected from the project's configuration; `--runner vitest|jest` overrides it.
+The runner is detected from the project's configuration (a test script running `node --test`
+selects Node's runner); `--runner vitest|jest|node-test` overrides it.
 
 ## Repository layout
 

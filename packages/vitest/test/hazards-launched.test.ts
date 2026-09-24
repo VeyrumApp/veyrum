@@ -15,7 +15,10 @@ import { TRACED_PLATFORMS } from '../../capture/src/trace.ts'
 let sandbox: Sandbox | undefined
 afterEach(() => sandbox?.dispose())
 
-const launcher = path.resolve(fileURLToPath(import.meta.url), '../../../capture/dist/native/veyrum-exec')
+const launcher = path.resolve(
+  fileURLToPath(import.meta.url),
+  `../../../capture/dist/native/${process.platform}-${process.arch}/veyrum-exec`,
+)
 const tracing = TRACED_PLATFORMS.includes(`${process.platform}-${process.arch}`)
 const tool = tracing ? staticTool() : null
 const go = tracing ? goTool() : null

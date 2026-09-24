@@ -1,4 +1,6 @@
+import childProcess from 'node:child_process'
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { threadId } from 'node:worker_threads'
@@ -11,12 +13,22 @@ import { threadId } from 'node:worker_threads'
  * layer's hooks suspended, on the unpatched fs functions it is given.
  */
 
-/** Built next to this module on Linux by scripts/build-native.mjs; absent elsewhere. */
-export const TRACE_LIBRARY = path.join(
+/**
+ * Built per platform by scripts/build-native.mjs into native/<platform>-<arch>/ next to this
+ * module (a published package carries every platform's); absent where tracing is not built.
+ */
+export const NATIVE_DIR = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
   'native',
-  'libveyrum-trace.so',
+  `${process.platform}-${process.arch}`,
 )
+export const TRACE_LIBRARY = path.join(NATIVE_DIR, 'libveyrum-trace.so')
+
+/** Preloaded into Node programs and worker threads no native tracer follows (see child.ts). */
+export const CHILD_PRELOAD = path.join(path.dirname(fileURLToPath(import.meta.url)), 'child-preload.cjs')
+
+/** The launcher that traces statically linked and Go programs with ptrace; built with the library. */
+export const EXEC_LAUNCHER = path.join(NATIVE_DIR, 'veyrum-exec')
 
 export interface TraceFs {
   readonly statSync: typeof fs.statSync
@@ -24,12 +36,6 @@ export interface TraceFs {
   readonly readSync: typeof fs.readSync
   readonly closeSync: typeof fs.closeSync
 }
-
-/** Preloaded into Node programs and worker threads no native tracer follows (see child.ts). */
-export const CHILD_PRELOAD = path.join(path.dirname(fileURLToPath(import.meta.url)), 'child-preload.cjs')
-
-/** The launcher that traces statically linked and Go programs with ptrace; built with the library. */
-export const EXEC_LAUNCHER = path.join(path.dirname(TRACE_LIBRARY), 'veyrum-exec')
 
 /** Where the tracer is built (scripts/build-native.mjs keeps the same list). */
 export const TRACED_PLATFORMS: readonly string[] = ['linux-x64', 'linux-arm64']
@@ -45,9 +51,32 @@ export function tracingAvailable(raw: TraceFs): boolean {
   if (libraryPresent === undefined) {
     libraryPresent =
       TRACED_PLATFORMS.includes(`${process.platform}-${process.arch}`) &&
-      raw.statSync(TRACE_LIBRARY, { throwIfNoEntry: false })?.isFile() === true
+      raw.statSync(TRACE_LIBRARY, { throwIfNoEntry: false })?.isFile() === true &&
+      libraryLoads()
   }
   return libraryPresent
+}
+
+/**
+ * Whether the dynamic loader here loads the library: one built against a newer C library than the
+ * system's is skipped with a warning, and its children would then run unobserved. Its constructor
+ * creates the log, so a trivial traced program shows whether it loaded.
+ */
+function libraryLoads(): boolean {
+  const log = path.join(os.tmpdir(), `veyrum-probe-${process.pid}-${threadId}-${Date.now()}.log`)
+  try {
+    const shell = fs.existsSync('/bin/sh') ? '/bin/sh' : process.execPath
+    childProcess.spawnSync(shell, shell === '/bin/sh' ? ['-c', ':'] : ['-e', '0'], {
+      env: { PATH: process.env.PATH ?? '', LD_PRELOAD: TRACE_LIBRARY, VEYRUM_TRACE: log },
+      stdio: 'ignore',
+      timeout: 10_000,
+    })
+    return fs.existsSync(log)
+  } catch {
+    return false
+  } finally {
+    fs.rmSync(log, { force: true })
+  }
 }
 
 export interface NativeTools {
