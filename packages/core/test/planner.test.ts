@@ -51,7 +51,10 @@ function record(
     runtime: {},
     shared: [],
     injectedEnv: {},
-    files: fs.readdirSync(root, { recursive: true }).map(String).sort(),
+    files: fs
+      .readdirSync(root, { recursive: true })
+      .map((f) => String(f).split(path.sep).join('/'))
+      .sort(),
     runner: { name: 'test', version: '0', isolate: true, pool: 'forks' },
     ...runOverrides,
   }

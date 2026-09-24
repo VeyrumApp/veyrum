@@ -87,11 +87,22 @@ const KILL_AFTER_SECONDS = 60
  * is killed a minute later. Output goes to files, not pipes, so a leftover grandchild holding a
  * pipe open cannot keep the rig waiting; whatever the command left running is killed afterwards.
  */
+let coreutilsTimeout: boolean | undefined
+/** Whether `timeout` is GNU coreutils' (Windows has an unrelated timeout.exe). */
+function hasCoreutilsTimeout(): boolean {
+  coreutilsTimeout ??= /coreutils/i.test(
+    spawnSync('timeout', ['--version'], { encoding: 'utf8' }).stdout ?? '',
+  )
+  return coreutilsTimeout
+}
+
 function execOnce(
   command: string,
   args: readonly string[],
   options: { cwd: string; env?: NodeJS.ProcessEnv; timeoutMs?: number } = { cwd: process.cwd() },
 ): ExecResult {
+  if (!hasCoreutilsTimeout())
+    throw new Error('the benchmark rig needs coreutils `timeout` (Linux) to bound every command')
   const started = performance.now()
   const timeoutMs = Math.round(options.timeoutMs ?? DEFAULT_TIMEOUT_MS)
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rig-exec-'))
@@ -128,10 +139,7 @@ function execOnce(
     fs.closeSync(out)
     fs.closeSync(err)
   }
-  if ((result.error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT') {
-    fs.rmSync(dir, { recursive: true, force: true })
-    throw new Error('the benchmark rig needs coreutils `timeout` (Linux) to bound every command')
-  }
+
   if (result.pid) {
     try {
       process.kill(-result.pid, 'SIGKILL')

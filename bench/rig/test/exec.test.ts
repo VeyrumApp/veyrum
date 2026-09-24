@@ -3,7 +3,7 @@ import { describe, expect, test } from 'vitest'
 import { exec } from '../src/exec.ts'
 
 // The rig runs on Linux, where coreutils `timeout` bounds every command; macOS lacks it.
-const hasTimeout = spawnSync('timeout', ['--version']).status === 0
+const hasTimeout = /coreutils/i.test(spawnSync('timeout', ['--version'], { encoding: 'utf8' }).stdout ?? '')
 
 test.skipIf(hasTimeout)('without coreutils timeout the rig says so', () => {
   expect(() => exec('true', [], { cwd: process.cwd() })).toThrow(/needs coreutils `timeout`/)

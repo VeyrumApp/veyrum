@@ -60,55 +60,61 @@ export class Store {
   static open(file: string): Store {
     if (file !== ':memory:') fs.mkdirSync(path.dirname(file), { recursive: true })
     const db = new (sqlite().DatabaseSync)(file)
-    db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA busy_timeout = 5000;')
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS runs (
-        id TEXT PRIMARY KEY, created_at TEXT NOT NULL, revision TEXT, runtime_key TEXT NOT NULL, info BLOB NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS blobs (digest TEXT PRIMARY KEY, data BLOB NOT NULL, base TEXT);
-      CREATE TABLE IF NOT EXISTS entries (id INTEGER PRIMARY KEY, digest TEXT NOT NULL UNIQUE, data TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS records (
-        id TEXT PRIMARY KEY, check_path TEXT NOT NULL, project TEXT NOT NULL, run_id TEXT NOT NULL,
-        runtime_key TEXT NOT NULL, verdict TEXT NOT NULL, reusable INTEGER NOT NULL, created_at TEXT NOT NULL,
-        revision TEXT, duration_ms REAL NOT NULL, flags TEXT NOT NULL, tests TEXT NOT NULL,
-        closure_digest TEXT NOT NULL, channels TEXT NOT NULL DEFAULT '{}'
-      );
-      CREATE INDEX IF NOT EXISTS records_by_check ON records (check_path, project, created_at DESC);
-      CREATE INDEX IF NOT EXISTS records_by_runtime ON records (check_path, project, runtime_key, created_at DESC);
-      CREATE TABLE IF NOT EXISTS stat_cache (
-        path TEXT PRIMARY KEY, size INTEGER NOT NULL, mtime_ns TEXT NOT NULL, ino INTEGER NOT NULL, digest TEXT
-      );
-      CREATE TABLE IF NOT EXISTS unit_cache (
-        key TEXT PRIMARY KEY, units TEXT NOT NULL, used INTEGER NOT NULL DEFAULT 0
-      );
-      CREATE TABLE IF NOT EXISTS verifications (
-        run_id TEXT NOT NULL, check_path TEXT NOT NULL, project TEXT NOT NULL, record_id TEXT NOT NULL,
-        kind TEXT NOT NULL, outcome TEXT NOT NULL, created_at TEXT NOT NULL,
-        PRIMARY KEY (run_id, check_path, project)
-      );
-    `)
-    const row = db.prepare('SELECT value FROM meta WHERE key = ?').get('schema') as
-      | { value: string }
-      | undefined
-    if (row && !(Number(row.value) >= 1 && Number(row.value) <= SCHEMA_VERSION))
-      throw new Error(
-        `Veyrum store ${file} has schema ${row.value}, expected ${SCHEMA_VERSION}. Delete it to rebuild.`,
-      )
-    // Columns added since schema 1, added in place to tables an older schema created. Checked on
-    // every open: cheap, and a store an interrupted upgrade left behind is completed.
-    // Schema 2 names the unobserved channels a record used; older records have none recorded.
-    addColumn(db, 'records', 'channels', `TEXT NOT NULL DEFAULT '{}'`)
-    // Schema 3 notes the last run that used each cached module, so unused ones can be pruned,
-    // and stores closures as entry ids, as deltas against another closure (see putClosure).
-    addColumn(db, 'unit_cache', 'used', 'INTEGER NOT NULL DEFAULT 0')
-    addColumn(db, 'blobs', 'base', 'TEXT')
-    if (row?.value !== String(SCHEMA_VERSION))
-      db.prepare('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)').run(
-        'schema',
-        String(SCHEMA_VERSION),
-      )
-    return new Store(file, db)
+    // A store that fails to open is closed again: Windows cannot move aside a file still open.
+    try {
+      db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA busy_timeout = 5000;')
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS runs (
+          id TEXT PRIMARY KEY, created_at TEXT NOT NULL, revision TEXT, runtime_key TEXT NOT NULL, info BLOB NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS blobs (digest TEXT PRIMARY KEY, data BLOB NOT NULL, base TEXT);
+        CREATE TABLE IF NOT EXISTS entries (id INTEGER PRIMARY KEY, digest TEXT NOT NULL UNIQUE, data TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS records (
+          id TEXT PRIMARY KEY, check_path TEXT NOT NULL, project TEXT NOT NULL, run_id TEXT NOT NULL,
+          runtime_key TEXT NOT NULL, verdict TEXT NOT NULL, reusable INTEGER NOT NULL, created_at TEXT NOT NULL,
+          revision TEXT, duration_ms REAL NOT NULL, flags TEXT NOT NULL, tests TEXT NOT NULL,
+          closure_digest TEXT NOT NULL, channels TEXT NOT NULL DEFAULT '{}'
+        );
+        CREATE INDEX IF NOT EXISTS records_by_check ON records (check_path, project, created_at DESC);
+        CREATE INDEX IF NOT EXISTS records_by_runtime ON records (check_path, project, runtime_key, created_at DESC);
+        CREATE TABLE IF NOT EXISTS stat_cache (
+          path TEXT PRIMARY KEY, size INTEGER NOT NULL, mtime_ns TEXT NOT NULL, ino INTEGER NOT NULL, digest TEXT
+        );
+        CREATE TABLE IF NOT EXISTS unit_cache (
+          key TEXT PRIMARY KEY, units TEXT NOT NULL, used INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE TABLE IF NOT EXISTS verifications (
+          run_id TEXT NOT NULL, check_path TEXT NOT NULL, project TEXT NOT NULL, record_id TEXT NOT NULL,
+          kind TEXT NOT NULL, outcome TEXT NOT NULL, created_at TEXT NOT NULL,
+          PRIMARY KEY (run_id, check_path, project)
+        );
+      `)
+      const row = db.prepare('SELECT value FROM meta WHERE key = ?').get('schema') as
+        | { value: string }
+        | undefined
+      if (row && !(Number(row.value) >= 1 && Number(row.value) <= SCHEMA_VERSION))
+        throw new Error(
+          `Veyrum store ${file} has schema ${row.value}, expected ${SCHEMA_VERSION}. Delete it to rebuild.`,
+        )
+      // Columns added since schema 1, added in place to tables an older schema created. Checked on
+      // every open: cheap, and a store an interrupted upgrade left behind is completed.
+      // Schema 2 names the unobserved channels a record used; older records have none recorded.
+      addColumn(db, 'records', 'channels', `TEXT NOT NULL DEFAULT '{}'`)
+      // Schema 3 notes the last run that used each cached module, so unused ones can be pruned,
+      // and stores closures as entry ids, as deltas against another closure (see putClosure).
+      addColumn(db, 'unit_cache', 'used', 'INTEGER NOT NULL DEFAULT 0')
+      addColumn(db, 'blobs', 'base', 'TEXT')
+      if (row?.value !== String(SCHEMA_VERSION))
+        db.prepare('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)').run(
+          'schema',
+          String(SCHEMA_VERSION),
+        )
+      return new Store(file, db)
+    } catch (error) {
+      db.close()
+      throw error
+    }
   }
 
   close(): void {
