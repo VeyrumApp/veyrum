@@ -72,6 +72,23 @@ describe('inputs', () => {
     expect(s.actions()['test/json.test.js']).toBe('run')
   })
 
+  test("the planner's own reads of a changed input are no runner input", () => {
+    const s = project('node-planner-reads')
+      .write('fixtures/x.txt', 'a')
+      .write(
+        'test/read.test.js',
+        "import test from 'node:test'\nimport assert from 'node:assert'\nimport fs from 'node:fs'\ntest('reads', () => assert.match(fs.readFileSync('fixtures/x.txt', 'utf8'), /^[abc]$/))\n",
+      )
+      .write('test/add.test.js', ADD_TEST)
+      .write('src/math.js', MATH)
+    s.capture()
+    // The run plans first, reading the changed fixture to compare it: that read is not the runner's.
+    s.write('fixtures/x.txt', 'b')
+    expect(s.cli(['run']).code).toBe(0)
+    s.write('fixtures/x.txt', 'c')
+    expect(s.actions()).toEqual({ 'test/add.test.js': 'skip', 'test/read.test.js': 'run' })
+  })
+
   test('an environment variable a test reads is an input', () => {
     const s = project('node-env').write(
       'test/env.test.js',

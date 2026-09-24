@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url'
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const work = fs.mkdtempSync(path.join(os.tmpdir(), 'veyrum-pack-'))
 const packDir = path.join(work, 'pack')
-const PACKAGES = ['core', 'capture', 'vitest', 'jest', 'node-test', 'cli']
+const PACKAGES = ['core', 'capture', 'vitest', 'jest', 'node-test', 'playwright', 'cli']
 
 /**
  * Runner versions to check: the versions this repository develops against, or the ones given as
@@ -65,7 +65,7 @@ function project(name, devDependencies, files) {
   pkg.devDependencies = { ...devDependencies, veyrum: tarball('veyrum') }
   fs.writeFileSync(path.join(dir, 'package.json'), `${JSON.stringify(pkg, null, 2)}\n`)
   // Unpublished internal packages resolve to the tarballs too.
-  const overrides = ['core', 'capture', 'vitest', 'jest', 'node-test'].map(
+  const overrides = ['core', 'capture', 'vitest', 'jest', 'node-test', 'playwright'].map(
     (p) => `  '@veyrum/${p}': '${tarball(`veyrum-${p}`)}'`,
   )
   // Optional native helpers (Jest's, and esbuild for Vite 7) need no install scripts.

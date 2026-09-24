@@ -30,12 +30,12 @@ Usage:
 
 Options:
   --root <dir>         Project root (default: current directory)
-  --runner <name>      vitest, jest or node-test (default: detected from the project)
+  --runner <name>      vitest, jest, node-test or playwright (default: detected from the project)
   --config <file>      Runner config file
   --store <file>       Evidence store (default: <root>/.veyrum/store.sqlite)
   --max-workers <n>    Worker count
   --project <name>     Project filter (repeatable; Vitest allows wildcards, Jest matches
-                       display names)
+                       display names, Playwright project names)
   --json <file>        Write decisions, records (without their inputs) and outcomes as JSON
   --record-all         With --full: record evidence for every file, including those whose
                        evidence is still valid (by default they run without capture)
@@ -46,7 +46,8 @@ Options:
   --canary <fraction>  Also run this fraction of reusable files and report any that fail
   --shard <i>/<n>      Plan and run only this job's share of the test files, for n parallel
                        jobs; merge their stores afterwards
-  --allow <flag>       Allow reuse despite a flag (repeatable), for example spawn; at your own risk
+  --allow <flag>       Allow reuse despite a flag (repeatable), for example spawn, or net for
+                       remote network; at your own risk
   --isolate            Vitest: run each test file in its own isolate even if the project
                        disables isolation (evidence from shared isolates is never reused)
   --strict             Fail on Veyrum's own errors. By default, if Veyrum fails before tests
@@ -166,13 +167,15 @@ function parse(argv: string[]): Args | null {
 
 const VITEST_CONFIG = /^vitest\.(config|workspace)\.[cm]?[jt]s$/
 const JEST_CONFIG = /^jest\.config\.([cm]?[jt]s|json)$/
+const PLAYWRIGHT_CONFIG = /^playwright\.config\.[cm]?[jt]s$/
 
-const RUNNERS = ['vitest', 'jest', 'node-test'] as const
+const RUNNERS = ['vitest', 'jest', 'node-test', 'playwright'] as const
 type Runner = (typeof RUNNERS)[number]
 
 /**
- * Picks the runner from configuration files, then from declared dependencies, then from a test
- * script that runs Node's own runner.
+ * Picks the runner from configuration files (a unit test runner's before Playwright's, which
+ * projects often keep beside it for end-to-end tests), then from declared dependencies, then from a
+ * test script that runs Node's own runner.
  */
 function detectRunner(root: string): Runner {
   let names: string[] = []
@@ -183,6 +186,7 @@ function detectRunner(root: string): Runner {
   }
   if (names.some((n) => VITEST_CONFIG.test(n))) return 'vitest'
   if (names.some((n) => JEST_CONFIG.test(n))) return 'jest'
+  if (names.some((n) => PLAYWRIGHT_CONFIG.test(n))) return 'playwright'
   let pkg: {
     jest?: unknown
     dependencies?: object
@@ -205,6 +209,15 @@ function detectRunner(root: string): Runner {
 async function runWith(runner: Runner, args: Args, common: RunOptions): Promise<RunResult> {
   // Fault injection for the fail-open tests.
   if (process.env.VEYRUM_FAULT === 'before-run') throw new Error('injected fault before the run')
+  if (runner === 'playwright') {
+    const { runPlaywright } = await import('@veyrum/playwright')
+    return runPlaywright({
+      ...common,
+      ...(args.config ? { config: args.config } : {}),
+      ...(args.maxWorkers ? { maxWorkers: args.maxWorkers } : {}),
+      ...(args.projects.length > 0 ? { projects: args.projects } : {}),
+    })
+  }
   if (runner === 'node-test') {
     const { runNodeTest } = await import('@veyrum/node-test')
     return runNodeTest({ ...common, ...(args.maxWorkers ? { maxWorkers: args.maxWorkers } : {}) })

@@ -10,11 +10,13 @@ export {
   type RawFs,
   type Reader,
   rawFs,
+  replayTrace,
   setSink,
   unobserved,
 } from './hooks.ts'
 export { type MainObservations, MainRecorder } from './main.ts'
 export type { PayloadModule, WorkerPayload } from './payload.ts'
+export { parseTrace } from './trace.ts'
 
 /**
  * Variables whose values differ on every run or every worker and never carry meaning a test may

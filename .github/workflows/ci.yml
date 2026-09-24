@@ -33,6 +33,13 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
       - run: pnpm build
+      # The Playwright adapter's scenarios drive Chromium from the repository's sandbox cache; on
+      # Linux they must run (elsewhere they are skipped).
+      - name: Install Chromium for the Playwright scenarios
+        if: runner.os == 'Linux'
+        run: node packages/playwright/node_modules/@playwright/test/cli.js install --with-deps --only-shell chromium
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.sandbox/ms-playwright
       - name: Test
         if: matrix.node != 24
         run: pnpm exec vitest run --maxWorkers=2

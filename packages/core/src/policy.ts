@@ -26,6 +26,8 @@ export const DEFAULT_POLICY: Policy = {
     FLAGS.snapshotWritten,
     FLAGS.flakySuspect,
     FLAGS.captureIncomplete,
+    FLAGS.browserUnobserved,
+    FLAGS.serverUnobserved,
   ]),
   maxCandidates: 20,
 }
@@ -36,9 +38,12 @@ export const STRICT_SOURCE_FLAGS: ReadonlySet<string> = new Set([
   FLAGS.positionsObserved,
 ])
 
+/** Short names accepted for flags on the command line (`--allow net`). */
+const FLAG_ALIASES: Readonly<Record<string, string>> = { net: FLAGS.netRemote }
+
 export function makePolicy(overrides: { allow?: readonly string[]; block?: readonly string[] } = {}): Policy {
   const blocking = new Set(DEFAULT_POLICY.blockingFlags)
-  for (const f of overrides.allow ?? []) blocking.delete(f)
-  for (const f of overrides.block ?? []) blocking.add(f)
+  for (const f of overrides.allow ?? []) blocking.delete(FLAG_ALIASES[f] ?? f)
+  for (const f of overrides.block ?? []) blocking.add(FLAG_ALIASES[f] ?? f)
   return { ...DEFAULT_POLICY, blockingFlags: blocking }
 }

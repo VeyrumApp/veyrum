@@ -6,6 +6,7 @@
     { "path": "../core" },
     { "path": "../vitest" },
     { "path": "../jest" },
-    { "path": "../node-test" }
+    { "path": "../node-test" },
+    { "path": "../playwright" }
   ]
 }

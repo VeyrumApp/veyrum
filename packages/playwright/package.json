@@ -1,0 +1,45 @@
+{
+  "name": "@veyrum/playwright",
+  "version": "0.1.0",
+  "description": "Veyrum adapter for Playwright Test: capture of test, browser and app server inputs, planning and selective execution",
+  "license": "Apache-2.0",
+  "homepage": "https://github.com/VeyrumApp/veyrum#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/VeyrumApp/veyrum.git",
+    "directory": "packages/playwright"
+  },
+  "engines": {
+    "node": ">=22.15"
+  },
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "LICENSE"
+  ],
+  "dependencies": {
+    "@veyrum/capture": "workspace:*",
+    "@veyrum/core": "workspace:*"
+  },
+  "peerDependencies": {
+    "@playwright/test": ">=1.63.0"
+  },
+  "peerDependenciesMeta": {
+    "@playwright/test": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}

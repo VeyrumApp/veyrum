@@ -31,7 +31,7 @@ export function listRepoFiles(root: string): string[] {
 
 /** Files whose appearance anywhere can change configuration or resolution for every check. */
 const CONFIG_LIKE =
-  /^(package\.json|tsconfig(\..*)?\.json|jsconfig(\..*)?\.json|\.env(\..*)?|vite(st)?\.config\..*|vitest\.(workspace|projects)\..*|jest\.config\..*|jest-preset\..*|\.babelrc(\..*)?|\.babelignore|babel\.config\..*|\.npmrc|pnpm-workspace\.yaml|\.swcrc|\.browserslistrc|browserslist)$/
+  /^(package\.json|tsconfig(\..*)?\.json|jsconfig(\..*)?\.json|\.env(\..*)?|vite(st)?\.config\..*|vitest\.(workspace|projects)\..*|jest\.config\..*|jest-preset\..*|playwright(-ct)?\.config\..*|\.babelrc(\..*)?|\.babelignore|babel\.config\..*|\.npmrc|pnpm-workspace\.yaml|\.swcrc|\.browserslistrc|browserslist)$/
 
 /**
  * Manual mocks apply by location: Jest uses a root `__mocks__` file for a node module without any

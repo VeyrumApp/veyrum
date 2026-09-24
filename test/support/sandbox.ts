@@ -12,12 +12,18 @@ const cli = path.join(repoRoot, 'packages/cli/dist/main.js')
 const adapterModules = {
   vitest: path.join(repoRoot, 'node_modules'),
   jest: path.join(repoRoot, 'packages', 'jest', 'node_modules'),
+  playwright: path.join(repoRoot, 'packages', 'playwright', 'node_modules'),
 }
+
+/** Where scenarios find Playwright's browsers (only Chromium is installed there). */
+export const PLAYWRIGHT_BROWSERS = path.join(repoRoot, '.sandbox', 'ms-playwright')
+
+type Runner = 'vitest' | 'jest' | 'node-test' | 'playwright'
 
 export interface SandboxOptions {
   /** Parent directory (default: the repository's .sandbox directory). */
   readonly base?: string
-  readonly runner?: 'vitest' | 'jest' | 'node-test'
+  readonly runner?: Runner
   /** Worker count passed to the runner (Jest runs in the main process with one worker). */
   readonly workers?: number
   /**
@@ -37,12 +43,12 @@ export interface CliResult {
 }
 
 /**
- * A throwaway Vitest or Jest project driven through the real Veyrum CLI. Lives under the
- * repository's .sandbox directory (not the OS temp directory) unless a base is given.
+ * A throwaway Vitest, Jest, node:test or Playwright project driven through the real Veyrum CLI.
+ * Lives under the repository's .sandbox directory (not the OS temp directory) unless a base is given.
  */
 export class Sandbox {
   readonly dir: string
-  readonly runner: 'vitest' | 'jest' | 'node-test'
+  readonly runner: Runner
   private readonly workers: number
 
   constructor(name: string, options: SandboxOptions = {}) {
@@ -51,14 +57,19 @@ export class Sandbox {
     const base = options.base ?? path.join(repoRoot, '.sandbox')
     this.dir = path.join(base, `${name}-${crypto.randomBytes(4).toString('hex')}`)
     fs.mkdirSync(path.join(this.dir, 'node_modules'), { recursive: true })
-    for (const name of [...(this.runner === 'node-test' ? [] : [this.runner]), ...(options.modules ?? [])]) {
+    const runnerModules =
+      this.runner === 'node-test' ? [] : this.runner === 'playwright' ? ['@playwright/test'] : [this.runner]
+    for (const name of [...runnerModules, ...(options.modules ?? [])]) {
       const link = path.join(this.dir, 'node_modules', name)
-      const own = path.join(adapterModules[this.runner === 'jest' ? 'jest' : 'vitest'], name)
+      const own = path.join(adapterModules[this.runner === 'node-test' ? 'vitest' : this.runner], name)
       fs.mkdirSync(path.dirname(link), { recursive: true })
       // Junctions: plain symbolic links need administrator rights on Windows.
       fs.symlinkSync(fs.existsSync(own) ? own : path.join(repoRoot, 'node_modules', name), link, 'junction')
     }
-    if (this.runner === 'node-test') {
+    if (this.runner === 'playwright') {
+      // Scenarios write their own configuration (the app server differs between them).
+      this.write('package.json', JSON.stringify({ name, private: true, type: 'module' }, null, 2))
+    } else if (this.runner === 'node-test') {
       this.write(
         'package.json',
         JSON.stringify({ name, private: true, type: 'module', scripts: { test: 'node --test' } }, null, 2),
@@ -117,6 +128,8 @@ export class Sandbox {
     }
     // Scenarios decide snapshot behavior themselves; CI systems set CI=true, which forbids writes.
     if (!('CI' in env)) delete childEnv.CI
+    if (this.runner === 'playwright' && !('PLAYWRIGHT_BROWSERS_PATH' in env))
+      childEnv.PLAYWRIGHT_BROWSERS_PATH = PLAYWRIGHT_BROWSERS
     if (!('GITHUB_ACTIONS' in env)) delete childEnv.GITHUB_ACTIONS
     return childEnv
   }

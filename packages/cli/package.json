@@ -30,6 +30,7 @@
     "@veyrum/core": "workspace:*",
     "@veyrum/jest": "workspace:*",
     "@veyrum/node-test": "workspace:*",
+    "@veyrum/playwright": "workspace:*",
     "@veyrum/vitest": "workspace:*"
   },
   "publishConfig": {

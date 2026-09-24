@@ -78,6 +78,16 @@ export const FLAGS = {
   writesFs: 'writes-fs',
   /** Capture failed or was incomplete for this check. */
   captureIncomplete: 'capture-incomplete',
+  /**
+   * Ran code in a browser whose execution cannot be observed (Playwright's Firefox and WebKit):
+   * what its pages ran is unknown.
+   */
+  browserUnobserved: 'browser-unobserved',
+  /**
+   * Talked to a local server Veyrum did not observe: one that is not a Node program, was already
+   * running, or was started in a way that cannot be traced. What it read is unknown.
+   */
+  serverUnobserved: 'server-unobserved',
 } as const
 
 export type Flag = (typeof FLAGS)[keyof typeof FLAGS]
@@ -95,6 +105,10 @@ export interface RecordChannels {
   readonly net?: readonly string[]
   /** Programs or threads that could not be traced. */
   readonly spawn?: readonly string[]
+  /** Browsers whose execution could not be observed. */
+  readonly browser?: readonly string[]
+  /** Why a local server the check talked to was not observed. */
+  readonly server?: readonly string[]
 }
 
 export interface EvidenceRecord {

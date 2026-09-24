@@ -27,9 +27,10 @@ Once shadow mode shows no wrong reuse, switch to `mode: enforce` and files with 
 are skipped. See `docs/github-actions.md` for the cache keys, inputs and a manual workflow for
 sharded jobs.
 
-Vitest 4 and later, Jest 29 and later, and Node's built-in test runner (`node --test`) are
-supported, on Node 22.15 or later, on Linux, macOS and Windows. Child processes a test starts are traced natively on Linux; Node child processes and
-worker threads are traced on every platform.
+Vitest 4 and later, Jest 29 and later, Node's built-in test runner (`node --test`) and
+Playwright Test (Chromium; end-to-end tests with their app server) are supported, on Node 22.15
+or later, on Linux, macOS and Windows. Child processes a test starts are traced natively on Linux;
+Node child processes and worker threads are traced on every platform.
 
 ## How it works
 
@@ -80,7 +81,15 @@ Evidence is stored in `.veyrum/store.sqlite`. It holds digests, repository paths
 outcomes and durations, never source code or environment variable values.
 
 The runner is detected from the project's configuration (a test script running `node --test`
-selects Node's runner); `--runner vitest|jest|node-test` overrides it.
+selects Node's runner, a `playwright.config.*` without a Vitest or Jest configuration selects
+Playwright); `--runner vitest|jest|node-test|playwright` overrides it.
+
+With Playwright, a test file's inputs span three processes: the test process, the browser (the
+functions each page ran, through Chromium's coverage) and the app server (`webServer`), which
+counts for every file that talked to it. A client-only edit reruns only the files whose pages ran
+the changed code; a server edit reruns every file that used the server. Firefox and WebKit
+projects, servers that are not Node programs, and remote requests block reuse (`--allow net`
+allows the latter). See `docs/design/soundness.md` for exactly what is observed.
 
 ## Repository layout
 
@@ -90,6 +99,8 @@ selects Node's runner); `--runner vitest|jest|node-test` overrides it.
 | `packages/capture` | Runner-agnostic input capture: fs, env, network, process and V8 coverage hooks |
 | `packages/vitest` | Vitest adapter: worker preload, setup file, plan-time transforms through Vite |
 | `packages/jest` | Jest adapter: environment wrapper, reporter, plan-time transforms through Jest |
+| `packages/node-test` | Adapter for Node's test runner: per-process capture preload and reporter |
+| `packages/playwright` | Playwright Test adapter: test process, browser coverage and app server capture |
 | `packages/cli` | The `veyrum` command |
 | `bench/rig` | Replay benchmark against baseline selectors, with a mutation oracle |
 | `bench/corpora` | Repositories to replay |
@@ -102,6 +113,9 @@ selects Node's runner); `--runner vitest|jest|node-test` overrides it.
 pnpm install
 pnpm build
 pnpm test        # unit tests and the end-to-end hazard suite
+# the Playwright suite needs Chromium in .sandbox/ms-playwright (skipped without it):
+PLAYWRIGHT_BROWSERS_PATH=.sandbox/ms-playwright \
+  node packages/playwright/node_modules/@playwright/test/cli.js install --only-shell chromium
 pnpm lint
 pnpm smoke:pack  # installs the packed packages into fresh Vitest and Jest projects
 ```

@@ -125,7 +125,19 @@ function sharedState(): HookState {
 // One state per isolate, even if several copies of this module load (native and bundled).
 const state: HookState = sharedState()
 
-export const rawFs: RawFs = state.raw
+/**
+ * The fs functions as they were before the hooks, for reads that are never inputs (the planner's,
+ * the capture layer's own). Each call is also unobserved: Node's readFileSync opens the file through
+ * the fs module's own (hooked) openSync.
+ */
+export const rawFs: RawFs = {
+  statSync: ((...args: Parameters<typeof fs.statSync>) =>
+    unobserved(() => state.raw.statSync(...args))) as typeof fs.statSync,
+  readFileSync: ((...args: Parameters<typeof fs.readFileSync>) =>
+    unobserved(() => state.raw.readFileSync(...args))) as typeof fs.readFileSync,
+  readdirSync: ((...args: Parameters<typeof fs.readdirSync>) =>
+    unobserved(() => state.raw.readdirSync(...args))) as typeof fs.readdirSync,
+}
 
 export function setSink(sink: HookSink | null): void {
   state.sink = sink ?? noop
