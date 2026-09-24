@@ -258,14 +258,14 @@ at most once.
 
 ## Files that are never reused
 
-These produce no capture, so they always run. Both are safe and cost little:
+A Jest file whose `@jest-environment` docblock names an environment written in TypeScript
+produces no capture, so it always runs: loading the environment needs Jest's transform, so the
+file keeps Jest's own environment and bypasses the wrapper. This is safe and costs little.
 
-- **A Vitest file whose tests are all skipped at collection** (for example
-  `describe.skipIf(!global.gc)`). Vitest runs no file-level hook for it, so capture never
-  finishes. Such a file runs in milliseconds.
-- **A Jest file whose `@jest-environment` docblock names an environment written in
-  TypeScript.** Loading it needs Jest's transform, so the file keeps Jest's own environment
-  and bypasses the wrapper.
+A Vitest file whose tests are all skipped at collection (for example
+`describe.skipIf(!process.env.TOKEN)`) runs no file-level hook, so its capture finishes when its
+worker stops, and the run waits for every worker before recording. What decided the skip (the
+variable, here) is in its closure like any input.
 
 ## Assumptions
 
