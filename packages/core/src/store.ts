@@ -1,6 +1,7 @@
 import fs from 'node:fs'
+import { createRequire } from 'node:module'
 import path from 'node:path'
-import { DatabaseSync, type StatementSync } from 'node:sqlite'
+import type { DatabaseSync as DatabaseSyncType, StatementSync } from 'node:sqlite'
 import { brotliCompressSync, brotliDecompressSync, constants as zlibConstants } from 'node:zlib'
 import { type Digest, digest } from './hash.ts'
 import {
@@ -39,7 +40,7 @@ interface RecordRow {
  */
 export class Store {
   readonly file: string
-  private readonly db: DatabaseSync
+  private readonly db: DatabaseSyncType
   /**
    * Recently hydrated closures, least recently used first. Bounded: a long-lived process (the
    * benchmark rig, a server) must not accumulate every closure it ever read.
@@ -51,14 +52,14 @@ export class Store {
   private readonly entryIds = new Map<string, number>()
   private static readonly ENTRY_CACHE_SIZE = 200_000
 
-  private constructor(file: string, db: DatabaseSync) {
+  private constructor(file: string, db: DatabaseSyncType) {
     this.file = file
     this.db = db
   }
 
   static open(file: string): Store {
     if (file !== ':memory:') fs.mkdirSync(path.dirname(file), { recursive: true })
-    const db = new DatabaseSync(file)
+    const db = new (sqlite().DatabaseSync)(file)
     db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA busy_timeout = 5000;')
     db.exec(`
       CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -392,10 +393,15 @@ export class Store {
   }
 
   getStat(p: string): { size: number; mtimeNs: string; ino: number; digest: Digest | null } | undefined {
-    const row = this.sql('SELECT size, mtime_ns, ino, digest FROM stat_cache WHERE path = ?').get(p) as
-      | { size: number; mtime_ns: string; ino: number; digest: string | null }
+    const statement = this.sql('SELECT size, mtime_ns, ino, digest FROM stat_cache WHERE path = ?')
+    // Windows file IDs exceed 2^53: read as bigint, then converted as fs.Stats converts them.
+    statement.setReadBigInts(true)
+    const row = statement.get(p) as
+      | { size: bigint; mtime_ns: string; ino: bigint; digest: string | null }
       | undefined
-    return row ? { size: row.size, mtimeNs: row.mtime_ns, ino: row.ino, digest: row.digest } : undefined
+    return row
+      ? { size: Number(row.size), mtimeNs: row.mtime_ns, ino: Number(row.ino), digest: row.digest }
+      : undefined
   }
 
   putStat(p: string, size: number, mtimeNs: string, ino: number, value: Digest | null): void {
@@ -643,8 +649,16 @@ function unpack(data: Uint8Array): unknown {
   return JSON.parse(brotliDecompressSync(data).toString('utf8'))
 }
 
+/**
+ * node:sqlite, loaded when a store opens rather than when this module loads: Node 22 warns that it
+ * is experimental as it loads, and the CLI can only silence that once its own code runs.
+ */
+function sqlite(): typeof import('node:sqlite') {
+  return createRequire(import.meta.url)('node:sqlite') as typeof import('node:sqlite')
+}
+
 /** Adds a column a table created by an older schema lacks (tables created since have it). */
-function addColumn(db: DatabaseSync, table: string, column: string, definition: string): void {
+function addColumn(db: DatabaseSyncType, table: string, column: string, definition: string): void {
   const columns = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]
   if (!columns.some((c) => c.name === column))
     db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`)
