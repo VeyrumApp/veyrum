@@ -252,10 +252,10 @@ function classifyReader(isManifest: boolean): Reader {
   const files = callerFiles(isManifest ? MANIFEST_STACK_LIMIT : READER_STACK_LIMIT)
   for (const file of files) {
     if (file.startsWith(OWN_DIR)) continue
+    if (state.runnerReaders.some((re) => re.test(file))) return 'runner'
     if (file.startsWith('node:internal/modules/')) return 'node-loader'
     // Skip Node's own fs internals (readFileSync calls openSync, which is hooked too).
     if (file.startsWith('node:') || file === '') continue
-    if (state.runnerReaders.some((re) => re.test(file))) return 'runner'
     break
   }
   if (isManifest && files.some((file) => state.manifestReaders.some((re) => re.test(file)))) return 'manifest'

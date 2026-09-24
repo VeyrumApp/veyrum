@@ -41,8 +41,8 @@ export interface WorkerCaptureOptions {
    * - 'vitest': a fresh isolate per file; every repository module is wrapped by Vite's evaluator;
    * - 'jest': an isolate is reused across files but modules are re-evaluated per file with
    *   vm.compileFunction (no wrapper), so a file's modules are the scripts executed during it;
-   * - 'node': a process runs one file (node:test), and Node's own loader compiles every module
-   *   unwrapped, from the source its load hooks return.
+   * - 'node': a process runs one file (node:test, Mocha), and Node's own loader compiles every
+   *   module unwrapped, from the source its load hooks return.
    */
   readonly layout?: 'vitest' | 'jest' | 'node'
   /**
@@ -127,10 +127,21 @@ export async function endWorkerCapture(): Promise<void> {
 const JEST_RUNTIME_FRAME = /[\\/]jest-runtime[\\/]build[\\/]/
 
 /**
- * Stack frames of code that reads package manifests only for module format, resolution or its own
- * configuration field: Jest's module resolver and Babel's configuration loader.
+ * Stack frames of Node's own module loaders, which read a module's file to compile it (CommonJS
+ * reads it after the load hooks, which return no source for it).
  */
-const MANIFEST_READERS = [/[\\/]jest-resolve[\\/]build[\\/]/, /[\\/]@babel[\\/]core[\\/]lib[\\/]config[\\/]/]
+const NODE_LOADER_FRAME = /^node:internal\/modules\//
+
+/**
+ * Stack frames of code that reads package manifests only for module format, resolution or its own
+ * configuration field: Jest's module resolver, Babel's configuration loader and Mocha's options
+ * loader (its "mocha" field).
+ */
+const MANIFEST_READERS = [
+  /[\\/]jest-resolve[\\/]build[\\/]/,
+  /[\\/]@babel[\\/]core[\\/]lib[\\/]config[\\/]/,
+  /[\\/]mocha[\\/]lib[\\/]cli[\\/]options\.js$/,
+]
 
 /** Jest 29 wraps CommonJS modules in this (Jest 30 uses vm.compileFunction without a wrapper). */
 const JEST29_WRAPPER_START = '({"Object.<anonymous>":function('
@@ -432,7 +443,11 @@ export function prepareWorkerHooks(options: WorkerCaptureOptions): void {
     ignoredPrefixes: [...options.ignoredPrefixes, path.resolve(options.outDir) + path.sep],
     observeSource: true,
     manifestReaders: MANIFEST_READERS,
-    ...(options.layout === 'jest' ? { runnerReaders: [JEST_RUNTIME_FRAME] } : {}),
+    ...(options.layout === 'jest'
+      ? { runnerReaders: [JEST_RUNTIME_FRAME] }
+      : options.layout === 'node'
+        ? { runnerReaders: [NODE_LOADER_FRAME] }
+        : {}),
   })
   const isolate: IsolateState = {
     session: null,
@@ -470,6 +485,16 @@ function packageScope(file: string): string | null {
 
 const JAVASCRIPT_FORMATS = new Set(['commonjs', 'module', 'commonjs-typescript', 'module-typescript'])
 
+/**
+ * A loaded module's format. `require` leaves it unset, and the CommonJS loader then picks it by
+ * extension: JSON, a native addon, or JavaScript for any other file.
+ */
+function loadedFormat(format: string | undefined, file: string): string {
+  if (format) return format
+  const extension = path.extname(file)
+  return extension === '.json' ? 'json' : extension === '.node' ? 'addon' : 'commonjs'
+}
+
 /** Node layout: keeps the source Node's loader compiles for each repository module. */
 function recordLoadedSources(isolate: IsolateState, options: WorkerCaptureOptions): boolean {
   const register = (module as unknown as { registerHooks?: (hooks: object) => unknown }).registerHooks
@@ -490,7 +515,7 @@ function recordLoadedSources(isolate: IsolateState, options: WorkerCaptureOption
         const manifest = where.ignored ? null : packageScope(where.absolute)
         if (manifest) getSink()?.path(manifest, 'manifest', 'file', 'manifest')
         // JSON, WebAssembly and the like run no JavaScript coverage sees: their file is the input.
-        if (!where.ignored && !JAVASCRIPT_FORMATS.has(result.format ?? '')) {
+        if (!where.ignored && !JAVASCRIPT_FORMATS.has(loadedFormat(result.format, where.absolute))) {
           getSink()?.path(where.absolute, 'read', 'file', 'other')
           return result
         }
@@ -845,6 +870,10 @@ export async function beginWorkerCapture(options: WorkerCaptureOptions): Promise
       } catch (error) {
         errors.push(error instanceof Error ? (error.stack ?? error.message) : String(error))
       }
+      const compiledModules: ReadonlySet<string> =
+        layout === 'jest'
+          ? new Set(compiled?.keys())
+          : new Set([...modules.map((m) => m.path), ...wholeModules])
       const payload: WorkerPayload = {
         version: 1,
         testFile,
@@ -856,14 +885,15 @@ export async function beginWorkerCapture(options: WorkerCaptureOptions): Promise
         natives: [...natives],
         ...(wholeModules.length > 0 ? { wholeModules } : {}),
         paths: [
-          // Node layout: the loader's own reads of a module it compiled are that module, recorded by
-          // what executed.
+          // Node layout: the loader's own look-ups of a module it compiled are that module, recorded
+          // by what executed.
           ...[...recorder.paths.values()].filter(
-            (e) => !(layout === 'node' && e.kind !== 'dir' && state.loaded?.has(e.p)),
+            (e) => !(layout === 'node' && e.kind === 'stat' && state.loaded?.has(e.p)),
           ),
-          // Module files the runner read and compiled are recorded as modules, by what executed.
+          // Module files the runner read and compiled are recorded as modules, by what executed;
+          // anything else it read (a module that failed to compile, say) is a file input.
           ...[...recorder.runnerReads]
-            .filter(([p]) => !compiled?.has(p) && !recorder.paths.has(`read\u0000${p}`))
+            .filter(([p]) => !compiledModules.has(p) && !recorder.paths.has(`read\u0000${p}`))
             .map(([p, type]) => ({ p, kind: 'read' as const, type })),
         ],
         writes: [...recorder.writes],

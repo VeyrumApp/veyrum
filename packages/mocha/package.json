@@ -1,25 +1,22 @@
 {
-  "name": "veyrum",
+  "name": "@veyrum/mocha",
   "version": "0.1.0",
-  "description": "Veyrum CLI: run only the tests whose evidence is no longer valid",
+  "description": "Veyrum adapter for Mocha: capture, planning and selective execution",
   "license": "Apache-2.0",
   "homepage": "https://github.com/VeyrumApp/veyrum#readme",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/VeyrumApp/veyrum.git",
-    "directory": "packages/cli"
+    "directory": "packages/mocha"
   },
   "engines": {
     "node": ">=22.15"
   },
   "type": "module",
-  "bin": {
-    "veyrum": "./dist/main.js"
-  },
   "exports": {
     ".": {
-      "types": "./dist/main.d.ts",
-      "default": "./dist/main.js"
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
     }
   },
   "files": [
@@ -27,11 +24,11 @@
     "LICENSE"
   ],
   "dependencies": {
-    "@veyrum/core": "workspace:*",
-    "@veyrum/jest": "workspace:*",
-    "@veyrum/mocha": "workspace:*",
-    "@veyrum/node-test": "workspace:*",
-    "@veyrum/vitest": "workspace:*"
+    "@veyrum/capture": "workspace:*",
+    "@veyrum/core": "workspace:*"
+  },
+  "devDependencies": {
+    "mocha": "11.8.0"
   },
   "publishConfig": {
     "access": "public",

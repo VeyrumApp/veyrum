@@ -3,7 +3,8 @@
 Veyrum reuses a passing result for a test file only when every input the file consumed is
 unchanged. This document defines what counts as an input, how each one is observed, and what
 Veyrum assumes. Every channel listed here has at least one end-to-end scenario in
-`packages/vitest/test/hazards-*.test.ts` or `packages/jest/test/hazards.test.ts`.
+`packages/vitest/test/hazards-*.test.ts`, `packages/jest/test/hazards.test.ts` or
+`packages/mocha/test/hazards.test.ts`.
 
 ## The skip rule
 
@@ -12,7 +13,7 @@ A test file is reused when all of the following hold for some earlier record:
 - the record is a pass, and the pass is evidence: no retry was needed, no snapshot was written
   and capture completed;
 - the runtime key matches: Node version, platform, architecture, ICU, timezone, locale, Node
-  flags, and runner versions (Vitest and Vite, or Jest);
+  flags, and runner versions (Vitest and Vite, Jest, or Mocha);
 - every shared input of the run that produced the record is unchanged: configuration files and
   their dependencies, `tsconfig`/`jsconfig` files, the packages the runner's main process loaded,
   modules of custom Vitest environments and global setup, and variables the main process read;
@@ -244,6 +245,19 @@ Jest-specific observation rules, each covered by `packages/jest/test/hazards.tes
   configuration-like addition.
 - **Changed modules are re-transformed with the project's own Jest transform**, with the options
   the runtime uses for CommonJS or ECMAScript modules.
+
+## Mocha
+
+Mocha runs every file in one process, so Veyrum runs each selected file in a process of its own,
+through the project's Mocha command line with its configuration (`.mocharc.*`, the `mocha` key of
+`package.json`, `MOCHA_OPTIONS`) and that file as the only spec. Capture begins before Mocha loads
+and finishes when the process is idle, or before Mocha's own `--exit`; a file whose run never ends
+fails. Discovery is Mocha's own file lookup. Configuration files and the root manifest are shared
+inputs, and what each process reads while loading them is its file's input. `--require` modules,
+root hook plugins and global fixtures run in every file's process, so they are that file's inputs
+and see only that file, as they would in Mocha's parallel mode. Node's loaders read a module's
+file to compile it: those reads are the module, recorded by what executed, while a test's own read
+of a module file records the file whole (`packages/mocha/test/hazards.test.ts`).
 
 ## Function source and generated files
 

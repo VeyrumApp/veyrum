@@ -35,6 +35,30 @@ describe('code', () => {
     expect(s.plan()['test/mul.test.js']?.details).toEqual(['src/math.js: mul changed'])
   })
 
+  test('CommonJS: an edit invalidates only the files that executed the changed function', () => {
+    const s = project('node-cjs')
+      .write(
+        'package.json',
+        JSON.stringify({ name: 'node-cjs', private: true, scripts: { test: 'node --test' } }),
+      )
+      .write(
+        'src/math.js',
+        'function add(a, b) { return a + b }\nfunction mul(a, b) { return a * b }\nmodule.exports = { add, mul }\n',
+      )
+      .write(
+        'test/add.test.js',
+        "const test = require('node:test')\nconst assert = require('node:assert')\nconst { add } = require('../src/math')\ntest('adds', () => assert.equal(add(1, 2), 3))\n",
+      )
+      .write(
+        'test/mul.test.js',
+        "const test = require('node:test')\nconst assert = require('node:assert')\nconst { mul } = require('../src/math')\ntest('muls', () => assert.equal(mul(2, 3), 6))\n",
+      )
+    s.capture()
+    expect(s.actions()).toEqual({ 'test/add.test.js': 'skip', 'test/mul.test.js': 'skip' })
+    s.edit('src/math.js', 'return a * b', 'return b * a')
+    expect(s.actions()).toEqual({ 'test/add.test.js': 'skip', 'test/mul.test.js': 'run' })
+  })
+
   test('a failing file is never reused', () => {
     const s = project('node-failing')
       .write(

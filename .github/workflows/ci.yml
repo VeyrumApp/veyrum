@@ -36,7 +36,7 @@ jobs:
       - name: Test
         if: matrix.node != 24
         run: pnpm exec vitest run --maxWorkers=2
-      # The packed packages, installed into fresh Vitest and Jest projects as a user would.
+      # The packed packages, installed into fresh Vitest, Jest and Mocha projects as a user would.
       - name: Package smoke test
         if: matrix.node != 24
         run: node scripts/pack-smoke.mjs
@@ -46,6 +46,7 @@ jobs:
         env:
           SMOKE_VITEST: 4.0.18
           SMOKE_JEST: 29.7.0
+          SMOKE_MOCHA: 10.8.2
       # Veyrum runs its own suite in shadow mode: everything runs, the job summary reports what it
       # would have reused and whether any of that fails.
       - name: Restore Veyrum evidence

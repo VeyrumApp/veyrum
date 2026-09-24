@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
- * Installs the packed packages into fresh Vitest and Jest projects, the way a user installs them
- * from npm, and runs the edit cycle: record, reuse everything, edit one function, rerun only the
- * file that executed it. Run after `pnpm build`.
+ * Installs the packed packages into fresh Vitest, Jest and Mocha projects, the way a user installs
+ * them from npm, and runs the edit cycle: record, reuse everything, edit one function, rerun only
+ * the file that executed it. Run after `pnpm build`.
  */
 import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -13,17 +13,18 @@ import { fileURLToPath } from 'node:url'
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const work = fs.mkdtempSync(path.join(os.tmpdir(), 'veyrum-pack-'))
 const packDir = path.join(work, 'pack')
-const PACKAGES = ['core', 'capture', 'vitest', 'jest', 'node-test', 'cli']
+const PACKAGES = ['core', 'capture', 'vitest', 'jest', 'mocha', 'node-test', 'cli']
 
 /**
  * Runner versions to check: the versions this repository develops against, or the ones given as
- * SMOKE_VITEST and SMOKE_JEST (set only one to check only that runner).
+ * SMOKE_VITEST, SMOKE_JEST and SMOKE_MOCHA (set only some to check only those runners).
  */
 const devVersion = (pkg, dep) =>
   JSON.parse(fs.readFileSync(path.join(repo, 'packages', pkg, 'package.json'), 'utf8')).devDependencies[dep]
-const pinned = process.env.SMOKE_VITEST || process.env.SMOKE_JEST
+const pinned = process.env.SMOKE_VITEST || process.env.SMOKE_JEST || process.env.SMOKE_MOCHA
 const vitestVersion = pinned ? process.env.SMOKE_VITEST : devVersion('vitest', 'vitest')
 const jestVersion = pinned ? process.env.SMOKE_JEST : devVersion('jest', '@jest/core')
+const mochaVersion = pinned ? process.env.SMOKE_MOCHA : devVersion('mocha', 'mocha')
 
 // On Windows, pnpm and package binaries are .cmd shims, which only a shell runs: they get one
 // quoted command line.
@@ -59,13 +60,14 @@ function project(name, devDependencies, files) {
   const pkg = {
     name,
     private: true,
-    ...(name !== 'jest' ? { type: 'module' } : {}),
+    // The Jest and Mocha projects are CommonJS.
+    ...(name !== 'jest' && name !== 'mocha' ? { type: 'module' } : {}),
     ...(name === 'node-test' ? { scripts: { test: 'node --test' } } : {}),
   }
   pkg.devDependencies = { ...devDependencies, veyrum: tarball('veyrum') }
   fs.writeFileSync(path.join(dir, 'package.json'), `${JSON.stringify(pkg, null, 2)}\n`)
   // Unpublished internal packages resolve to the tarballs too.
-  const overrides = ['core', 'capture', 'vitest', 'jest', 'node-test'].map(
+  const overrides = PACKAGES.filter((p) => p !== 'cli').map(
     (p) => `  '@veyrum/${p}': '${tarball(`veyrum-${p}`)}'`,
   )
   // Optional native helpers (Jest's, and esbuild for Vite 7) need no install scripts.
@@ -194,6 +196,23 @@ try {
     )
     cycle(jestDir, 'src/math.js', 'js')
     process.stdout.write(`jest ${jestVersion}: ok\n`)
+  }
+
+  if (mochaVersion) {
+    const mochaDir = project(
+      'mocha',
+      { mocha: mochaVersion },
+      {
+        'src/math.js':
+          'function add(a, b) { return a + b }\nfunction mul(a, b) { return a * b }\nmodule.exports = { add, mul }\n',
+        'test/add.test.js':
+          "const assert = require('node:assert')\nconst { add } = require('../src/math')\nit('add', () => assert.equal(add(1, 2), 3))\n",
+        'test/mul.test.js':
+          "const assert = require('node:assert')\nconst { mul } = require('../src/math')\nit('mul', () => assert.equal(mul(2, 3), 6))\n",
+      },
+    )
+    cycle(mochaDir, 'src/math.js', 'js')
+    process.stdout.write(`mocha ${mochaVersion}: ok\n`)
   }
 } finally {
   fs.rmSync(work, { recursive: true, force: true })

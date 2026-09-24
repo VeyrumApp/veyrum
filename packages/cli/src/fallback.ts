@@ -7,7 +7,7 @@ import { Store } from '@veyrum/core'
 /** What the fallback needs to run the project's tests the way Veyrum would have. */
 export interface PlainRunOptions {
   readonly root: string
-  readonly runner: 'vitest' | 'jest' | 'node-test'
+  readonly runner: 'vitest' | 'jest' | 'mocha' | 'node-test'
   readonly config?: string
   readonly projects: readonly string[]
   readonly maxWorkers?: number
@@ -33,6 +33,21 @@ export function plainRunnerCommand(options: PlainRunOptions): { command: string;
         '--test',
         ...(options.maxWorkers ? [`--test-concurrency=${options.maxWorkers}`] : []),
         ...(options.quiet ? ['--test-reporter=dot'] : []),
+        ...files,
+      ],
+    }
+  }
+  if (options.runner === 'mocha') {
+    // Mocha runs every file in one process (--jobs counts workers only in its parallel mode).
+    // Named files are added to the spec a configuration sets, which can only run more files.
+    const bin = path.join(packageDir(options.root, 'mocha'), 'bin', 'mocha.js')
+    return {
+      command: process.execPath,
+      args: [
+        ...process.execArgv,
+        bin,
+        ...(options.config ? ['--config', options.config] : []),
+        ...(options.quiet ? ['--reporter=dot'] : []),
         ...files,
       ],
     }

@@ -12,12 +12,14 @@ const cli = path.join(repoRoot, 'packages/cli/dist/main.js')
 const adapterModules = {
   vitest: path.join(repoRoot, 'node_modules'),
   jest: path.join(repoRoot, 'packages', 'jest', 'node_modules'),
+  mocha: path.join(repoRoot, 'packages', 'mocha', 'node_modules'),
 }
+export type SandboxRunner = 'vitest' | 'jest' | 'mocha' | 'node-test'
 
 export interface SandboxOptions {
   /** Parent directory (default: the repository's .sandbox directory). */
   readonly base?: string
-  readonly runner?: 'vitest' | 'jest' | 'node-test'
+  readonly runner?: SandboxRunner
   /** Worker count passed to the runner (Jest runs in the main process with one worker). */
   readonly workers?: number
   /**
@@ -37,12 +39,12 @@ export interface CliResult {
 }
 
 /**
- * A throwaway Vitest or Jest project driven through the real Veyrum CLI. Lives under the
- * repository's .sandbox directory (not the OS temp directory) unless a base is given.
+ * A throwaway Vitest, Jest, Mocha or node:test project driven through the real Veyrum CLI. Lives
+ * under the repository's .sandbox directory (not the OS temp directory) unless a base is given.
  */
 export class Sandbox {
   readonly dir: string
-  readonly runner: 'vitest' | 'jest' | 'node-test'
+  readonly runner: SandboxRunner
   private readonly workers: number
 
   constructor(name: string, options: SandboxOptions = {}) {
@@ -53,7 +55,7 @@ export class Sandbox {
     fs.mkdirSync(path.join(this.dir, 'node_modules'), { recursive: true })
     for (const name of [...(this.runner === 'node-test' ? [] : [this.runner]), ...(options.modules ?? [])]) {
       const link = path.join(this.dir, 'node_modules', name)
-      const own = path.join(adapterModules[this.runner === 'jest' ? 'jest' : 'vitest'], name)
+      const own = path.join(adapterModules[this.runner === 'node-test' ? 'vitest' : this.runner], name)
       fs.mkdirSync(path.dirname(link), { recursive: true })
       // Junctions: plain symbolic links need administrator rights on Windows.
       fs.symlinkSync(fs.existsSync(own) ? own : path.join(repoRoot, 'node_modules', name), link, 'junction')
@@ -63,6 +65,9 @@ export class Sandbox {
         'package.json',
         JSON.stringify({ name, private: true, type: 'module', scripts: { test: 'node --test' } }, null, 2),
       )
+    } else if (this.runner === 'mocha') {
+      this.write('package.json', JSON.stringify({ name, private: true, type: 'module' }, null, 2))
+      this.write('.mocharc.json', `${JSON.stringify({ spec: ['test/**/*.test.js'] }, null, 2)}\n`)
     } else if (this.runner === 'vitest') {
       this.write('package.json', JSON.stringify({ name, private: true, type: 'module' }, null, 2))
       this.write(

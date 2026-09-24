@@ -30,7 +30,7 @@ Usage:
 
 Options:
   --root <dir>         Project root (default: current directory)
-  --runner <name>      vitest, jest or node-test (default: detected from the project)
+  --runner <name>      vitest, jest, mocha or node-test (default: detected from the project)
   --config <file>      Runner config file
   --store <file>       Evidence store (default: <root>/.veyrum/store.sqlite)
   --max-workers <n>    Worker count
@@ -166,8 +166,9 @@ function parse(argv: string[]): Args | null {
 
 const VITEST_CONFIG = /^vitest\.(config|workspace)\.[cm]?[jt]s$/
 const JEST_CONFIG = /^jest\.config\.([cm]?[jt]s|json)$/
+const MOCHA_CONFIG = /^\.mocharc\.(c?js|mjs|jsonc?|ya?ml)$/
 
-const RUNNERS = ['vitest', 'jest', 'node-test'] as const
+const RUNNERS = ['vitest', 'jest', 'mocha', 'node-test'] as const
 type Runner = (typeof RUNNERS)[number]
 
 /**
@@ -183,8 +184,10 @@ function detectRunner(root: string): Runner {
   }
   if (names.some((n) => VITEST_CONFIG.test(n))) return 'vitest'
   if (names.some((n) => JEST_CONFIG.test(n))) return 'jest'
+  if (names.some((n) => MOCHA_CONFIG.test(n))) return 'mocha'
   let pkg: {
     jest?: unknown
+    mocha?: unknown
     dependencies?: object
     devDependencies?: object
     scripts?: Record<string, unknown>
@@ -197,6 +200,7 @@ function detectRunner(root: string): Runner {
   const deps = { ...pkg.dependencies, ...pkg.devDependencies }
   if ('vitest' in deps) return 'vitest'
   if (pkg.jest !== undefined || 'jest' in deps) return 'jest'
+  if (pkg.mocha !== undefined || 'mocha' in deps) return 'mocha'
   if (/\bnode\b[^&|;]*\s--test\b/.test(String(pkg.scripts?.test ?? ''))) return 'node-test'
   return 'vitest'
 }
@@ -208,6 +212,14 @@ async function runWith(runner: Runner, args: Args, common: RunOptions): Promise<
   if (runner === 'node-test') {
     const { runNodeTest } = await import('@veyrum/node-test')
     return runNodeTest({ ...common, ...(args.maxWorkers ? { maxWorkers: args.maxWorkers } : {}) })
+  }
+  if (runner === 'mocha') {
+    const { runMocha } = await import('@veyrum/mocha')
+    return runMocha({
+      ...common,
+      ...(args.config ? { config: args.config } : {}),
+      ...(args.maxWorkers ? { maxWorkers: args.maxWorkers } : {}),
+    })
   }
   if (runner === 'jest') {
     const { runJest } = await import('@veyrum/jest')

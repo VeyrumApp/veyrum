@@ -27,13 +27,15 @@ Once shadow mode shows no wrong reuse, switch to `mode: enforce` and files with 
 are skipped. See `docs/github-actions.md` for the cache keys, inputs and a manual workflow for
 sharded jobs.
 
-Vitest 4 and later, Jest 29 and later, and Node's built-in test runner (`node --test`) are
-supported, on Node 22.15 or later, on Linux, macOS and Windows. Child processes a test starts are traced natively on Linux; Node child processes and
-worker threads are traced on every platform.
+Vitest 4 and later, Jest 29 and later, Mocha 10 and later, and Node's built-in test runner
+(`node --test`) are supported, on Node 22.15 or later, on Linux, macOS and Windows. Child
+processes a test starts are traced natively on Linux; Node child processes and worker threads are
+traced on every platform.
 
 ## How it works
 
-1. **Capture.** During a normal Vitest or Jest run, Veyrum records each test file's input closure:
+1. **Capture.** During a normal Vitest, Jest, Mocha or `node --test` run, Veyrum records each test
+   file's input closure:
    - the functions it executed, fingerprinted on the code V8 actually ran;
    - every module it loaded;
    - the files, directories and environment variables it read;
@@ -80,7 +82,9 @@ Evidence is stored in `.veyrum/store.sqlite`. It holds digests, repository paths
 outcomes and durations, never source code or environment variable values.
 
 The runner is detected from the project's configuration (a test script running `node --test`
-selects Node's runner); `--runner vitest|jest|node-test` overrides it.
+selects Node's runner, a `.mocharc.*` file or a `mocha` dependency selects Mocha);
+`--runner vitest|jest|mocha|node-test` overrides it. Under Mocha, each test file runs in a process
+of its own, so root hooks and global fixtures run once per file.
 
 ## Repository layout
 
@@ -90,6 +94,8 @@ selects Node's runner); `--runner vitest|jest|node-test` overrides it.
 | `packages/capture` | Runner-agnostic input capture: fs, env, network, process and V8 coverage hooks |
 | `packages/vitest` | Vitest adapter: worker preload, setup file, plan-time transforms through Vite |
 | `packages/jest` | Jest adapter: environment wrapper, reporter, plan-time transforms through Jest |
+| `packages/mocha` | Mocha adapter: one process per test file through the project's Mocha, reporter |
+| `packages/node-test` | Adapter for Node's test runner: capture preload and reporter |
 | `packages/cli` | The `veyrum` command |
 | `bench/rig` | Replay benchmark against baseline selectors, with a mutation oracle |
 | `bench/corpora` | Repositories to replay |
@@ -103,7 +109,7 @@ pnpm install
 pnpm build
 pnpm test        # unit tests and the end-to-end hazard suite
 pnpm lint
-pnpm smoke:pack  # installs the packed packages into fresh Vitest and Jest projects
+pnpm smoke:pack  # installs the packed packages into fresh Vitest, Jest and Mocha projects
 ```
 
 The hazard suites (`packages/*/test/hazards*.test.ts`) build small real projects,
