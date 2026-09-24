@@ -7,6 +7,30 @@ one of those inputs is unchanged.
 It is not test prediction. A test file is skipped only when Veyrum can show that nothing it
 observed has changed. Anything unknown means the file runs.
 
+## Quickstart
+
+```
+npx veyrum run
+```
+
+The first run has no evidence, so every test file runs and Veyrum records its inputs. Later runs
+reuse a file's result when nothing it depends on has changed, and run it otherwise.
+
+In CI, use the action in shadow mode first: every test file still runs, and the job summary
+reports what would have been reused and whether any of that reuse would have been wrong.
+
+```yaml
+- uses: VeyrumApp/veyrum@v1
+```
+
+Once shadow mode shows no wrong reuse, switch to `mode: enforce` and files with valid evidence
+are skipped. See `docs/github-actions.md` for the cache keys, inputs and a manual workflow for
+sharded jobs.
+
+Vitest 4 and later and Jest 29 and later are supported, on Node 22.15 or later, on Linux, macOS
+and Windows. Child processes a test starts are traced natively on Linux; Node child processes and
+worker threads are traced on every platform.
+
 ## How it works
 
 1. **Capture.** During a normal Vitest or Jest run, Veyrum records each test file's input closure:

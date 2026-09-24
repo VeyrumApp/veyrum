@@ -1,17 +1,49 @@
 # Running Veyrum in GitHub Actions
 
-Veyrum needs its evidence store to survive between workflow runs. The simplest store is the
-`.veyrum` directory saved with `actions/cache`: runs on the main branch record evidence, and pull
-requests restore it and reuse what is still valid.
+## The action
 
-Veyrum is not published to npm yet. Until it is, build it from source in the workflow and run
-`node <checkout>/packages/cli/dist/main.js` where the examples below use `veyrum`.
+`VeyrumApp/veyrum@v1` is a composite action that restores the evidence store, runs Veyrum, and
+saves the store back. It covers a single job; for parallel jobs see below.
 
-## Shadow mode first
+```yaml
+- uses: VeyrumApp/veyrum@v1
+```
 
-Shadow mode changes nothing about what runs. Every test file runs, and Veyrum reports which of them
-it would have reused and whether any of those fail (an escape). Run it for a few weeks before
-skipping anything.
+By default this is shadow mode: every test file runs (`veyrum run --full --audit`), and the job
+summary reports which files it would have reused and whether any of those reuses would have been
+wrong (an escape). Run it for a few weeks before skipping anything.
+
+Once shadow mode shows no escapes, switch to enforce mode: files with valid evidence are skipped.
+
+```yaml
+- uses: VeyrumApp/veyrum@v1
+  with:
+    mode: enforce
+```
+
+### Inputs
+
+| Input | Default | Meaning |
+| --- | --- | --- |
+| `mode` | `shadow` | `shadow` runs `veyrum run --full --audit`; `enforce` runs `veyrum run` |
+| `version` | `latest` | npm version of the `veyrum` package to use |
+| `args` | (empty) | extra arguments appended to the `veyrum run` command |
+| `store-key-prefix` | `veyrum` | prefix used in the `actions/cache` key |
+
+The action caches `.veyrum/store.sqlite` with `actions/cache`, keyed by the prefix, `runner.os`,
+the branch and the commit, and falls back to the newest store of the same branch, then of the
+base branch (or the repository's default branch outside a pull request). It runs the package
+with `npx`, so it needs Node on `PATH` but does not itself set up Node or cache npm or pnpm
+packages; do that in an earlier step if the job needs it for anything else.
+
+## Advanced: a manual workflow
+
+The action above is one job restoring one cache and running one `veyrum run`. Sharding a suite
+across parallel jobs, or wiring shadow and enforce mode into the same job by event type, needs
+more control than the action's inputs give, so those cases are written out by hand below, calling
+`veyrum` directly instead of through the action.
+
+### Shadow mode by hand
 
 ```yaml
 - name: Restore Veyrum evidence
@@ -26,13 +58,13 @@ skipping anything.
       veyrum-${{ runner.os }}-${{ github.base_ref || github.event.repository.default_branch }}-
 
 - name: Test (Veyrum shadow mode)
-  run: veyrum run --full --audit --summary "$GITHUB_STEP_SUMMARY"
+  run: npx --yes veyrum run --full --audit --summary "$GITHUB_STEP_SUMMARY"
 ```
 
 The job summary states how many test files and how much recorded test time Veyrum would have
 reused, why the others had to run, and names every escape.
 
-## Skipping on pull requests
+### Skipping on pull requests
 
 Once shadow mode shows no escapes, pull requests can reuse evidence. Keep full runs on the main
 branch: they record fresh evidence and audit every reuse decision.
@@ -42,13 +74,13 @@ branch: they record fresh evidence and audit every reuse decision.
   run: |
     if [ "${{ github.event_name }}" = "pull_request" ]; then
       # Run what changed, plus a random 10% of reusable files as canaries.
-      veyrum run --canary 0.1 --summary "$GITHUB_STEP_SUMMARY"
+      npx --yes veyrum run --canary 0.1 --summary "$GITHUB_STEP_SUMMARY"
     else
-      veyrum run --full --audit --summary "$GITHUB_STEP_SUMMARY"
+      npx --yes veyrum run --full --audit --summary "$GITHUB_STEP_SUMMARY"
     fi
 ```
 
-## Parallel jobs
+### Parallel jobs
 
 A suite split across jobs uses `--shard <index>/<count>`. Veyrum splits the test files by their
 paths alone, so every file belongs to exactly one shard whatever evidence each job restored, and
@@ -70,7 +102,7 @@ jobs:
           restore-keys: |
             veyrum-${{ runner.os }}-${{ github.ref_name }}-
             veyrum-${{ runner.os }}-${{ github.base_ref || github.event.repository.default_branch }}-
-      - run: veyrum run --shard ${{ matrix.shard }}/4 --canary 0.1 --summary "$GITHUB_STEP_SUMMARY"
+      - run: npx --yes veyrum run --shard ${{ matrix.shard }}/4 --canary 0.1 --summary "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -87,7 +119,7 @@ jobs:
         with:
           pattern: veyrum-store-*
           path: stores
-      - run: veyrum merge stores/*/store.sqlite
+      - run: npx --yes veyrum merge stores/*/store.sqlite
       - uses: actions/cache/save@v4
         with:
           path: .veyrum/store.sqlite
@@ -103,8 +135,8 @@ that shard could otherwise run in no job.
 - **Runtime.** Evidence is only reused on the same Node version, platform, architecture, locale,
   time zone and runner version. A store can hold evidence for several runtimes, but two matrix
   legs saving the same cache key race and one leg's evidence is lost: put the matrix values in
-  the key (`veyrum-${{ runner.os }}-node${{ matrix.node }}-...`), or merge the legs' stores as
-  above.
+  the key (`veyrum-${{ runner.os }}-node${{ matrix.node }}-...`, or `store-key-prefix` with the
+  action), or merge the legs' stores as above.
 - **Size.** After every run Veyrum keeps, per test file and runtime, only the records the planner
   still reads, with the closures they refer to, and drops cached module fingerprints that no run
   has used in 50 runs. The escape record is kept in full.

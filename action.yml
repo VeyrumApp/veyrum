@@ -1,0 +1,47 @@
+name: Veyrum
+description: >-
+  Run only the test files whose evidence is no longer valid, with the evidence store cached
+  between runs.
+author: VeyrumApp
+
+inputs:
+  mode:
+    description: >-
+      shadow (default) runs every test file with `veyrum run --full --audit`: nothing is
+      skipped, and the report shows what would have been reused and whether any reuse would have
+      been wrong. enforce runs `veyrum run`: files with valid evidence are skipped.
+    required: false
+    default: shadow
+  version:
+    description: npm version of the veyrum package to use.
+    required: false
+    default: latest
+  args:
+    description: Extra arguments passed to veyrum run.
+    required: false
+    default: ""
+  store-key-prefix:
+    description: Prefix for the actions/cache key.
+    required: false
+    default: veyrum
+
+runs:
+  using: composite
+  steps:
+    - name: Restore Veyrum evidence
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: .veyrum/store.sqlite
+        key: ${{ inputs.store-key-prefix }}-${{ runner.os }}-${{ github.ref_name }}-${{ github.sha }}
+        restore-keys: |
+          ${{ inputs.store-key-prefix }}-${{ runner.os }}-${{ github.ref_name }}-
+          ${{ inputs.store-key-prefix }}-${{ runner.os }}-${{ github.base_ref || github.event.repository.default_branch }}-
+
+    - name: Run Veyrum
+      shell: bash
+      run: |
+        if [ "${{ inputs.mode }}" = "enforce" ]; then
+          npx --yes "veyrum@${{ inputs.version }}" run ${{ inputs.args }} --summary "$GITHUB_STEP_SUMMARY"
+        else
+          npx --yes "veyrum@${{ inputs.version }}" run --full --audit ${{ inputs.args }} --summary "$GITHUB_STEP_SUMMARY"
+        fi
