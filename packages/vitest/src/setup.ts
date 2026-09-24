@@ -64,7 +64,25 @@ function evaluatedFiles(): string[] {
   return [...(state?.evaluatedModules?.fileToModulesMap?.keys() ?? [])]
 }
 
-const raw = process.env.VEYRUM_CAPTURE
+/**
+ * The run's configuration, from the variable Veyrum's main process sets for its workers. In a
+ * worker it is then removed from the environment, so tests and the programs they start see the
+ * environment they would without Veyrum; later readers in this process, in any realm, get it from
+ * `process`.
+ */
+function takeConfig(name: string): string | undefined {
+  const holder = process as unknown as Record<symbol, unknown>
+  const key = Symbol.for(`veyrum.config.${name}`)
+  const taken = holder[key] as string | undefined
+  if (taken !== undefined) return taken
+  const raw = process.env[name]
+  if (raw === undefined) return undefined
+  holder[key] = raw
+  if (!holder[Symbol.for('veyrum.main')]) delete process.env[name]
+  return raw
+}
+
+const raw = takeConfig('VEYRUM_CAPTURE')
 const config = raw ? (JSON.parse(raw) as SetupConfig) : null
 
 if (config) {

@@ -17,8 +17,26 @@ type Resolve = (options: { testEnvironment: string } & Record<string, unknown>) 
 
 const ORIGINAL = Symbol.for('veyrum.jest.resolveTestEnvironment')
 
+/**
+ * The run's configuration, from the variable Veyrum's main process sets for its workers. In a
+ * worker it is then removed from the environment, so tests and the programs they start see the
+ * environment they would without Veyrum; later readers in this process, in any realm, get it from
+ * `process`.
+ */
+function takeConfig(name: string): string | undefined {
+  const holder = process as unknown as Record<symbol, unknown>
+  const key = Symbol.for(`veyrum.config.${name}`)
+  const taken = holder[key] as string | undefined
+  if (taken !== undefined) return taken
+  const raw = process.env[name]
+  if (raw === undefined) return undefined
+  holder[key] = raw
+  if (!holder[Symbol.for('veyrum.main')]) delete process.env[name]
+  return raw
+}
+
 function install(): void {
-  const raw = process.env.VEYRUM_JEST_CAPTURE
+  const raw = takeConfig('VEYRUM_JEST_CAPTURE')
   if (!raw) return
   let config: PreloadConfig
   try {
@@ -53,3 +71,9 @@ function install(): void {
 }
 
 install()
+
+// Tests see the execArgv they would without Veyrum, and the processes they fork do not load this.
+if (!(process as unknown as Record<symbol, unknown>)[Symbol.for('veyrum.main')]) {
+  const at = process.execArgv.indexOf(__filename)
+  if (at > 0 && process.execArgv[at - 1] === '--require') process.execArgv.splice(at - 1, 2)
+}

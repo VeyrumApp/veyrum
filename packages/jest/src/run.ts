@@ -110,6 +110,27 @@ interface GlobalConfig {
   readonly testSequencer: string
 }
 
+const processHolder = process as unknown as Record<symbol, unknown>
+/** Where Veyrum's readers find the run's configuration (see takeConfig in environment.cts). */
+const CONFIG_KEY = Symbol.for(`veyrum.config.${JEST_CAPTURE_ENV}`)
+const MAIN_KEY = Symbol.for('veyrum.main')
+
+/**
+ * A file each worker loads first (--require): it sets the run's configuration where Veyrum's
+ * readers look, then removes its own flag, so tests and the processes they fork see the
+ * execArgv they would without Veyrum.
+ */
+function workerConfigSource(raw: string): string {
+  return [
+    `process[Symbol.for(${JSON.stringify(`veyrum.config.${JEST_CAPTURE_ENV}`)})] = ${JSON.stringify(raw)}`,
+    `if (!process[Symbol.for('veyrum.main')]) {`,
+    `  const at = process.execArgv.indexOf(__filename)`,
+    `  if (at > 0 && process.execArgv[at - 1] === '--require') process.execArgv.splice(at - 1, 2)`,
+    `}`,
+    '',
+  ].join('\n')
+}
+
 /** Jest's stock sequencer, which Veyrum's wraps; a project's own sequencer is left in place. */
 const STOCK_SEQUENCER = /[\\/]@jest[\\/]test-sequencer[\\/]build[\\/]index\.js$/
 
@@ -237,7 +258,9 @@ export async function runJest(options: JestRunOptions): Promise<RunResult> {
   const reporterPath = path.join(here, 'reporter.js')
 
   const recorder = new MainRecorder({ root, ignoredPrefixes: ignored, volatileEnv: VOLATILE_ENV })
-  const previousCaptureEnv = process.env[JEST_CAPTURE_ENV]
+  const configFile = path.join(scratch, 'config.cjs')
+  // Readers in this process leave its execArgv alone: workers inherit it.
+  processHolder[MAIN_KEY] = true
   const previousNodeEnv = process.env.NODE_ENV
   const facts = runtimeFacts({ runner: 'jest', jest: target.version })
   const runtimeKey = runtimeKeyOf(facts)
@@ -289,11 +312,17 @@ export async function runJest(options: JestRunOptions): Promise<RunResult> {
       resolver: target.runtimeResolve,
       environmentResolver: target.runnerResolve,
       environmentPath,
+      preload: path.join(here, 'preload.cjs'),
       environments,
       ...(v8Coverage ? { projectCoverage: true } : {}),
       sequencer: globalConfig.testSequencer,
     }
-    process.env[JEST_CAPTURE_ENV] = JSON.stringify(captureConfig)
+    // The configuration reaches workers through a file they load first, never through the
+    // environment tests see; this process keeps it where its own readers look.
+    const configRaw = JSON.stringify(captureConfig)
+    fs.mkdirSync(scratch, { recursive: true })
+    fs.writeFileSync(configFile, workerConfigSource(configRaw))
+    processHolder[CONFIG_KEY] = configRaw
 
     // Discovery, per project, with Jest's own search.
     const specs: { check: CheckRef; file: string }[] = []
@@ -369,10 +398,10 @@ export async function runJest(options: JestRunOptions): Promise<RunResult> {
     if (selected.length > 0) {
       // Workers inherit this process's execArgv: the preload reaches every worker before its first
       // test (docblock environments), and loading it here covers tests run in band.
-      const preload = path.join(here, 'preload.cjs')
+      const preload = captureConfig.preload
       ownRequire(preload)
       const execArgv = [...process.execArgv]
-      process.execArgv.push('--require', preload)
+      process.execArgv.push('--require', configFile, '--require', preload)
       let results: { runExecError?: unknown }
       try {
         ;({ results } = await api.runCLI(
@@ -462,8 +491,7 @@ export async function runJest(options: JestRunOptions): Promise<RunResult> {
     recorder.stop()
     restoreHasteMap()
     closeSession()
-    if (previousCaptureEnv === undefined) delete process.env[JEST_CAPTURE_ENV]
-    else process.env[JEST_CAPTURE_ENV] = previousCaptureEnv
+    delete processHolder[CONFIG_KEY]
     if (previousNodeEnv === undefined) delete process.env.NODE_ENV
     else process.env.NODE_ENV = previousNodeEnv
     if (!options.keepScratch) fs.rmSync(scratch, { recursive: true, force: true })

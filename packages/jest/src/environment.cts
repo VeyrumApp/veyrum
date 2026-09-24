@@ -23,6 +23,7 @@ interface CaptureConfig {
   captureWorker: string
   resolver: string
   environments: Record<string, string>
+  preload: string
   projectCoverage?: boolean
 }
 
@@ -36,18 +37,51 @@ interface EnvironmentContext {
 }
 
 interface JestEnvironmentLike {
-  global: { process?: { env: Record<string, string | undefined> }; Function?: FunctionConstructor }
+  global: {
+    process?: { env: Record<string, string | undefined>; execArgv?: string[] }
+    Function?: FunctionConstructor
+  }
   setup(): Promise<void>
   teardown(): Promise<void>
 }
 
 type EnvironmentClass = new (config: EnvironmentConfig, context: EnvironmentContext) => JestEnvironmentLike
 
-const raw = process.env.VEYRUM_JEST_CAPTURE
+/**
+ * The run's configuration, from the variable Veyrum's main process sets for its workers. In a
+ * worker it is then removed from the environment, so tests and the programs they start see the
+ * environment they would without Veyrum; later readers in this process, in any realm, get it from
+ * `process`.
+ */
+function takeConfig(name: string): string | undefined {
+  const holder = process as unknown as Record<symbol, unknown>
+  const key = Symbol.for(`veyrum.config.${name}`)
+  const taken = holder[key] as string | undefined
+  if (taken !== undefined) return taken
+  const raw = process.env[name]
+  if (raw === undefined) return undefined
+  holder[key] = raw
+  if (!holder[Symbol.for('veyrum.main')]) delete process.env[name]
+  return raw
+}
+
+const raw = takeConfig('VEYRUM_JEST_CAPTURE')
 if (!raw) throw new Error('Veyrum: the Jest environment wrapper was loaded outside a Veyrum run')
 const config = JSON.parse(raw) as CaptureConfig
 const { createRequire } = require('node:module') as typeof import('node:module')
 const nativeRequire = createRequire(__filename)
+
+/** The files Veyrum has workers load (see run.ts): the configuration, then the preload. */
+const OWN_FLAGS = new Set([config.preload, require('node:path').join(config.outDir, 'config.cjs')])
+
+function withoutOwnFlags(execArgv: string[]): string[] {
+  const out: string[] = []
+  for (let i = 0; i < execArgv.length; i++) {
+    if (execArgv[i] === '--require' && OWN_FLAGS.has(execArgv[i + 1] ?? '')) i++
+    else out.push(execArgv[i]!)
+  }
+  return out
+}
 
 function interop(loaded: unknown): EnvironmentClass {
   const m = loaded as { __esModule?: boolean; default?: unknown }
@@ -134,6 +168,9 @@ function VeyrumEnvironment(envConfig: EnvironmentConfig, context: EnvironmentCon
     typeof pragma === 'string' ? docblockEnvironment(pragma, envConfig) : loadEnvironment(configured!)
   const env = new Base(envConfig, context)
   const testProcess = env.global.process
+  // Tests see the execArgv they would without Veyrum. The context has a copy of this process's,
+  // which keeps Veyrum's flags when it starts workers (tests run in band).
+  if (testProcess?.execArgv) testProcess.execArgv = withoutOwnFlags(testProcess.execArgv)
   // Test code reads the context's copy of process.env, not the worker's.
   if (testProcess) testProcess.env = index.observeEnv(testProcess.env, 'test')
   // Functions defined in the test context inherit that realm's Function.prototype.

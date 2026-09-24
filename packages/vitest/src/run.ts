@@ -29,7 +29,7 @@ import {
   toRepoPath,
 } from '@veyrum/core'
 import type { TestSpecification, Vitest } from 'vitest/node'
-import { CAPTURE_ENV, type CaptureConfig } from './protocol.ts'
+import { CAPTURE_ENV, type CaptureConfig, MAIN_KEY } from './protocol.ts'
 import { OutcomeReporter } from './reporter.ts'
 import { createTransformer } from './transformer.ts'
 
@@ -204,6 +204,7 @@ export async function runVitest(options: VitestRunOptions): Promise<VitestRunRes
     captureWorker: ownRequire.resolve('@veyrum/capture/worker'),
   }
   const previousCaptureEnv = process.env[CAPTURE_ENV]
+  ;(process as unknown as Record<symbol, unknown>)[MAIN_KEY] = true
   process.env[CAPTURE_ENV] = JSON.stringify(captureConfig)
   // As the vitest command does before anything else (createVitest does not): without it, Vite's
   // configuration loading sets NODE_ENV to development, and tests and the programs they start see
