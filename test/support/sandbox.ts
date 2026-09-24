@@ -55,7 +55,8 @@ export class Sandbox {
       const link = path.join(this.dir, 'node_modules', name)
       const own = path.join(adapterModules[this.runner], name)
       fs.mkdirSync(path.dirname(link), { recursive: true })
-      fs.symlinkSync(fs.existsSync(own) ? own : path.join(repoRoot, 'node_modules', name), link)
+      // Junctions: plain symbolic links need administrator rights on Windows.
+      fs.symlinkSync(fs.existsSync(own) ? own : path.join(repoRoot, 'node_modules', name), link, 'junction')
     }
     if (this.runner === 'vitest') {
       this.write('package.json', JSON.stringify({ name, private: true, type: 'module' }, null, 2))

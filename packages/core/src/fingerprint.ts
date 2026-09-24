@@ -663,7 +663,9 @@ function ssrImportText(call: AstNode, normSpec: (s: string) => string): string {
   const [spec, meta] = call.arguments as AstNode[]
   const value = spec?.type === 'Literal' && typeof spec.value === 'string' ? spec.value : null
   const external =
-    value === null || value.includes('/node_modules/') || !(value.startsWith('/') || value.startsWith('.'))
+    value === null ||
+    value.includes('/node_modules/') ||
+    !(value.startsWith('/') || value.startsWith('.') || /^[A-Za-z]:[\\/]/.test(value))
   let names = ''
   if (external && meta?.type === 'ObjectExpression') {
     for (const p of meta.properties as AstNode[]) {

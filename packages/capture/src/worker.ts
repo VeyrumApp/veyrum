@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url'
 import vm from 'node:vm'
 import { threadId } from 'node:worker_threads'
 import { digest } from '@veyrum/core/hash'
-import { isInside } from '@veyrum/core/paths'
+import { isInside, normalizeAbsolute } from '@veyrum/core/paths'
 import { hashEnvValue } from '@veyrum/core/state'
 import { coverageHub } from './coverage.ts'
 import {
@@ -180,9 +180,11 @@ function installCompileHooks(isolate: IsolateState, options: WorkerCaptureOption
       !options.projectCoverage && scriptLocation(filename, options).repositoryModule
         ? `${source}\n//# veyrum-file ${isolate.files}`
         : source
-    const list = map.get(filename)
+    // Keyed like script locations (see scriptLocation).
+    const key = path.isAbsolute(filename) ? normalizeAbsolute(filename) : filename
+    const list = map.get(key)
     if (list) list.push(compiled)
-    else map.set(filename, [compiled])
+    else map.set(key, [compiled])
     return compiled
   }
   const mutableVm = vm as unknown as Record<string, unknown>
@@ -231,7 +233,7 @@ const scriptLocations = new Map<string, ScriptLocation>()
 function scriptLocation(url: string, options: WorkerCaptureOptions): ScriptLocation {
   let where = scriptLocations.get(url)
   if (!where) {
-    const absolute = url.startsWith('file://') ? fileURLToPath(url) : url
+    const absolute = normalizeAbsolute(url.startsWith('file://') ? fileURLToPath(url) : url)
     where = {
       absolute,
       ignored: options.ignoredPrefixes.some((p) => absolute.startsWith(p)),
@@ -570,7 +572,9 @@ export async function beginWorkerCapture(options: WorkerCaptureOptions): Promise
       (fresh) => collectDeadCode(fresh, isolate),
     )
     isolate.session = session
-    for (const file of loadedBefore) loadedBeforeCoverage.add(file)
+    for (const file of loadedBefore)
+      if (path.isAbsolute(file) || file.startsWith('file://'))
+        loadedBeforeCoverage.add(normalizeAbsolute(file.startsWith('file://') ? fileURLToPath(file) : file))
     // Reported before this file began: under Jest, scripts of earlier files, which it ignores anyway.
     hub.discard(CAPTURE_CONSUMER)
     if (CPU_PROFILE_DIR) await session.post('Profiler.start')
@@ -692,7 +696,7 @@ export async function beginWorkerCapture(options: WorkerCaptureOptions): Promise
             if (script.functions.some((f) => (f.ranges[0]?.count ?? 0) > 0)) evalScripts++
             continue
           }
-          if (!url.startsWith('file://') && !url.startsWith('/')) continue
+          if (!url.startsWith('file://') && !path.isAbsolute(url)) continue
           const where = scriptLocation(url, options)
           if (where.ignored) continue
           const absolute = where.absolute
@@ -750,8 +754,6 @@ export async function beginWorkerCapture(options: WorkerCaptureOptions): Promise
           }
         // Evaluated before coverage started: repository modules are compared whole.
         for (const file of loadedBeforeCoverage) {
-          // Builtins are listed by name.
-          if (!path.isAbsolute(file) && !file.startsWith('file://')) continue
           const where = scriptLocation(file, options)
           if (where.ignored) continue
           if (where.repositoryModule) wholeModules.push(where.absolute)

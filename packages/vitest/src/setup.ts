@@ -46,7 +46,9 @@ function evaluatedSources(absolutePath: string): string[] | undefined {
   const state = (globalThis as Record<string, unknown>).__vitest_worker__ as
     | { evaluatedModules?: { fileToModulesMap?: Map<string, Set<EvaluatedModuleLike>> } }
     | undefined
-  const nodes = state?.evaluatedModules?.fileToModulesMap?.get(absolutePath)
+  const map = state?.evaluatedModules?.fileToModulesMap
+  // Vitest names files with forward slashes on Windows too.
+  const nodes = map?.get(absolutePath) ?? map?.get(absolutePath.replaceAll('\\', '/'))
   if (!nodes) return undefined
   const out: string[] = []
   for (const node of nodes) if (typeof node.meta?.code === 'string') out.push(node.meta.code)

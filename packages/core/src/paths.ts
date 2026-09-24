@@ -7,6 +7,17 @@ export function toRepoPath(root: string, absolute: string): string {
   return rel.split(path.sep).join('/')
 }
 
+/**
+ * An absolute path in one canonical spelling, for comparing paths as strings: resolved, and on
+ * Windows with backslashes and an upper-case drive letter (runners also spell them `c:/x/y`).
+ */
+export function normalizeAbsolute(p: string): string {
+  const resolved = path.resolve(p)
+  return path.sep === '\\' && /^[a-z]:/.test(resolved)
+    ? resolved[0]!.toUpperCase() + resolved.slice(1)
+    : resolved
+}
+
 export function fromRepoPath(root: string, repoPath: string): string {
   return path.isAbsolute(repoPath) ? repoPath : path.join(root, repoPath)
 }

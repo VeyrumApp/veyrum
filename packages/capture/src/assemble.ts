@@ -12,6 +12,7 @@ import {
   fingerprintModule,
   isInside,
   type ModuleUnits,
+  normalizeAbsolute,
   OPAQUE_UNIT,
   type RunInfo,
   type Store,
@@ -107,10 +108,12 @@ export function assemble(input: AssembleInput): Assembled {
   const state = new CurrentState(root, input.store, process.env, input.fs)
   const payloads = readPayloads(input.outDir)
   const byTestFile = new Map<string, WorkerPayload[]>()
+  // Runners spell paths their own way (Vitest on Windows: `C:/x/y`); compared in one spelling.
   for (const p of payloads) {
-    const list = byTestFile.get(p.testFile)
+    const file = normalizeAbsolute(p.testFile)
+    const list = byTestFile.get(file)
     if (list) list.push(p)
-    else byTestFile.set(p.testFile, [p])
+    else byTestFile.set(file, [p])
   }
 
   const moduleCache = new Map<string, ModuleUnits>()
@@ -242,7 +245,7 @@ export function assemble(input: AssembleInput): Assembled {
     const check = toRepoPath(root, outcome.file)
     const flags = new Set<string>()
     const closure: ClosureEntry[] = []
-    const candidates = byTestFile.get(outcome.file) ?? []
+    const candidates = byTestFile.get(normalizeAbsolute(outcome.file)) ?? []
     // A file can run more than once in a run (repeats); the last payload describes the final attempt.
     const payload = candidates[candidates.length - 1]
     if (!payload || !input.main.loadsObserved) flags.add(FLAGS.captureIncomplete)
@@ -441,7 +444,7 @@ export function assemble(input: AssembleInput): Assembled {
   // test file simply has no evidence) or import.meta.glob (handled by re-transforming `dyn` modules).
   const shared: ClosureEntry[] = []
   const sharedSeen = new Set<string>()
-  const testFiles = new Set(outcomes.map((o) => o.file))
+  const testFiles = new Set(outcomes.map((o) => normalizeAbsolute(o.file)))
   for (const obs of input.main.paths) {
     if (ignored(obs.p) || allModulePaths.has(obs.p) || obs.kind === 'dir') continue
     if (createdDuringRun(testWrites, obs.p)) continue
