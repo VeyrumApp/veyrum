@@ -59,9 +59,19 @@ jobs:
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
+      # The pytest adapter's scenarios and smoke test need Python 3.12 or later with pytest.
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install pytest
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
       - run: pnpm build
+      # The Playwright adapter's scenarios drive Chromium from the repository's sandbox cache.
+      - name: Install Chromium for the Playwright scenarios
+        run: node packages/playwright/node_modules/@playwright/test/cli.js install --with-deps --only-shell chromium
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.sandbox/ms-playwright
       - name: The tag names the packages' version
         if: github.event_name == 'push'
         run: |

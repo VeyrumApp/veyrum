@@ -4,10 +4,12 @@ import { Sandbox, testPython } from '../../../test/support/sandbox.ts'
 /**
  * End-to-end scenarios for the pytest adapter, through the real CLI and `python -m pytest`. Each
  * records evidence, changes something, and asserts which files the plan runs. Skipped without a
- * Python 3.12 or later that has pytest (see testPython).
+ * Python 3.12 or later that has pytest (see testPython), except on Linux CI, where they must run.
  */
 
 const python = testPython()
+if (!python && process.env.CI !== undefined && process.platform === 'linux')
+  throw new Error('No Python 3.12 or later with pytest; install them as the CI workflow does')
 
 let sandbox: Sandbox | undefined
 afterEach(() => sandbox?.dispose())

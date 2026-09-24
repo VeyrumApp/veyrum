@@ -25,6 +25,7 @@ const pinned = process.env.SMOKE_VITEST || process.env.SMOKE_JEST || process.env
 const vitestVersion = pinned ? process.env.SMOKE_VITEST : devVersion('vitest', 'vitest')
 const jestVersion = pinned ? process.env.SMOKE_JEST : devVersion('jest', '@jest/core')
 const mochaVersion = pinned ? process.env.SMOKE_MOCHA : devVersion('mocha', 'mocha')
+const playwrightVersion = pinned ? undefined : devVersion('playwright', '@playwright/test')
 
 // On Windows, pnpm and package binaries are .cmd shims, which only a shell runs: they get one
 // quoted command line.
@@ -105,11 +106,12 @@ function cycle(dir, source, mulTest, files = 2) {
 /**
  * A call that starts a program only veyrum-exec lets child-process tracing follow, which must work
  * from an install (package managers drop the executable bit): on Linux a statically linked program,
- * run under ptrace; on macOS the system's cat through the system's shell, both run as shadow copies.
- * Null where there is none.
+ * run under ptrace; on macOS the system's cat through the system's shell, both run as shadow copies;
+ * on Windows cmd's type, through the launcher that loads the tracer DLL. Null where there is none.
  */
 function tracedProgram(dir) {
   if (process.platform === 'darwin') return "execSync('cat fixtures/data.txt')"
+  if (process.platform === 'win32') return "execSync('type fixtures\\\\data.txt')"
   if (process.platform !== 'linux') return null
   const source = path.join(dir, 'fixtures', 'show.c')
   fs.mkdirSync(path.dirname(source), { recursive: true })
@@ -183,11 +185,14 @@ try {
     process.stdout.write('node:test: ok\n')
   }
 
-  // pytest needs python3 to be 3.12 or later with pytest, as on the Linux CI jobs; skipped elsewhere.
+  // pytest needs python3 to be 3.12 or later with pytest, as on the Linux CI jobs, where it must
+  // run; skipped elsewhere.
   const hasPytest =
     spawnSync('python3', ['-c', 'import sys, pytest; assert sys.version_info >= (3, 12)'], {
       stdio: 'ignore',
     }).status === 0
+  if (!pinned && !hasPytest && process.env.CI && process.platform === 'linux')
+    throw new Error('python3 is not 3.12 or later with pytest; install them as the CI workflow does')
   if (!pinned && hasPytest) {
     const pytestDir = project(
       'pytest',
@@ -203,6 +208,25 @@ try {
     process.stdout.write('pytest: ok\n')
   } else if (!pinned) {
     process.stdout.write('pytest: skipped (python3 is not 3.12 or later with pytest)\n')
+  }
+
+  // Playwright Test without a page needs no browser: the packed adapter, as installed.
+  if (playwrightVersion) {
+    const playwrightDir = project(
+      'playwright',
+      { '@playwright/test': playwrightVersion },
+      {
+        'playwright.config.ts': "export default { testDir: 'tests' }\n",
+        // Playwright compiles the modules a spec imports itself; they are compared whole.
+        'src/math.ts': 'export const mul = (a: number, b: number) => a * b\n',
+        'tests/add.spec.ts':
+          "import { expect, test } from '@playwright/test'\ntest('add', () => expect(1 + 2).toBe(3))\n",
+        'tests/mul.spec.ts':
+          "import { expect, test } from '@playwright/test'\nimport { mul } from '../src/math'\ntest('mul', () => expect(mul(2, 3)).toBe(6))\n",
+      },
+    )
+    cycle(playwrightDir, 'src/math.ts', 'tests/mul.spec.ts')
+    process.stdout.write(`playwright ${playwrightVersion}: ok\n`)
   }
 
   if (jestVersion) {
