@@ -122,7 +122,10 @@ jobs:
           OVERHEAD: ${{ matrix.overhead }}
           VEYRUM_CPU_PROFILE: ${{ inputs.cpu-profile && format('{0}/profiles', runner.temp) || '' }}
           VEYRUM_JEST_COVERAGE: ${{ inputs.jest-coverage }}
+          # Diagnostic reports of every Node process in a run that hits its time limit.
+          RIG_REPORT_DIR: ${{ runner.temp }}/reports
         run: |
+          mkdir -p "$RIG_REPORT_DIR"
           args=(--bench "$RUNNER_TEMP/bench" --overhead-every "$OVERHEAD" --shard "$SHARD" --until "$UNTIL")
           if [ -n "$COMMITS" ]; then args+=(--commits "$COMMITS"); fi
           if [ -n "$MUTANTS" ]; then args+=(--mutants-per-commit "$MUTANTS"); fi
@@ -136,6 +139,7 @@ jobs:
             ${{ runner.temp }}/bench/${{ matrix.corpus }}/results.jsonl
             ${{ runner.temp }}/replay.log
             ${{ runner.temp }}/profiles
+            ${{ runner.temp }}/reports
           if-no-files-found: warn
 
   merge:

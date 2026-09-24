@@ -75,25 +75,91 @@ export function exec(
   return result
 }
 
+/** Default limit for one command: generous for installs and full suites, finite for hangs. */
+const DEFAULT_TIMEOUT_MS = 45 * 60 * 1000
+/** Grace between the diagnostic signal at the time limit and the kill. */
+const KILL_AFTER_SECONDS = 60
+
+/**
+ * Runs one command under coreutils `timeout`, which gives it its own process group. At the time
+ * limit the whole group gets SIGUSR2: with RIG_REPORT_DIR set, every Node process in it (runner,
+ * workers, children) writes a diagnostic report with JavaScript and native stacks, and the group
+ * is killed a minute later. Output goes to files, not pipes, so a leftover grandchild holding a
+ * pipe open cannot keep the rig waiting; whatever the command left running is killed afterwards.
+ */
 function execOnce(
   command: string,
   args: readonly string[],
   options: { cwd: string; env?: NodeJS.ProcessEnv; timeoutMs?: number } = { cwd: process.cwd() },
 ): ExecResult {
   const started = performance.now()
-  const result = spawnSync(command, args, {
-    cwd: options.cwd,
-    env: options.env ?? process.env,
-    encoding: 'utf8',
-    maxBuffer: 256 * 1024 * 1024,
-    timeout: Math.round(options.timeoutMs ?? 60 * 60 * 1000),
-  })
+  const timeoutMs = Math.round(options.timeoutMs ?? DEFAULT_TIMEOUT_MS)
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rig-exec-'))
+  const outFile = path.join(dir, 'stdout')
+  const errFile = path.join(dir, 'stderr')
+  const env = { ...(options.env ?? process.env) }
+  const reports = process.env.RIG_REPORT_DIR
+  if (reports) {
+    env.NODE_OPTIONS = [
+      env.NODE_OPTIONS,
+      '--report-on-signal',
+      '--report-signal=SIGUSR2',
+      `--report-directory=${reports}`,
+    ]
+      .filter(Boolean)
+      .join(' ')
+  }
+  const out = fs.openSync(outFile, 'w')
+  const err = fs.openSync(errFile, 'w')
+  let result: ReturnType<typeof spawnSync>
+  try {
+    result = spawnSync(
+      'timeout',
+      [
+        '--signal=USR2',
+        `--kill-after=${KILL_AFTER_SECONDS}`,
+        `${Math.max(1, Math.ceil(timeoutMs / 1000))}`,
+        command,
+        ...args,
+      ],
+      { cwd: options.cwd, env, stdio: ['ignore', out, err] },
+    )
+  } finally {
+    fs.closeSync(out)
+    fs.closeSync(err)
+  }
+  if (result.pid) {
+    try {
+      process.kill(-result.pid, 'SIGKILL')
+    } catch {
+      // Nothing left in the group.
+    }
+  }
+  const read = (file: string): string => {
+    try {
+      return fs.readFileSync(file, 'utf8')
+    } catch {
+      return ''
+    }
+  }
+  const stdout = read(outFile)
+  const stderr = read(errFile)
+  fs.rmSync(dir, { recursive: true, force: true })
+  const ms = performance.now() - started
+  // timeout exits 124 at the limit, or 137 when the kill that follows was needed.
+  const timedOut = result.status === 124 || (result.status === 137 && ms >= timeoutMs)
   return {
-    code: result.status ?? -1,
-    signal: result.signal ?? null,
-    stdout: result.stdout ?? '',
-    stderr: result.stderr ?? '',
-    ms: performance.now() - started,
+    code: timedOut ? 124 : (result.status ?? -1),
+    signal: timedOut
+      ? 'timeout'
+      : result.status === 137
+        ? 'SIGKILL'
+        : result.status === 143
+          ? 'SIGTERM'
+          : null,
+    stdout,
+    stderr: timedOut ? `${stderr}\n[rig] timed out after ${Math.round(timeoutMs / 1000)}s\n` : stderr,
+    ms,
   }
 }
 
