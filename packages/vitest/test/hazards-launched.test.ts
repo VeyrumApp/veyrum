@@ -108,6 +108,37 @@ describe.runIf(staticPrograms)('statically linked programs', () => {
     expect(sandbox.capture().code).toBe(0)
     expect(sandbox.actions()['test/child.test.ts']).toBe('skip')
   })
+
+  // Veyrum testing itself, or its benchmark replaying Veyrum's history, runs a nested capture whose
+  // launcher comes from another checkout. A process has one ptrace tracer, so that launcher must not
+  // run under this one's: it runs as it is, and traces its program into the log it was given.
+  test.runIf(tool)("Veyrum's launcher from another build runs as it would untraced", () => {
+    sandbox = new Sandbox('static-other-launcher')
+      .write('fixtures/x.txt', 'a')
+      .write(
+        'test/child.test.ts',
+        [
+          "import { execSync } from 'node:child_process'",
+          "import { mkdtempSync, readFileSync, realpathSync } from 'node:fs'",
+          "import { tmpdir } from 'node:os'",
+          "import { join } from 'node:path'",
+          "import { expect, test } from 'vitest'",
+          "test('child', () => {",
+          "  const log = join(mkdtempSync(join(tmpdir(), 'nested-')), 'trace.log')",
+          "  const out = execSync('VEYRUM_TRACE=' + log + ' ./fixtures/native/veyrum-exec ./fixtures/tool tool read fixtures/x.txt')",
+          "  expect(out.toString()).toBe('a')",
+          "  const lines = readFileSync(log, 'utf8').split('\\n')",
+          "  expect(lines).toContain('r ' + realpathSync('fixtures/x.txt'))",
+          "  expect(lines.filter((line) => line.startsWith('u '))).toEqual([])",
+          '})',
+          '',
+        ].join('\n'),
+      )
+    install(tool!, sandbox.dir, 'fixtures/tool')
+    // A copy is another file, as another checkout's launcher is.
+    install(launcher, sandbox.dir, 'fixtures/native/veyrum-exec')
+    expect(sandbox.capture().code).toBe(0)
+  })
 })
 
 describe.runIf(tracing && go)('Go programs', () => {

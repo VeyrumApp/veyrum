@@ -131,8 +131,27 @@ it creates, is traced. How depends on the program and the platform:
   counts as network use. The program keeps the process it was started in
   (pid, parent, streams, signals, exit status); the tracer is a detached grandchild. Tracing sets
   `no_new_privs`, so a set-user-ID program started this way does not gain privileges. Where
-  ptrace is not allowed (Yama `ptrace_scope` 2 or 3, a container that forbids it, a debugger
-  already attached), the program runs untraced and blocks reuse, as below.
+  ptrace is not allowed (Yama `ptrace_scope` 2 or 3, a container that forbids it), the program
+  runs untraced and blocks reuse, as below.
+- **One ptrace tracer per process (Linux).** On macOS and Windows capture holds no process
+  exclusively: a nested capture's launcher runs like any other program, and its tracer is loaded
+  next to the outer one. On Linux a process can have one tracer, so capture never puts a
+  program under `veyrum-exec` where another tracer holds it, or where the program is a tracer
+  itself. A statically linked program executed by a process a debugger traces (strace, gdb, rr)
+  runs as it is, untraced, and blocks reuse: the debugger sees exactly the exec it expects. So
+  does a program started through `veyrum-exec` that already has a tracer; `veyrum-exec` then
+  starts no tracer of its own, whose processes the other one would see. Veyrum's own launcher,
+  of any build (a nested capture's, which may come from another checkout of Veyrum when Veyrum
+  tests itself or its benchmark replays Veyrum's history), is recognized by its name and the
+  usage line every build carries: it runs as it is, not under the outer launcher, and traces what
+  it runs into the log it was given. Another build's launcher is an executed program, an input.
+  Under a Veyrum launcher's tracer that follows launchers of every build, a nested launcher starts
+  nothing: that tracer switches to the nested log. A program under Veyrum's ptrace tracer cannot
+  trace its own processes, or be attached to by a debugger (the kernel refuses), and a seccomp
+  filter of its own behaves differently under a tracer (calls it stops for a tracer run instead of
+  failing, and calls a filter with a listener hands to a supervisor are never seen): these block
+  reuse, as below. Handing the process over to the program's tracer is not possible: the seccomp
+  filter stays, and fails the calls it stops unless the new tracer asks for its stops.
 - **On macOS, through libSystem.** Every program, Go ones included (they call libSystem on
   macOS), gets a library dyld inserts (`packages/capture/native/trace-darwin.c`, through
   `DYLD_INSERT_LIBRARIES`) that interposes libSystem's functions and writes the same log. Because
@@ -194,8 +213,10 @@ The test file's closure gets what its children did like its own reads. On top of
 - **Anything else blocks reuse.** A program for another machine or a 32-bit one, a raw `execve`
   system call or `fexecve` from a dynamically linked program, `glob`, `ftw` and `nftw` (which read
   directories internally), system calls of another architecture, `io_uring`, `open_by_handle_at`,
-  and a statically linked shell started through a `shell` option are reported as untraceable, and
-  the check gets the `spawn` flag. On macOS, so are a set-user-ID program, one with a `__RESTRICT`
+  a statically linked shell started through a `shell` option, a static or Go program run under a
+  debugger, a request to trace a process Veyrum's ptrace tracer holds (`ptrace`), and a seccomp
+  filter a traced program installs that stops calls for a tracer or has a listener are reported as
+  untraceable, and the check gets the `spawn` flag. On macOS, so are a set-user-ID program, one with a `__RESTRICT`
   segment, a protected program that loads libraries relative to its own file (`@executable_path`,
   `@loader_path`) or is an application's executable (a copy would not run as the original does),
   a protected program whose shadow copy cannot be made or run, a file opened by its

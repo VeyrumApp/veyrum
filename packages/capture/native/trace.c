@@ -19,6 +19,12 @@
  * with ptrace into the same log. Anything else that cannot be followed is reported as untraceable
  * ("u"), which ends reuse. Every exec restores LD_PRELOAD and VEYRUM_TRACE when they are missing,
  * so a program that clears its environment cannot drop the tracer for its children.
+ *
+ * A process has one ptrace tracer. A statically linked program executed by a process a debugger
+ * traces (strace, gdb) runs as it is, untraced, not under veyrum-exec, which the debugger would see
+ * and which could not trace it anyway. Veyrum's launcher itself, of any build (a nested capture's),
+ * runs as it is too: it traces what it runs. A debugger refused a process that Veyrum's launcher
+ * traces is recorded as untraceable.
  */
 #define _GNU_SOURCE
 #include <dirent.h>
@@ -35,6 +41,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ptrace.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
@@ -175,6 +182,16 @@ static void emit_at(char kind, int dirfd, const char *path) {
 }
 
 static void emit(char kind, const char *path) { emit_at(kind, AT_FDCWD, path); }
+
+/* A line whose text is not a path (what cannot be traced, named by its function): written as is. */
+static void emit_text(char kind, const char *text) {
+  if (log_fd < 0) return;
+  int saved = errno;
+  char line[128];
+  int n = snprintf(line, sizeof line, "%c %s\n", kind, text);
+  if (n > 0 && (size_t)n < sizeof line) log_write(line, (size_t)n);
+  errno = saved;
+}
 
 #define REAL(ret, name, ...)                                   \
   static ret (*real_##name)(__VA_ARGS__);                      \
@@ -463,7 +480,7 @@ EXPORT char *realpath(const char *path, char *resolved) {
     } else if (errno == ENOENT || errno == ENOTDIR) {
       emit('S', path);
     } else {
-      emit('u', "realpath");
+      emit_text('u', "realpath");
     }
     busy = 0;
   }
@@ -481,7 +498,7 @@ EXPORT char *canonicalize_file_name(const char *path) {
     } else if (errno == ENOENT || errno == ENOTDIR) {
       emit('S', path);
     } else {
-      emit('u', "canonicalize_file_name");
+      emit_text('u', "canonicalize_file_name");
     }
     busy = 0;
   }
@@ -510,7 +527,7 @@ EXPORT DIR *fdopendir(int fd) {
     busy = 1;
     char dir[PATH_MAX];
     if (base_dir(fd, dir, sizeof dir) == 0) emit('d', dir);
-    else emit('u', "fdopendir");
+    else emit_text('u', "fdopendir");
     busy = 0;
   }
   return d;
@@ -551,7 +568,7 @@ EXPORT int scandir64(const char *path, struct dirent64 ***list, dirent64_filter 
   EXPORT ret name params {                                      \
     static void *real_##name;                                   \
     if (!real_##name) real_##name = lookup(#name);              \
-    if (!busy) emit('u', #name);                                \
+    if (!busy) emit_text('u', #name);                           \
     return ((ret(*) params)real_##name) args;                   \
   }
 
@@ -691,7 +708,7 @@ EXPORT long syscall(long number, ...) {
   for (int i = 0; i < 6; i++) a[i] = va_arg(ap, long);
   va_end(ap);
   if (!sys) sys = (long (*)(long, ...))lookup("syscall");
-  if (log_fd >= 0 && !busy && (number == SYS_execve || number == SYS_execveat)) emit('u', "raw exec");
+  if (log_fd >= 0 && !busy && (number == SYS_execve || number == SYS_execveat)) emit_text('u', "raw exec");
   long r = sys(number, a[0], a[1], a[2], a[3], a[4], a[5]);
   if (log_fd < 0 || busy) return r;
   switch (number) {
@@ -730,7 +747,7 @@ EXPORT long syscall(long number, ...) {
 #endif
 #ifdef SYS_openat2
     case SYS_openat2:
-      if (r >= 0) emit('u', "openat2");
+      if (r >= 0) emit_text('u', "openat2");
       break;
 #endif
     default:
@@ -777,6 +794,34 @@ EXPORT int connect(int fd, const struct sockaddr *addr, socklen_t len) {
       log_write(line, (size_t)n);
       errno = saved;
     }
+  }
+  return r;
+}
+
+/* ---- debuggers ------------------------------------------------------------------------------ */
+
+static int ptrace_tracer(pid_t tid);
+
+/*
+ * A process has one ptrace tracer: a debugger cannot trace a statically linked or Go program that
+ * Veyrum's launcher traces (nor, traced by that launcher itself, be traced by its parent), as it
+ * could untraced. The program cannot run as it would, which is recorded as untraceable.
+ */
+EXPORT long ptrace(enum __ptrace_request request, ...) {
+  va_list ap;
+  va_start(ap, request);
+  pid_t pid = va_arg(ap, pid_t);
+  void *addr = va_arg(ap, void *);
+  void *data = va_arg(ap, void *);
+  va_end(ap);
+  REAL(long, ptrace, enum __ptrace_request, ...);
+  long r = real_ptrace(request, pid, addr, data);
+  if (r == -1 && errno == EPERM && log_fd >= 0 && !busy &&
+      (request == PTRACE_TRACEME || request == PTRACE_ATTACH || request == PTRACE_SEIZE)) {
+    busy = 1;
+    if (ptrace_tracer(request == PTRACE_TRACEME ? 0 : pid) > 0) emit_text('u', "ptrace");
+    busy = 0;
+    errno = EPERM;
   }
   return r;
 }
@@ -887,6 +932,65 @@ static const char *env_lookup(char *const envp[], const char *name) {
 static const char *launcher_path(void);
 
 /*
+ * The usage line every build of veyrum-exec carries (exec.c). A file named veyrum-exec that has it
+ * is Veyrum's launcher, of this build or another: a nested capture's may come from another checkout
+ * of Veyrum (Veyrum testing itself, or its benchmark replaying Veyrum's history).
+ */
+static const char launcher_usage[] = "usage: veyrum-exec <program> [argv0 [args...]]\n";
+#define USAGE_LEN (sizeof launcher_usage - 1)
+
+static int any_launcher(const char *path) {
+  const char *slash = strrchr(path, '/');
+  if (strcmp(slash ? slash + 1 : path, "veyrum-exec") != 0) return 0;
+  int fd = (int)sys(SYS_openat, AT_FDCWD, path, O_RDONLY | O_CLOEXEC);
+  if (fd < 0) return 0;
+  /* Read in blocks, each after the end of the one before, where the line may have started. */
+  char buf[USAGE_LEN + 8192];
+  size_t kept = 0;
+  int found = 0;
+  for (;;) {
+    long n = sys(SYS_read, fd, buf + kept, (size_t)8192);
+    if (n < 0 && errno == EINTR) continue;
+    if (n <= 0) break;
+    size_t len = kept + (size_t)n;
+    if (memmem(buf, len, launcher_usage, USAGE_LEN)) {
+      found = 1;
+      break;
+    }
+    kept = len < USAGE_LEN - 1 ? len : USAGE_LEN - 1;
+    memmove(buf, buf + len - kept, kept);
+  }
+  sys(SYS_close, fd);
+  return found;
+}
+
+/*
+ * Who traces thread `tid` (0: the calling thread) with ptrace: 1 for Veyrum's launcher (of any
+ * build), 0 for another tracer (a debugger), -1 for none.
+ */
+static int ptrace_tracer(pid_t tid) {
+  char name[64];
+  if (tid) snprintf(name, sizeof name, "/proc/%d/status", tid);
+  else snprintf(name, sizeof name, "/proc/self/task/%ld/status", sys(SYS_gettid));
+  int fd = (int)sys(SYS_openat, AT_FDCWD, name, O_RDONLY | O_CLOEXEC);
+  if (fd < 0) return -1;
+  char status[2048];
+  long n = sys(SYS_read, fd, status, sizeof status - 1);
+  sys(SYS_close, fd);
+  if (n <= 0) return -1;
+  status[n] = '\0';
+  const char *field = strstr(status, "\nTracerPid:");
+  long tracer = field ? strtol(field + 11, NULL, 10) : 0;
+  if (tracer <= 0) return -1;
+  char exe[PATH_MAX];
+  snprintf(name, sizeof name, "/proc/%ld/exe", tracer);
+  n = sys(SYS_readlinkat, AT_FDCWD, name, exe, sizeof exe - 1);
+  if (n <= 0) return 0;
+  exe[n] = '\0';
+  return any_launcher(exe) ? 1 : 0;
+}
+
+/*
  * Records an exec. Returns whether it must go through veyrum-exec, which then records the program
  * itself (or that it could not trace it).
  */
@@ -895,15 +999,26 @@ static int is_launcher(const char *path);
 static int record_exec(const char *resolved) {
   if (log_fd < 0 || busy) return 0;
   busy = 1;
-  /* The launcher itself (a nested capture's) is Veyrum, not an input, and traces what it runs. */
+  int launch = 0;
   if (is_launcher(resolved)) {
-    busy = 0;
-    return 0;
+    /* This build's launcher (a nested capture's) is Veyrum, not an input, and traces what it runs. */
+  } else if (any_launcher(resolved)) {
+    /*
+     * Another build's traces what it runs too, which it could not do under this build's launcher
+     * (a process has one tracer): it runs as it is, a program the test ran.
+     */
+    emit('x', resolved);
+  } else {
+    enum run kind = classify(resolved, 0);
+    /*
+     * Under a debugger's ptrace, a program runs as it is: veyrum-exec could not trace it, and the
+     * debugger would see it run first. Under a Veyrum launcher's, veyrum-exec points that tracer
+     * at this log.
+     */
+    if (kind == RUN_LAUNCHED && launcher_path() && ptrace_tracer(0) != 0) launch = 1;
+    else if (kind == RUN_TRACED) emit('x', resolved);
+    else emit('u', resolved);
   }
-  enum run kind = classify(resolved, 0);
-  int launch = kind == RUN_LAUNCHED && launcher_path() != NULL;
-  if (kind == RUN_TRACED) emit('x', resolved);
-  else if (!launch) emit('u', resolved);
   busy = 0;
   return launch;
 }
@@ -1081,7 +1196,7 @@ EXPORT int execle(const char *path, const char *arg, ...) {
 EXPORT int fexecve(int fd, char *const argv[], char *const envp[]) {
   REAL(int, fexecve, int, char *const[], char *const[]);
   if (log_fd < 0) return real_fexecve(fd, argv, envp);
-  emit('u', "fexecve");
+  emit_text('u', "fexecve");
   char *env[env_count(envp) + 3];
   traced_env(envp, env);
   return real_fexecve(fd, argv, env);
@@ -1092,7 +1207,7 @@ EXPORT int execveat(int dirfd, const char *path, char *const argv[], char *const
   if (log_fd < 0) return real_execveat(dirfd, path, argv, envp, flags);
   int launch = 0;
   if (path[0] == '/' && !(flags & AT_EMPTY_PATH)) launch = record_exec(path);
-  else emit('u', "execveat");
+  else emit_text('u', "execveat");
   char *env[env_count(envp) + 3];
   traced_env(envp, env);
   if (launch) {
