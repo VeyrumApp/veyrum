@@ -205,6 +205,17 @@ export async function runVitest(options: VitestRunOptions): Promise<VitestRunRes
   }
   const previousCaptureEnv = process.env[CAPTURE_ENV]
   process.env[CAPTURE_ENV] = JSON.stringify(captureConfig)
+  // As the vitest command does before anything else (createVitest does not): without it, Vite's
+  // configuration loading sets NODE_ENV to development, and tests and the programs they start see
+  // that instead of test.
+  const previousRunnerEnv = {
+    TEST: process.env.TEST,
+    VITEST: process.env.VITEST,
+    NODE_ENV: process.env.NODE_ENV,
+  }
+  process.env.TEST = 'true'
+  process.env.VITEST = 'true'
+  process.env.NODE_ENV ??= 'test'
   const recorder = new MainRecorder({ root, ignoredPrefixes: ignored, volatileEnv: VOLATILE_ENV })
 
   const { createVitest } = (await import(target.nodeUrl)) as typeof import('vitest/node')
@@ -413,6 +424,10 @@ export async function runVitest(options: VitestRunOptions): Promise<VitestRunRes
     if (vitest) await vitest.close()
     if (previousCaptureEnv === undefined) delete process.env[CAPTURE_ENV]
     else process.env[CAPTURE_ENV] = previousCaptureEnv
+    for (const [name, value] of Object.entries(previousRunnerEnv)) {
+      if (value === undefined) delete process.env[name]
+      else process.env[name] = value
+    }
     if (!options.keepScratch) fs.rmSync(scratch, { recursive: true, force: true })
   }
 }

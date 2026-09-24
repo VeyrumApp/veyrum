@@ -200,6 +200,19 @@ describe('coverage', () => {
   })
 })
 
+describe('the environment tests see', () => {
+  test('is the one the vitest command gives them', () => {
+    sandbox = new Sandbox('runner-env').write(
+      'test/env.test.ts',
+      "import { expect, test } from 'vitest'\ntest('env', () => {\n  expect(process.env.NODE_ENV).toBe('test')\n  expect(process.env.VITEST).toBe('true')\n  expect(process.env.TEST).toBe('true')\n})\n",
+    )
+    expect(sandbox.cli(['run', '--full']).code).toBe(0)
+    // A project's own NODE_ENV stands.
+    sandbox.edit('test/env.test.ts', "toBe('test')", "toBe('staging')")
+    expect(sandbox.cli(['run', '--full'], { NODE_ENV: 'staging' }).code).toBe(0)
+  })
+})
+
 describe('parallel jobs', () => {
   test('shards split the files, and their merged stores serve every shard', () => {
     sandbox = new Sandbox('shards').write(
