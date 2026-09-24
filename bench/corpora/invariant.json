@@ -1,0 +1,14 @@
+{
+  "name": "invariant",
+  "repo": "https://github.com/InvariantApp/Invariant.git",
+  "branch": "main",
+  "commits": 40,
+  "install": ["pnpm", "install", "--frozen-lockfile", "--prefer-offline"],
+  "prepare": ["node", "--import", "tsx", "scripts/fetch-oasdiff.mts", "--host"],
+  "lockfiles": ["pnpm-lock.yaml"],
+  "runnerArgs": [],
+  "maxWorkers": 2,
+  "mutationSources": ["^packages/[^/]+/src/(?!.*\\.test\\.ts$).+\\.ts$"],
+  "mutantsPerCommit": 6,
+  "mutationEvery": 4
+}

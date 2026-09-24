@@ -1,0 +1,14 @@
+{
+  "name": "veyrum",
+  "repo": "https://github.com/VeyrumApp/veyrum.git",
+  "branch": "main",
+  "commits": 40,
+  "install": ["pnpm", "install", "--frozen-lockfile", "--prefer-offline"],
+  "prepare": ["pnpm", "build"],
+  "lockfiles": ["pnpm-lock.yaml"],
+  "runnerArgs": [],
+  "maxWorkers": 2,
+  "mutationSources": ["^packages/[^/]+/src/(?!.*\\.test\\.ts$).+\\.c?ts$"],
+  "mutantsPerCommit": 6,
+  "mutationEvery": 4
+}
