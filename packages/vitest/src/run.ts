@@ -239,13 +239,16 @@ export async function runVitest(options: VitestRunOptions): Promise<VitestRunRes
 
     const coverage = (vitest.config as unknown as { coverage?: { enabled?: boolean; provider?: string } })
       .coverage
-    if (coverage?.enabled && (coverage.provider ?? 'v8') !== 'v8')
+    // Istanbul instruments the code that runs, which fingerprints see through (see fingerprint.ts);
+    // a custom provider could do anything.
+    const provider = coverage?.provider ?? 'v8'
+    if (coverage?.enabled && provider !== 'v8' && provider !== 'istanbul')
       throw new ConfigurationError(
-        `Veyrum can collect coverage only with Vitest's v8 provider (this project uses ${coverage.provider}): set coverage.provider to 'v8', or run with --no-coverage`,
+        `Veyrum can collect coverage only with Vitest's v8 or istanbul provider (this project uses ${provider}): run with --no-coverage`,
       )
-    // Workers start later and read the configuration then.
-    if (coverage?.enabled)
-      process.env[CAPTURE_ENV] = JSON.stringify({ ...captureConfig, projectCoverage: true })
+    // Only V8 coverage shares the profiler with capture. Workers start later and read this then.
+    const v8Coverage = coverage?.enabled === true && provider === 'v8'
+    if (v8Coverage) process.env[CAPTURE_ENV] = JSON.stringify({ ...captureConfig, projectCoverage: true })
 
     const sharedWorkerProjects = new Set<string>()
     for (const project of vitest.projects) {
@@ -260,7 +263,7 @@ export async function runVitest(options: VitestRunOptions): Promise<VitestRunRes
       }
       // The project's own V8 coverage starts before setup files, and must go through Veyrum's
       // coverage hub (see @veyrum/capture's coverage.ts), which the preload installs first.
-      if ((startsBeforeSetupFiles(config) || coverage?.enabled) && !config.execArgv.includes(preloadUrl))
+      if ((startsBeforeSetupFiles(config) || v8Coverage) && !config.execArgv.includes(preloadUrl))
         config.execArgv.push('--import', preloadUrl)
       if (!config.setupFiles.includes(setupPath)) config.setupFiles.unshift(setupPath)
       if (config.isolate === false) {

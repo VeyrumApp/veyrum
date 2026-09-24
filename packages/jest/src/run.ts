@@ -10,7 +10,6 @@ import { endWorkerCapture, UNCAPTURED_FILE } from '@veyrum/capture/worker'
 import {
   type CheckOutcomeSummary,
   type CheckRef,
-  ConfigurationError,
   checkKey,
   type Decision,
   digest,
@@ -268,10 +267,9 @@ export async function runJest(options: JestRunOptions): Promise<RunResult> {
       collectCoverage?: boolean
       coverageProvider?: string
     }
-    if (collectCoverage && coverageProvider !== 'v8')
-      throw new ConfigurationError(
-        `Veyrum can collect coverage only with Jest's v8 provider (this project uses ${coverageProvider ?? 'babel'}): set coverageProvider to 'v8', or run with --no-coverage`,
-      )
+    // Babel coverage instruments the code that runs, which fingerprints see through (see
+    // fingerprint.ts); V8 coverage shares the profiler with capture (see WorkerCaptureOptions).
+    const v8Coverage = collectCoverage === true && coverageProvider === 'v8'
     const names = projectNames(allConfigs, root)
     const configs = options.projects?.length
       ? allConfigs.filter((c) => options.projects!.includes(c.displayName?.name ?? ''))
@@ -292,7 +290,7 @@ export async function runJest(options: JestRunOptions): Promise<RunResult> {
       environmentResolver: target.runnerResolve,
       environmentPath,
       environments,
-      ...(collectCoverage ? { projectCoverage: true } : {}),
+      ...(v8Coverage ? { projectCoverage: true } : {}),
       sequencer: globalConfig.testSequencer,
     }
     process.env[JEST_CAPTURE_ENV] = JSON.stringify(captureConfig)

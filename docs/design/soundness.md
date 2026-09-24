@@ -142,9 +142,13 @@ its own last take. Its report is the one the project gets without Veyrum.
   reporting functions compiled before the switch. Capture starts in the mode the project's
   coverage uses, at the start of the worker. If the mode still changes while a file is being
   captured, its record is not evidence.
-- **Other providers are refused.** Istanbul instrumentation changes the code that runs, which the
-  plan-time transform does not reproduce, so a run that would collect Istanbul coverage stops with
-  an explanation instead of running.
+- **Istanbul coverage is seen through.** Istanbul (Jest's default Babel coverage, Vitest's
+  istanbul provider) instruments the code that runs with a coverage function and counters, which
+  plan-time transforms do not add. Fingerprints leave both out and apply the equivalences Istanbul
+  relies on (see `packages/core/src/fingerprint.ts`), so instrumented code fingerprints like the
+  same code without it; over about a thousand real modules, all but a few (optional chains whose
+  parentheses Babel's printer drops, which only invalidate more) match unit for unit. A custom
+  coverage provider is refused with an explanation.
 
 ## Vitest
 

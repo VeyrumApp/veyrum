@@ -44,8 +44,7 @@ veyrum merge <stores>    Add other stores' evidence (parallel CI jobs) to this o
 `--shard <index>/<count>` splits a run across parallel jobs (see `docs/github-actions.md`).
 
 Coverage is collected as the project configures it (`--coverage` and `--no-coverage` override
-that), with Vitest's v8 provider or Jest's `coverageProvider: 'v8'`. Veyrum shares V8's
-coverage with the project, whose report is the one it gets without Veyrum. A run that reuses
+that), with V8 or Istanbul (Jest's default) and the report the project gets without Veyrum. A run that reuses
 evidence reports coverage of the files that ran; a full run reports everything.
 
 Recording is what costs time, so a full run records only where it is needed: a file whose

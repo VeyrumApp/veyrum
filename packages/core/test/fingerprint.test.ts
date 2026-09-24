@@ -227,3 +227,48 @@ describe('locating V8 ranges', () => {
     expect(m.locate(110, 115)).toBe(TOP_UNIT)
   })
 })
+
+describe('istanbul instrumentation', () => {
+  // As istanbul-lib-instrument emits it (compact), for the plain module below.
+  const plain =
+    'function add(a, b) {\n  return a + b\n}\nconst mul = (a, b) => a > 0 ? a * b : 0\nmodule.exports = { add, mul }\n'
+  const instrumented =
+    'function cov_237fz4tabs(){var path="/x/src/math.js";var hash="c774d7ea";var global=new Function("return this")();var gcv="__coverage__";var coverageData={path:"/x/src/math.js",hash:"c774d7ea"};var coverage=global[gcv]||(global[gcv]={});if(!coverage[path]||coverage[path].hash!==hash){coverage[path]=coverageData;}var actualCoverage=coverage[path];{cov_237fz4tabs=function(){return actualCoverage;};}return actualCoverage;}cov_237fz4tabs();function add(a,b){cov_237fz4tabs().f[0]++;cov_237fz4tabs().s[0]++;return a+b;}cov_237fz4tabs().s[1]++;const mul=(a,b)=>{cov_237fz4tabs().f[1]++;cov_237fz4tabs().s[2]++;return a>0?(cov_237fz4tabs().b[0][0]++,a*b):(cov_237fz4tabs().b[0][1]++,0);};cov_237fz4tabs().s[3]++;module.exports={add,mul};'
+
+  test('instrumented code has the units and fingerprints of the code it instruments', () => {
+    expect(units(instrumented)).toEqual(units(plain))
+  })
+
+  test("only a function shaped like istanbul's coverage function is left out", () => {
+    const lookalike = 'function cov_abc() { return 1 }\ncov_abc().s[0]++\n'
+    expect(Object.keys(units(lookalike))).toContain('@top/fn:cov_abc#0')
+    expect(units(lookalike)[TOP_UNIT]).not.toBe(units('function cov_abc() { return 1 }\n')[TOP_UNIT])
+  })
+})
+
+describe('equivalent forms', () => {
+  const same = (a: string, b: string) => expect(units(a)).toEqual(units(b))
+  const differ = (a: string, b: string) => expect(units(a)).not.toEqual(units(b))
+
+  test('an arrow returning a value is its expression form', () => {
+    same('const f = (a) => { return a + 1 }', 'const f = (a) => a + 1')
+  })
+
+  test('a single-statement block in a branch or loop is the statement; an empty else is none', () => {
+    same('if (a) { b() } else { }', 'if (a) b()')
+    same('for (const x of y) { z(x) }', 'for (const x of y) z(x)')
+    same('if (a) b(); else { if (c) d() }', 'if (a) b(); else if (c) d()')
+    // A lexical declaration cannot stand alone as a branch.
+    differ('if (a) { let x = 1 }', 'if (a) { var x = 1 }')
+  })
+
+  test('parentheses and associative chains are grouping only; other operators are not', () => {
+    same('x = (a + b)', 'x = a + b')
+    same('x = a && (b && c)', 'x = (a && b) && c')
+    same('x = a ?? (b ?? c)', 'x = (a ?? b) ?? c')
+    differ('x = a || (b && c)', 'x = (a || b) && c')
+    differ('x = a - (b - c)', 'x = (a - b) - c')
+    // (a?.b).c throws when a is nullish; a?.b.c does not.
+    differ('x = (a?.b).c', 'x = a?.b.c')
+  })
+})

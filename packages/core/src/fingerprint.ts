@@ -26,10 +26,18 @@ import { type Digest, digest } from './hash.ts'
  * - every unit records what each name it mentions resolves to at module level (a function, a
  *   variable, an import, or nothing, meaning a global). Adding, removing or retyping a module-level
  *   binding therefore changes exactly the units that mention its name.
+ *
+ * Code instrumented for Istanbul coverage (Jest's default provider, Vitest's istanbul provider)
+ * fingerprints like the same code uninstrumented: the coverage function and its counters are left
+ * out, and three equivalences Istanbul relies on are applied to all code alike. An arrow function
+ * whose body only returns a value is its expression form, a block holding one statement in a
+ * branch or loop body is that statement, and an empty `else` is none. Parentheses are dropped: the
+ * tree's shape already holds the grouping. Chains of `&&`, `||` or `??` are associative and read as
+ * one left-to-right chain.
  */
 
 /** Bump when unit naming or canonicalization changes: fingerprints of different versions never match. */
-export const FINGERPRINT_VERSION = '2'
+export const FINGERPRINT_VERSION = '3'
 
 export const TOP_UNIT = '@top'
 export const OPAQUE_UNIT = '@opaque'
@@ -60,6 +68,47 @@ type AstNode = { type: string; start: number; end: number; [key: string]: unknow
 const SKIP_KEYS = new Set(['type', 'start', 'end', 'range', 'loc', 'parent'])
 const SSR_IMPORT = '__vite_ssr_import__'
 const SSR_DYNAMIC_IMPORT = '__vite_ssr_dynamic_import__'
+
+/** Keys of statements whose body is a branch or loop body (see `branch` in fingerprintModule). */
+const BRANCH_KEYS: Readonly<Record<string, readonly string[]>> = {
+  IfStatement: ['consequent', 'alternate'],
+  ForStatement: ['body'],
+  ForInStatement: ['body'],
+  ForOfStatement: ['body'],
+  WhileStatement: ['body'],
+  DoWhileStatement: ['body'],
+  LabeledStatement: ['body'],
+}
+
+/** Declarations that cannot stand alone as a branch or loop body. */
+function lexicalDeclaration(node: AstNode): boolean {
+  return (
+    (node.type === 'VariableDeclaration' && node.kind !== 'var') ||
+    node.type === 'ClassDeclaration' ||
+    node.type === 'FunctionDeclaration'
+  )
+}
+
+/**
+ * Istanbul's coverage function (`function cov_<hash>() { ... var coverageData = ... }` at module
+ * level), which holds the file's coverage map and a hash of its source.
+ */
+function istanbulCoverageFunction(program: AstNode): AstNode | null {
+  for (const stmt of program.body as AstNode[]) {
+    if (stmt.type !== 'FunctionDeclaration') continue
+    const id = stmt.id as AstNode | null
+    if (id?.type !== 'Identifier' || !/^cov_[0-9a-z]+$/.test(id.name as string)) continue
+    const body = (stmt.body as AstNode).body as AstNode[]
+    const declares = (name: string): boolean =>
+      body.some(
+        (st) =>
+          st.type === 'VariableDeclaration' &&
+          (st.declarations as AstNode[]).some((d) => (d.id as AstNode).name === name),
+      )
+    if (declares('coverageData') && declares('hash')) return stmt
+  }
+  return null
+}
 
 function isNode(v: unknown): v is AstNode {
   return typeof v === 'object' && v !== null && typeof (v as AstNode).type === 'string'
@@ -97,6 +146,98 @@ export function fingerprintModule(code: string, options: FingerprintOptions = {}
   const normIdent = (name: string): string => {
     const spec = aliases.get(name)
     return spec === undefined ? name : `import(${normSpec(spec)})`
+  }
+
+  // Istanbul's instrumentation: its coverage function, calls to it, and counters it returns.
+  const coverageFn = istanbulCoverageFunction(program)
+  const coverageName = coverageFn ? ((coverageFn.id as AstNode).name as string) : null
+  const isCoverageCall = (n: unknown): boolean =>
+    coverageName !== null &&
+    isNode(n) &&
+    n.type === 'CallExpression' &&
+    isNode(n.callee) &&
+    n.callee.type === 'Identifier' &&
+    n.callee.name === coverageName
+  const isCounter = (n: unknown): boolean => {
+    if (coverageName === null || !isNode(n) || n.type !== 'UpdateExpression') return false
+    let target = n.argument as AstNode
+    while (target.type === 'MemberExpression') target = target.object as AstNode
+    return isCoverageCall(target)
+  }
+  const instrumentation = (n: unknown): boolean =>
+    isNode(n) &&
+    (n === coverageFn ||
+      (n.type === 'ExpressionStatement' && (isCounter(n.expression) || isCoverageCall(n.expression))))
+  const statements = (block: AstNode): AstNode[] =>
+    (block.body as AstNode[]).filter((st) => !instrumentation(st))
+  /** Parentheses and Istanbul's counter sequences around an expression, removed. */
+  const unwrap = (node: AstNode): AstNode => {
+    if (node.type === 'ParenthesizedExpression') return unwrap(node.expression as AstNode)
+    if (node.type === 'SequenceExpression') {
+      const expressions = (node.expressions as AstNode[]).filter((e) => !isCounter(e))
+      if (expressions.length === 1) return unwrap(expressions[0]!)
+    }
+    return node
+  }
+  const canonicalOf = new WeakMap<AstNode, AstNode>()
+  /** A node as it is fingerprinted: see the equivalences in the module comment. */
+  const canonical = (node: AstNode): AstNode => {
+    let out = canonicalOf.get(node)
+    if (out) return out
+    out = canonicalize(node)
+    canonicalOf.set(node, out)
+    // The canonical form of a canonical form is itself.
+    canonicalOf.set(out, out)
+    return out
+  }
+  const canonicalize = (node: AstNode): AstNode => {
+    const inner = unwrap(node)
+    if (inner !== node) return canonical(inner)
+    if (node.type === 'SequenceExpression') {
+      const expressions = (node.expressions as AstNode[]).filter((e) => !isCounter(e))
+      return expressions.length === (node.expressions as AstNode[]).length ? node : { ...node, expressions }
+    }
+    if (node.type === 'LogicalExpression') {
+      // `a && (b && c)` is `(a && b) && c`, and likewise for `||` and `??`: one left-to-right chain.
+      const operator = node.operator
+      const operands: AstNode[] = []
+      const flatten = (n: AstNode): void => {
+        const u = unwrap(n)
+        if (u.type === 'LogicalExpression' && u.operator === operator) {
+          flatten(u.left as AstNode)
+          flatten(u.right as AstNode)
+        } else operands.push(u)
+      }
+      flatten(node)
+      return operands.slice(1).reduce<AstNode>((left, right) => {
+        const link: AstNode = {
+          type: 'LogicalExpression',
+          operator,
+          left,
+          right,
+          start: node.start,
+          end: node.end,
+        }
+        canonicalOf.set(link, link)
+        return link
+      }, operands[0]!)
+    }
+    if (node.type === 'ArrowFunctionExpression' && !node.expression) {
+      const body = statements(node.body as AstNode)
+      const only = body[0]
+      if (body.length === 1 && only?.type === 'ReturnStatement' && only.argument)
+        return { ...node, expression: true, body: only.argument }
+    }
+    return node
+  }
+  /** A branch or loop body: a block of one statement is that statement, an empty `else` none. */
+  const branch = (node: AstNode, key: string): AstNode | null => {
+    if (node.type !== 'BlockStatement') return node
+    const body = statements(node)
+    if (key === 'alternate' && body.length === 0) return null
+    const only = body[0]
+    if (body.length === 1 && only && !lexicalDeclaration(only)) return canonical(only)
+    return node
   }
 
   const bindings = moduleBindings(program)
@@ -165,6 +306,14 @@ export function fingerprintModule(code: string, options: FingerprintOptions = {}
     key: string | undefined,
     unitPath: string,
   ): void => {
+    if (node === coverageFn) return
+    // Parentheses and Istanbul's counter sequences are transparent: a function inside one is named
+    // for the context around it, as it is without them.
+    const inner = unwrap(node)
+    if (inner !== node) {
+      walk(inner, parent, key, unitPath)
+      return
+    }
     let here = unitPath
     if (isFunction(node)) {
       const name = nameOf(node, parent, key)
@@ -204,6 +353,7 @@ export function fingerprintModule(code: string, options: FingerprintOptions = {}
         for (const item of v) {
           // Omitted declarations leave no trace, not even a slot in the list.
           if (self === null && isNode(item) && omitted(item)) continue
+          if (instrumentation(item)) continue
           write(item)
           out.push(',')
         }
@@ -224,25 +374,34 @@ export function fingerprintModule(code: string, options: FingerprintOptions = {}
         out.push(signature(v, normIdent))
         return
       }
-      if (v.type === 'Identifier') {
-        const name = v.name as string
+      // Canonical form; a nested function it turns out to be (a counter's sequence around it) is
+      // written as a signature, the unit's own function in full.
+      const n = canonical(v)
+      if (v !== self && isFunction(n)) {
+        out.push(signature(n, normIdent))
+        return
+      }
+      if (n.type === 'Identifier') {
+        const name = n.name as string
         if (!aliases.has(name)) mentioned.add(name)
         out.push('I(', normIdent(name), ')')
         return
       }
-      if (v.type === 'CallExpression' && isSsrImport(v)) {
-        out.push('{SsrImport ', ssrImportText(v, normSpec), '}')
+      if (n.type === 'CallExpression' && isSsrImport(n)) {
+        out.push('{SsrImport ', ssrImportText(n, normSpec), '}')
         return
       }
-      if (v.type === 'Literal') {
-        out.push('L(', literalText(v, normString), ')')
+      if (n.type === 'Literal') {
+        out.push('L(', literalText(n, normString), ')')
         return
       }
-      out.push('{', v.type)
-      for (const k in v) {
+      out.push('{', n.type)
+      const branches = BRANCH_KEYS[n.type]
+      for (const k in n) {
         if (SKIP_KEYS.has(k)) continue
         out.push(' ', k, ':')
-        write(v[k])
+        const child = n[k]
+        write(branches?.includes(k) && isNode(child) ? branch(child, k) : child)
       }
       out.push('}')
     }

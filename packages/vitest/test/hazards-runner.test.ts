@@ -134,7 +134,7 @@ describe('coverage', () => {
   const MATH_SOURCE =
     'export function add(a: number, b: number) {\n  return a + b\n}\n\nexport function mul(a: number, b: number) {\n  return a * b\n}\n'
   const coverageProject = (name: string, provider: string): Sandbox =>
-    new Sandbox(name, { modules: ['@vitest/coverage-v8'] })
+    new Sandbox(name, { modules: ['@vitest/coverage-v8', '@vitest/coverage-istanbul'] })
       .write(
         'vitest.config.ts',
         `import { defineConfig } from 'vitest/config'\nexport default defineConfig({ test: { coverage: { provider: '${provider}', reporter: ['json'], include: ['src/**'] } } })\n`,
@@ -159,25 +159,27 @@ describe('coverage', () => {
     return hits
   }
 
-  test("the project's v8 coverage and capture share the profiler: both see every execution", () => {
-    sandbox = coverageProject('coverage-v8', 'v8').write(
-      'test/mul.test.ts',
-      "import { expect, test } from 'vitest'\nimport { mul } from '../src/math'\ntest('mul', () => expect(mul(2, 3)).toBe(6))\n",
-    )
-    expect(sandbox.cli(['run', '--full', '--coverage']).code).toBe(0)
-    expect(lineHits(sandbox)).toMatchObject({ 2: 1, 6: 1 })
-    const reused = { 'test/add.test.ts': 'skip', 'test/mul.test.ts': 'skip', 'test/plain.test.ts': 'skip' }
-    expect(sandbox.actions()).toEqual(reused)
-    // mul's file is captured again, add's runs without capture: coverage still sees both.
-    sandbox.edit('src/math.ts', 'return a * b', 'return a * b * 1')
-    expect(sandbox.actions()).toEqual({ ...reused, 'test/mul.test.ts': 'run' })
-    const second = sandbox.cli(['run', '--full', '--coverage'])
-    expect(second.outcomes.filter((o) => o.captured).map((o) => o.check.path)).toEqual(['test/mul.test.ts'])
-    expect(lineHits(sandbox)).toMatchObject({ 2: 1, 6: 1 })
-    expect(sandbox.actions()).toEqual(reused)
-    sandbox.edit('src/math.ts', 'return a + b', 'return a + b + 0')
-    expect(sandbox.actions()).toEqual({ ...reused, 'test/add.test.ts': 'run' })
-  })
+  for (const provider of ['v8', 'istanbul']) {
+    test(`the project's ${provider} coverage and capture both see every execution; reuse stays per function`, () => {
+      sandbox = coverageProject(`coverage-${provider}`, provider).write(
+        'test/mul.test.ts',
+        "import { expect, test } from 'vitest'\nimport { mul } from '../src/math'\ntest('mul', () => expect(mul(2, 3)).toBe(6))\n",
+      )
+      expect(sandbox.cli(['run', '--full', '--coverage']).code).toBe(0)
+      expect(lineHits(sandbox)).toMatchObject({ 2: 1, 6: 1 })
+      const reused = { 'test/add.test.ts': 'skip', 'test/mul.test.ts': 'skip', 'test/plain.test.ts': 'skip' }
+      expect(sandbox.actions()).toEqual(reused)
+      // mul's file is captured again, add's runs without capture: coverage still sees both.
+      sandbox.edit('src/math.ts', 'return a * b', 'return a * b * 1')
+      expect(sandbox.actions()).toEqual({ ...reused, 'test/mul.test.ts': 'run' })
+      const second = sandbox.cli(['run', '--full', '--coverage'])
+      expect(second.outcomes.filter((o) => o.captured).map((o) => o.check.path)).toEqual(['test/mul.test.ts'])
+      expect(lineHits(sandbox)).toMatchObject({ 2: 1, 6: 1 })
+      expect(sandbox.actions()).toEqual(reused)
+      sandbox.edit('src/math.ts', 'return a + b', 'return a + b + 0')
+      expect(sandbox.actions()).toEqual({ ...reused, 'test/add.test.ts': 'run' })
+    })
+  }
 
   test('coverage follows the project configuration unless overridden', () => {
     sandbox = coverageProject('coverage-config', 'v8')
@@ -189,11 +191,11 @@ describe('coverage', () => {
     expect(fs.existsSync(path.join(sandbox.dir, 'coverage'))).toBe(false)
   })
 
-  test('coverage from another provider is refused with a reason, not run without Veyrum', () => {
-    sandbox = coverageProject('coverage-istanbul', 'istanbul')
+  test('coverage from a custom provider is refused with a reason, not run without Veyrum', () => {
+    sandbox = coverageProject('coverage-custom', 'custom')
     const result = sandbox.raw(['run', '--full', '--coverage'])
     expect(result.code).toBe(2)
-    expect(result.output).toContain("only with Vitest's v8 provider (this project uses istanbul)")
+    expect(result.output).toContain("only with Vitest's v8 or istanbul provider (this project uses custom)")
     expect(result.output).not.toContain('running the tests with vitest directly')
   })
 })
