@@ -167,6 +167,56 @@ describe('code', () => {
   })
 })
 
+describe('coverage', () => {
+  const coverageHits = (s: Sandbox, file: string): Record<number, number> => {
+    const report = JSON.parse(s.read('coverage/coverage-final.json')) as Record<
+      string,
+      { statementMap: Record<string, { start: { line: number } }>; s: Record<string, number> }
+    >
+    const entry = Object.entries(report).find(([f]) => f.endsWith(file))?.[1]
+    if (!entry) throw new Error(`${file} is not in the coverage report`)
+    const hits: Record<number, number> = {}
+    for (const [id, loc] of Object.entries(entry.statementMap)) hits[loc.start.line] = entry.s[id] ?? 0
+    return hits
+  }
+
+  for (const workers of [1, 2]) {
+    test(`v8 coverage and capture share the profiler (${workers === 1 ? 'in band' : 'workers'})`, () => {
+      const s = jest(`coverage-v8-${workers}`, workers)
+        .write(
+          'jest.config.js',
+          "module.exports = { testEnvironment: 'node', coverageProvider: 'v8', coverageReporters: ['json'], collectCoverageFrom: ['src/**'] }\n",
+        )
+        .write(
+          'src/math.js',
+          'function add(a, b) {\n  return a + b\n}\nfunction mul(a, b) {\n  return a * b\n}\nmodule.exports = { add, mul }\n',
+        )
+        .write('test/add.test.js', ADD_TEST)
+        .write('test/mul.test.js', MUL_TEST)
+      expect(s.cli(['run', '--full', '--coverage']).code).toBe(0)
+      expect(coverageHits(s, 'src/math.js')).toMatchObject({ 2: 1, 5: 1 })
+      const reused = { 'test/add.test.js': 'skip', 'test/mul.test.js': 'skip' }
+      expect(s.actions()).toEqual(reused)
+      // mul's file is captured again, add's runs without capture: coverage still sees both.
+      s.edit('src/math.js', 'return a * b', 'return a * b * 1')
+      expect(s.actions()).toEqual({ ...reused, 'test/mul.test.js': 'run' })
+      const second = s.cli(['run', '--full', '--coverage'])
+      expect(second.outcomes.filter((o) => o.captured).map((o) => o.check.path)).toEqual(['test/mul.test.js'])
+      expect(coverageHits(s, 'src/math.js')).toMatchObject({ 2: 1, 5: 1 })
+      expect(s.actions()).toEqual(reused)
+      s.edit('src/math.js', 'return a + b', 'return a + b + 0')
+      expect(s.actions()).toEqual({ ...reused, 'test/add.test.js': 'run' })
+    })
+  }
+
+  test("Jest's default (Babel) coverage is refused with a reason", () => {
+    const s = jest('coverage-babel').write('test/plain.test.js', PLAIN_TEST)
+    const result = s.raw(['run', '--full', '--coverage'])
+    expect(result.code).toBe(2)
+    expect(result.output).toContain("only with Jest's v8 provider (this project uses babel)")
+  })
+})
+
 describe('inputs', () => {
   test('a JSON module required by a test is an input', () => {
     const s = jest('json-module')

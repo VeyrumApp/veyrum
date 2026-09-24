@@ -110,6 +110,10 @@ that shard could otherwise run in no job.
   has used in 50 runs. The escape record is kept in full.
 - **CI variables.** Run identifiers such as `GITHUB_SHA` and `GITHUB_RUN_ID` are never recorded,
   so they do not invalidate evidence. Variables tests actually read, such as `CI`, are recorded.
+- **Coverage.** Full runs report coverage of the whole suite. A run that reuses evidence reports
+  coverage of the files that ran: upload it as partial coverage (Codecov carryforward flags,
+  for example), or take coverage from the main branch's full runs. Coverage thresholds checked
+  by the runner apply to what ran.
 - **Cache size.** GitHub evicts caches beyond 10 GB per repository, least recently used first;
   losing the store only means the next run records evidence again.
 - **Forks.** Pull requests from forks can restore the base branch's cache but cannot save one.

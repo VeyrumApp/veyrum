@@ -41,6 +41,14 @@ export function inShard(repoPath: string, shard: Shard | undefined): boolean {
   return bucket === shard.index - 1
 }
 
+/**
+ * The project's configuration cannot run under Veyrum as asked. Unlike Veyrum's own failures, which
+ * fall back to running the tests with the project's runner, this is reported to the user.
+ */
+export class ConfigurationError extends Error {
+  override readonly name = 'ConfigurationError'
+}
+
 /** Options every runner adapter accepts. */
 export interface RunOptions {
   readonly root: string
@@ -54,6 +62,11 @@ export interface RunOptions {
   readonly only?: readonly string[]
   /** Plan and run only this shard's test files (see inShard). */
   readonly shard?: Shard
+  /**
+   * Collect the project's coverage (true) or not (false); by default as its configuration says.
+   * Only V8 coverage can run alongside capture (see ConfigurationError).
+   */
+  readonly coverage?: boolean
   /** Keep worker payloads and module code after the run (for debugging). */
   readonly keepScratch?: boolean
   /**

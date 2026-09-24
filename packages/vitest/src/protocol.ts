@@ -9,6 +9,8 @@ export interface CaptureConfig {
   /** Absolute paths of Veyrum's capture modules, loaded natively by the setup file. */
   readonly captureIndex: string
   readonly captureWorker: string
+  /** The project collects its own V8 coverage in this run (see WorkerCaptureOptions). */
+  readonly projectCoverage?: boolean
 }
 
 export const CAPTURE_ENV = 'VEYRUM_CAPTURE'

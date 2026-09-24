@@ -14,6 +14,7 @@ if (config) {
     outDir: config.outDir,
     ignoredPrefixes: config.ignored,
     volatileEnv: VOLATILE_ENV,
+    ...(config.projectCoverage ? { projectCoverage: true } : {}),
   })
   // Wait until coverage is on before the worker runs anything: Node finishes --import modules
   // (top-level await included) before the entry point, so a custom environment or snapshot

@@ -128,6 +128,24 @@ and the test file's closure gets them like its own reads. On top of that:
 Temporary files are ignored for children as for tests. Unix socket connections count as local
 network use, as they do for the test itself.
 
+## The project's own coverage
+
+V8 keeps one precise-coverage state per isolate: when two inspector sessions each start precise
+coverage, every take resets the counts the other would have reported, and a stop turns coverage
+off for both. When a project collects V8 coverage (Vitest's v8 provider, Jest's
+`coverageProvider: 'v8'`) in the same workers as capture, both therefore go through one session
+(`packages/capture/src/coverage.ts`). Coverage calls from the project's session are served by it,
+every take is handed to every consumer, and each consumer's take returns everything reported since
+its own last take. Its report is the one the project gets without Veyrum.
+
+- **The mode is set before code runs.** Switching from binary to count coverage makes V8 stop
+  reporting functions compiled before the switch. Capture starts in the mode the project's
+  coverage uses, at the start of the worker. If the mode still changes while a file is being
+  captured, its record is not evidence.
+- **Other providers are refused.** Istanbul instrumentation changes the code that runs, which the
+  plan-time transform does not reproduce, so a run that would collect Istanbul coverage stops with
+  an explanation instead of running.
+
 ## Vitest
 
 Vitest runs test files in worker processes or threads, each file in a fresh module registry unless

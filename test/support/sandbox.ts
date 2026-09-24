@@ -48,8 +48,11 @@ export class Sandbox {
     this.dir = path.join(base, `${name}-${crypto.randomBytes(4).toString('hex')}`)
     fs.mkdirSync(path.join(this.dir, 'node_modules'), { recursive: true })
     fs.symlinkSync(runnerModules[this.runner], path.join(this.dir, 'node_modules', this.runner))
-    for (const name of options.modules ?? [])
-      fs.symlinkSync(path.join(repoRoot, 'node_modules', name), path.join(this.dir, 'node_modules', name))
+    for (const name of options.modules ?? []) {
+      const link = path.join(this.dir, 'node_modules', name)
+      fs.mkdirSync(path.dirname(link), { recursive: true })
+      fs.symlinkSync(path.join(repoRoot, 'node_modules', name), link)
+    }
     if (this.runner === 'vitest') {
       this.write('package.json', JSON.stringify({ name, private: true, type: 'module' }, null, 2))
       this.write(

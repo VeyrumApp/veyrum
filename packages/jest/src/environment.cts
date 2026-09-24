@@ -23,6 +23,7 @@ interface CaptureConfig {
   captureWorker: string
   resolver: string
   environments: Record<string, string>
+  projectCoverage?: boolean
 }
 
 interface EnvironmentConfig {
@@ -120,6 +121,7 @@ function VeyrumEnvironment(envConfig: EnvironmentConfig, context: EnvironmentCon
     ignoredPrefixes: config.ignored,
     volatileEnv: index.VOLATILE_ENV,
     layout: 'jest',
+    ...(config.projectCoverage ? { projectCoverage: true } : {}),
   }
   // Hooks first: the environment module's loads are recorded, and the environment copies
   // `process` (and its environment) into the test context.

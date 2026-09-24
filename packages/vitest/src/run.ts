@@ -10,6 +10,7 @@ import { UNCAPTURED_FILE } from '@veyrum/capture/worker'
 import {
   type CheckOutcomeSummary,
   type CheckRef,
+  ConfigurationError,
   checkKey,
   type Decision,
   forcedDecisions,
@@ -226,10 +227,25 @@ export async function runVitest(options: VitestRunOptions): Promise<VitestRunRes
       watch: false,
       run: true,
       passWithNoTests: true,
-      coverage: { enabled: false },
+      // Planning runs nothing, and starting a coverage provider can clear its report directory.
+      ...(options.mode === 'plan' || options.coverage === false
+        ? { coverage: { enabled: false } }
+        : options.coverage
+          ? { coverage: { enabled: true } }
+          : {}),
       reporters: reporters as never,
       ...options.vitestOptions,
     })
+
+    const coverage = (vitest.config as unknown as { coverage?: { enabled?: boolean; provider?: string } })
+      .coverage
+    if (coverage?.enabled && (coverage.provider ?? 'v8') !== 'v8')
+      throw new ConfigurationError(
+        `Veyrum can collect coverage only with Vitest's v8 provider (this project uses ${coverage.provider}): set coverage.provider to 'v8', or run with --no-coverage`,
+      )
+    // Workers start later and read the configuration then.
+    if (coverage?.enabled)
+      process.env[CAPTURE_ENV] = JSON.stringify({ ...captureConfig, projectCoverage: true })
 
     const sharedWorkerProjects = new Set<string>()
     for (const project of vitest.projects) {
@@ -242,7 +258,9 @@ export async function runVitest(options: VitestRunOptions): Promise<VitestRunRes
         diff?: unknown
         runner?: string
       }
-      if (startsBeforeSetupFiles(config) && !config.execArgv.includes(preloadUrl))
+      // The project's own V8 coverage starts before setup files, and must go through Veyrum's
+      // coverage hub (see @veyrum/capture's coverage.ts), which the preload installs first.
+      if ((startsBeforeSetupFiles(config) || coverage?.enabled) && !config.execArgv.includes(preloadUrl))
         config.execArgv.push('--import', preloadUrl)
       if (!config.setupFiles.includes(setupPath)) config.setupFiles.unshift(setupPath)
       if (config.isolate === false) {
@@ -267,7 +285,7 @@ export async function runVitest(options: VitestRunOptions): Promise<VitestRunRes
     for (const f of files)
       if (/(^|\/)(tsconfig|jsconfig)[^/]*\.json$/.test(f)) configFiles.add(path.join(root, f))
 
-    // Initializes reporters (and the coverage provider, which Veyrum disables) without running.
+    // Initializes reporters and the coverage provider without running.
     // Vitest 4.1 renamed init() to standalone().
     const legacy = vitest as unknown as { standalone?: () => Promise<void>; init: () => Promise<void> }
     await (legacy.standalone ? legacy.standalone() : legacy.init())

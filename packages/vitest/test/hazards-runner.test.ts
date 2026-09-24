@@ -130,6 +130,74 @@ describe('audit and canaries', () => {
   })
 })
 
+describe('coverage', () => {
+  const MATH_SOURCE =
+    'export function add(a: number, b: number) {\n  return a + b\n}\n\nexport function mul(a: number, b: number) {\n  return a * b\n}\n'
+  const coverageProject = (name: string, provider: string): Sandbox =>
+    new Sandbox(name, { modules: ['@vitest/coverage-v8'] })
+      .write(
+        'vitest.config.ts',
+        `import { defineConfig } from 'vitest/config'\nexport default defineConfig({ test: { coverage: { provider: '${provider}', reporter: ['json'], include: ['src/**'] } } })\n`,
+      )
+      .write('src/math.ts', MATH_SOURCE)
+      .write(
+        'test/add.test.ts',
+        "import { expect, test } from 'vitest'\nimport { add } from '../src/math'\ntest('add', () => expect(add(1, 2)).toBe(3))\n",
+      )
+      .write('test/plain.test.ts', PLAIN_TEST)
+
+  /** Statement hit counts per line of src/math.ts in the project's own coverage report. */
+  const lineHits = (s: Sandbox): Record<number, number> => {
+    const report = JSON.parse(s.read('coverage/coverage-final.json')) as Record<
+      string,
+      { statementMap: Record<string, { start: { line: number } }>; s: Record<string, number> }
+    >
+    const file = Object.entries(report).find(([f]) => f.endsWith('src/math.ts'))?.[1]
+    if (!file) throw new Error(`src/math.ts is not in the coverage report: ${Object.keys(report).join(', ')}`)
+    const hits: Record<number, number> = {}
+    for (const [id, loc] of Object.entries(file.statementMap)) hits[loc.start.line] = file.s[id] ?? 0
+    return hits
+  }
+
+  test("the project's v8 coverage and capture share the profiler: both see every execution", () => {
+    sandbox = coverageProject('coverage-v8', 'v8').write(
+      'test/mul.test.ts',
+      "import { expect, test } from 'vitest'\nimport { mul } from '../src/math'\ntest('mul', () => expect(mul(2, 3)).toBe(6))\n",
+    )
+    expect(sandbox.cli(['run', '--full', '--coverage']).code).toBe(0)
+    expect(lineHits(sandbox)).toMatchObject({ 2: 1, 6: 1 })
+    const reused = { 'test/add.test.ts': 'skip', 'test/mul.test.ts': 'skip', 'test/plain.test.ts': 'skip' }
+    expect(sandbox.actions()).toEqual(reused)
+    // mul's file is captured again, add's runs without capture: coverage still sees both.
+    sandbox.edit('src/math.ts', 'return a * b', 'return a * b * 1')
+    expect(sandbox.actions()).toEqual({ ...reused, 'test/mul.test.ts': 'run' })
+    const second = sandbox.cli(['run', '--full', '--coverage'])
+    expect(second.outcomes.filter((o) => o.captured).map((o) => o.check.path)).toEqual(['test/mul.test.ts'])
+    expect(lineHits(sandbox)).toMatchObject({ 2: 1, 6: 1 })
+    expect(sandbox.actions()).toEqual(reused)
+    sandbox.edit('src/math.ts', 'return a + b', 'return a + b + 0')
+    expect(sandbox.actions()).toEqual({ ...reused, 'test/add.test.ts': 'run' })
+  })
+
+  test('coverage follows the project configuration unless overridden', () => {
+    sandbox = coverageProject('coverage-config', 'v8')
+    sandbox.edit('vitest.config.ts', "provider: 'v8'", "enabled: true, provider: 'v8'")
+    expect(sandbox.cli(['run', '--full']).code).toBe(0)
+    expect(lineHits(sandbox)[2]).toBeGreaterThan(0)
+    sandbox.remove('coverage')
+    expect(sandbox.cli(['run', '--full', '--no-coverage']).code).toBe(0)
+    expect(fs.existsSync(path.join(sandbox.dir, 'coverage'))).toBe(false)
+  })
+
+  test('coverage from another provider is refused with a reason, not run without Veyrum', () => {
+    sandbox = coverageProject('coverage-istanbul', 'istanbul')
+    const result = sandbox.raw(['run', '--full', '--coverage'])
+    expect(result.code).toBe(2)
+    expect(result.output).toContain("only with Vitest's v8 provider (this project uses istanbul)")
+    expect(result.output).not.toContain('running the tests with vitest directly')
+  })
+})
+
 describe('parallel jobs', () => {
   test('shards split the files, and their merged stores serve every shard', () => {
     sandbox = new Sandbox('shards').write(

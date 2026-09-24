@@ -13,6 +13,8 @@ export interface PlainRunOptions {
   readonly maxWorkers?: number
   /** Repository-relative test files to run; everything when empty. */
   readonly only?: readonly string[]
+  /** Coverage on or off; the project's configuration when absent. */
+  readonly coverage?: boolean
   readonly quiet: boolean
 }
 
@@ -34,6 +36,7 @@ export function plainRunnerCommand(options: PlainRunOptions): { command: string;
         ...options.projects.flatMap((p) => ['--selectProjects', p]),
         ...(options.maxWorkers ? [`--maxWorkers=${options.maxWorkers}`] : []),
         ...(options.quiet ? ['--silent'] : []),
+        ...(options.coverage !== undefined ? [`--coverage=${options.coverage}`] : []),
         ...(files.length > 0 ? ['--runTestsByPath', ...files] : []),
       ],
     }
@@ -49,6 +52,7 @@ export function plainRunnerCommand(options: PlainRunOptions): { command: string;
       ...options.projects.flatMap((p) => ['--project', p]),
       ...(options.maxWorkers ? [`--maxWorkers=${options.maxWorkers}`] : []),
       ...(options.quiet ? ['--reporter=dot'] : []),
+      ...(options.coverage !== undefined ? [`--coverage.enabled=${options.coverage}`] : []),
       ...files,
     ],
   }

@@ -10,6 +10,7 @@ import { endWorkerCapture, UNCAPTURED_FILE } from '@veyrum/capture/worker'
 import {
   type CheckOutcomeSummary,
   type CheckRef,
+  ConfigurationError,
   checkKey,
   type Decision,
   digest,
@@ -254,11 +255,23 @@ export async function runJest(options: JestRunOptions): Promise<RunResult> {
       ...(options.config ? { config: options.config } : {}),
       ...(options.maxWorkers ? { maxWorkers: options.maxWorkers } : {}),
       ...(options.projects?.length ? { selectProjects: [...options.projects] } : {}),
-      collectCoverage: false,
+      // Planning runs nothing, and coverage reporting would write an empty report.
+      ...(options.mode === 'plan' ? { collectCoverage: false } : {}),
+      ...(options.mode !== 'plan' && options.coverage !== undefined
+        ? { collectCoverage: options.coverage }
+        : {}),
       passWithNoTests: true,
       silent: !options.printTests,
     }
     const { globalConfig, configs: allConfigs } = await api.readConfigs(baseArgv, [root])
+    const { collectCoverage, coverageProvider } = globalConfig as unknown as {
+      collectCoverage?: boolean
+      coverageProvider?: string
+    }
+    if (collectCoverage && coverageProvider !== 'v8')
+      throw new ConfigurationError(
+        `Veyrum can collect coverage only with Jest's v8 provider (this project uses ${coverageProvider ?? 'babel'}): set coverageProvider to 'v8', or run with --no-coverage`,
+      )
     const names = projectNames(allConfigs, root)
     const configs = options.projects?.length
       ? allConfigs.filter((c) => options.projects!.includes(c.displayName?.name ?? ''))
@@ -279,6 +292,7 @@ export async function runJest(options: JestRunOptions): Promise<RunResult> {
       environmentResolver: target.runnerResolve,
       environmentPath,
       environments,
+      ...(collectCoverage ? { projectCoverage: true } : {}),
       sequencer: globalConfig.testSequencer,
     }
     process.env[JEST_CAPTURE_ENV] = JSON.stringify(captureConfig)

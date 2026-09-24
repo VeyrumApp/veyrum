@@ -1,5 +1,5 @@
 import fs from 'node:fs'
-import { Session } from 'node:inspector/promises'
+import type { Session } from 'node:inspector/promises'
 import module from 'node:module'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -8,6 +8,7 @@ import { threadId } from 'node:worker_threads'
 import { digest } from '@veyrum/core/hash'
 import { isInside } from '@veyrum/core/paths'
 import { hashEnvValue } from '@veyrum/core/state'
+import { coverageHub } from './coverage.ts'
 import {
   type EnvScope,
   getSink,
@@ -42,6 +43,12 @@ export interface WorkerCaptureOptions {
    *   vm.compileFunction (no wrapper), so a file's modules are the scripts executed during it.
    */
   readonly layout?: 'vitest' | 'jest'
+  /**
+   * The project collects its own V8 coverage in this run. Capture then starts in the mode that
+   * coverage uses (block counts): V8 stops reporting functions compiled before a switch from binary
+   * to count coverage, so the mode must not change once code has run (see coverage.ts).
+   */
+  readonly projectCoverage?: boolean
 }
 
 /** The prefix Vitest wraps every transformed module in; offsets are shifted by its length. */
@@ -92,15 +99,8 @@ async function collectDeadCode(session: Session, isolate: IsolateState): Promise
   isolate.heapAfterCollection = process.memoryUsage().heapUsed
 }
 
-async function stopCoverage(session: Session): Promise<void> {
-  try {
-    await session.post('Profiler.stopPreciseCoverage')
-    await session.post('Profiler.disable')
-  } catch {
-    // Nothing to clean up if the session already failed.
-  }
-  session.disconnect()
-}
+/** Veyrum's own claim on the isolate's coverage (see coverage.ts). */
+const CAPTURE_CONSUMER = {}
 
 /**
  * Ends a coverage session kept across files (Jest layout), for a process that goes on to do other
@@ -109,9 +109,8 @@ async function stopCoverage(session: Session): Promise<void> {
 export async function endWorkerCapture(): Promise<void> {
   const isolate = (globalThis as unknown as Record<symbol, IsolateState | undefined>)[ISOLATE_KEY]
   if (!isolate?.session) return
-  const session = isolate.session
   isolate.session = null
-  await stopCoverage(session)
+  await coverageHub().release(CAPTURE_CONSUMER)
 }
 
 /** Stack frames of Jest's module loader (its file cache reads each module before compiling it). */
@@ -398,6 +397,9 @@ export function uncapturedFiles(outDir: string): ReadonlySet<string> {
  * call it first, so that state is created from the hooked objects.
  */
 export function prepareWorkerHooks(options: WorkerCaptureOptions): void {
+  // Before the project's own coverage can start (Jest starts it after the environment's setup,
+  // also for files that run without capture): its calls must go through the hub.
+  coverageHub()
   const g = globalThis as unknown as Record<symbol, IsolateState | undefined>
   if (g[ISOLATE_KEY]) return
   installHooks({
@@ -532,25 +534,22 @@ export async function beginWorkerCapture(options: WorkerCaptureOptions): Promise
   // not, but reports each compiled function only once per session, and Jest's files share compiled
   // functions through V8's compilation cache, so a later file's calls would go unreported. Giving
   // each file unique source restores binary coverage but defeats the cache, which costs more.
-  if (layout === 'jest' && isolate.session && heapGrown(isolate)) {
-    const old = isolate.session
-    isolate.session = null
-    await stopCoverage(old)
-  }
-  if (!isolate.session) {
-    // Under Vitest, a second file in the same isolate (isolation off) gets a fresh session, but
-    // modules cached by earlier files will not re-execute, so its payload is marked as reused.
-    const fresh = new Session()
-    fresh.connect()
-    await collectDeadCode(fresh, isolate)
-    await fresh.post('Profiler.enable')
-    await fresh.post('Profiler.startPreciseCoverage', {
-      callCount: layout === 'jest' && !JEST_BINARY_COVERAGE,
-      detailed: false,
-    })
-    isolate.session = fresh
-  }
-  if (CPU_PROFILE_DIR) await isolate.session.post('Profiler.start')
+  const hub = coverageHub()
+  if (layout === 'jest' && isolate.session && heapGrown(isolate))
+    await hub.restart((fresh) => collectDeadCode(fresh, isolate))
+  // Under Vitest, a second file in the same isolate (isolation off) starts coverage again, but
+  // modules cached by earlier files will not re-execute, so its payload is marked as reused.
+  const session = await hub.acquire(
+    CAPTURE_CONSUMER,
+    options.projectCoverage
+      ? { callCount: true, detailed: true }
+      : { callCount: layout === 'jest' && !JEST_BINARY_COVERAGE, detailed: false },
+    (fresh) => collectDeadCode(fresh, isolate),
+  )
+  isolate.session = session
+  // Reported before this file began: under Jest, scripts of earlier files, which it ignores anyway.
+  hub.discard(CAPTURE_CONSUMER)
+  if (CPU_PROFILE_DIR) await session.post('Profiler.start')
   isolate.files++
   const reused = isolate.files > 1
   const envBaseline = unobserved(() => {
@@ -569,7 +568,6 @@ export async function beginWorkerCapture(options: WorkerCaptureOptions): Promise
   // Restored at finish: tests can run inside the runner's main process, whose recorder is active.
   const outerSink = getSink()
   setSink(recorder)
-  const session = isolate.session
   const state = isolate
 
   const beginMs = performance.now() - beginStarted
@@ -580,7 +578,7 @@ export async function beginWorkerCapture(options: WorkerCaptureOptions): Promise
       if (CPU_PROFILE_DIR) await session.post('Profiler.stop').catch(() => {})
       if (layout !== 'jest') {
         state.session = null
-        await stopCoverage(session)
+        await hub.release(CAPTURE_CONSUMER)
       }
     },
     async finish(testFile, snapshot, sources) {
@@ -638,13 +636,10 @@ export async function beginWorkerCapture(options: WorkerCaptureOptions): Promise
       let takeMs = 0
       try {
         const takeStarted = performance.now()
-        const coverage = (await session.post('Profiler.takePreciseCoverage')) as {
-          result: {
-            scriptId: string
-            url: string
-            functions: { ranges: { startOffset: number; endOffset: number; count: number }[] }[]
-          }[]
-        }
+        // Also what the project's own coverage took since this file began (see coverage.ts).
+        const coverage = { result: await hub.take(CAPTURE_CONSUMER) }
+        if (hub.disturbed(CAPTURE_CONSUMER))
+          errors.push('the coverage mode changed while capturing, which can leave executions unreported')
         takeMs = performance.now() - takeStarted
         const blobDir = path.join(options.outDir, 'blobs')
         unobserved(() => fs.mkdirSync(blobDir, { recursive: true }))
@@ -767,7 +762,7 @@ export async function beginWorkerCapture(options: WorkerCaptureOptions): Promise
       if (layout !== 'jest') {
         // Detach so the worker can terminate promptly (an attached inspector keeps threads alive).
         state.session = null
-        await stopCoverage(session)
+        await hub.release(CAPTURE_CONSUMER)
       }
       unobserved(() => {
         const dir = path.join(options.outDir, 'payloads')

@@ -51,6 +51,10 @@ Options:
   --strict             Fail on Veyrum's own errors. By default, if Veyrum fails before tests
                        run, the project's own runner runs every test instead; if recording
                        evidence fails, the test results stand and nothing is reused later
+  --coverage           Collect the project's coverage (Vitest or Jest v8 provider); by default
+                       as the project configures it. A run that reuses evidence reports coverage
+                       of the files that ran
+  --no-coverage        Do not collect coverage, whatever the project configures
   --no-prune           Keep every record (by default a run keeps, per file and runtime, only the
                        records the planner reads); for tools that analyse the store's history
   --keep-scratch       Keep raw worker payloads under .veyrum/tmp (debugging)
@@ -79,6 +83,7 @@ interface Args {
   canary: number
   shard: Shard | undefined
   prune: boolean
+  coverage: boolean | undefined
   allow: string[]
 }
 
@@ -86,6 +91,7 @@ function parse(argv: string[]): Args | null {
   const { values, positionals } = parseArgs({
     args: argv,
     allowPositionals: true,
+    allowNegative: true,
     options: {
       root: { type: 'string' },
       runner: { type: 'string' },
@@ -105,7 +111,8 @@ function parse(argv: string[]): Args | null {
       'record-all': { type: 'boolean', default: false },
       canary: { type: 'string' },
       shard: { type: 'string' },
-      'no-prune': { type: 'boolean', default: false },
+      prune: { type: 'boolean', default: true },
+      coverage: { type: 'boolean' },
       allow: { type: 'string', multiple: true },
       help: { type: 'boolean', short: 'h', default: false },
     },
@@ -138,7 +145,8 @@ function parse(argv: string[]): Args | null {
     recordAll: values['record-all'],
     canary: values.canary ? Math.max(0, Math.min(1, Number(values.canary))) : 0,
     shard: values.shard ? parseShard(values.shard) : undefined,
-    prune: !values['no-prune'],
+    prune: values.prune,
+    coverage: values.coverage,
     allow: values.allow ?? [],
   }
 }
@@ -358,6 +366,7 @@ async function main(argv: string[]): Promise<number> {
       audit: args.audit,
       canary: args.canary,
       ...(args.shard ? { shard: args.shard } : {}),
+      ...(args.coverage !== undefined ? { coverage: args.coverage } : {}),
       recordAll: args.recordAll,
       ...(args.allow.length > 0 ? { policy: makePolicy({ allow: args.allow }) } : {}),
     }
@@ -365,6 +374,10 @@ async function main(argv: string[]): Promise<number> {
     try {
       result = await runWith(runner, args, common)
     } catch (error) {
+      if (error instanceof Error && error.name === 'ConfigurationError') {
+        process.stderr.write(`veyrum: ${error.message}\n`)
+        return 2
+      }
       // Fail open: Veyrum's own failure must never stand between a project and its tests.
       if (args.strict || mode === 'plan') throw error
       const message = error instanceof Error ? error.message : String(error)
@@ -384,6 +397,7 @@ async function main(argv: string[]): Promise<number> {
         projects: args.projects,
         ...(args.maxWorkers ? { maxWorkers: args.maxWorkers } : {}),
         ...(only ? { only } : {}),
+        ...(args.coverage !== undefined ? { coverage: args.coverage } : {}),
         quiet: args.quiet,
       })
     }

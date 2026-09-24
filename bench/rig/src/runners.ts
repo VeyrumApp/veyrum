@@ -36,6 +36,8 @@ function veyrum(corpus: Corpus, repo: string, store: string, args: readonly stri
       '--strict',
       // Baselines and rescoring read the store's whole history.
       '--no-prune',
+      // Plain runs disable coverage too: overhead compares like with like.
+      '--no-coverage',
       '--store',
       store,
       '--max-workers',

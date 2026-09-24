@@ -13,6 +13,8 @@ export interface JestCaptureConfig {
   readonly environmentResolver: string
   /** The environment wrapper, which the preload makes docblock environments resolve to. */
   readonly environmentPath: string
+  /** The project collects its own V8 coverage in this run (see WorkerCaptureOptions). */
+  readonly projectCoverage?: boolean
   /** The sequencer the project configured, which Veyrum's own wraps (see sequencer.cts). */
   readonly sequencer: string
   /** The environment each project configured, by Jest project config id, that the wrapper runs. */

@@ -29,6 +29,7 @@ interface SetupConfig {
   vitestEntry: string
   captureIndex: string
   captureWorker: string
+  projectCoverage?: boolean
 }
 
 const PENDING = Symbol.for('veyrum.vitest.pending')
@@ -84,6 +85,7 @@ if (config) {
         outDir: config.outDir,
         ignoredPrefixes: config.ignored,
         volatileEnv: VOLATILE_ENV,
+        ...(config.projectCoverage ? { projectCoverage: true } : {}),
       }))
   g[PENDING] = undefined
   const capture = pending ? await pending : null
