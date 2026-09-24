@@ -30,8 +30,8 @@ sharded jobs.
 Vitest 4 and later, Jest 29 and later, Mocha 10 and later, Node's built-in test runner
 (`node --test`) and pytest (on Python 3.12 or later, `--python` picks the interpreter) are
 supported, on Node 22.15 or later, on Linux, macOS and Windows. Child processes a test starts are
-traced natively on Linux; Node child processes and worker threads, and Python child processes of
-pytest tests, are traced on every platform.
+traced natively on Linux and macOS; Node child processes and worker threads, and Python child
+processes of pytest tests, are traced on every platform.
 
 ## How it works
 
@@ -76,8 +76,9 @@ evidence reports coverage of the files that ran; a full run reports everything.
 
 Recording is what costs time, so a full run records only where it is needed: a file whose
 evidence is still valid runs at full speed, and its existing record already describes that
-execution (`--record-all` records every file). On Linux (x64 and arm64), child processes a test
-starts are traced too, statically linked and Go programs included (see `docs/design/soundness.md`).
+execution (`--record-all` records every file). On Linux (x64 and arm64) and macOS, child processes
+a test starts are traced too, statically linked and Go programs and macOS's protected system
+programs included (see `docs/design/soundness.md`).
 
 Evidence is stored in `.veyrum/store.sqlite`. It holds digests, repository paths, test names,
 outcomes and durations, never source code or environment variable values.

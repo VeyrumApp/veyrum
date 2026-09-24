@@ -6,9 +6,9 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 /**
- * Test programs child-process tracing handles with ptrace (packages/capture/native/exec.c): a
- * statically linked C program and a Go program. Each is built once per source under the
- * repository's .sandbox directory; null when the toolchain is missing.
+ * Test programs for child-process tracing: a C program (statically linked, which Linux traces with
+ * ptrace in packages/capture/native/exec.c, or dynamically linked) and a Go program. Each is built
+ * once per source under the repository's .sandbox directory; null when the toolchain is missing.
  */
 
 const here = path.dirname(fileURLToPath(import.meta.url))
@@ -45,6 +45,14 @@ export function staticTool(): string | null {
   return build('tool', path.join(here, 'programs/tool.c'), (output) => [
     process.env.CC ?? 'cc',
     ['-static', '-O2', '-pthread', '-o', output, 'tool.c'],
+  ])
+}
+
+/** The same C program linked as programs usually are, against the system's C library. */
+export function dynamicTool(): string | null {
+  return build('tool-dynamic', path.join(here, 'programs/tool.c'), (output) => [
+    process.env.CC ?? 'cc',
+    ['-O2', '-pthread', '-o', output, 'tool.c'],
   ])
 }
 

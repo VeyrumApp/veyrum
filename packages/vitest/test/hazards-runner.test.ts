@@ -343,7 +343,7 @@ describe('evidence store placement', () => {
   })
 })
 
-/** A 64-bit ELF executable without an interpreter: statically linked, so it cannot be traced. */
+/** Where the native tracer is built (Linux and macOS); elsewhere, only Node programs are traced. */
 const tracing = TRACED_PLATFORMS.includes(`${process.platform}-${process.arch}`)
 
 describe.skipIf(tracing)('child processes where they cannot be traced', () => {
@@ -504,7 +504,7 @@ describe('worker threads', () => {
 })
 
 describe("Node programs traced with capture's own hooks", () => {
-  // As on macOS and Windows, where no native tracer follows child processes.
+  // As on Windows, where no native tracer follows child processes.
   const JS_ONLY = { VEYRUM_NATIVE_TRACING: 'off' }
   const childTest = (body: string): string =>
     `import { execFileSync, execSync, fork } from 'node:child_process'\nimport { expect, test } from 'vitest'\ntest('child', async () => {\n${body}\n})\n`

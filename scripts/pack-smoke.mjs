@@ -103,11 +103,13 @@ function cycle(dir, source, mulTest, files = 2) {
 }
 
 /**
- * On Linux, a statically linked program: child-process tracing runs it under ptrace through
- * veyrum-exec, which must work from an install (package managers drop the executable bit). Null
- * where it cannot be built.
+ * A call that starts a program only veyrum-exec lets child-process tracing follow, which must work
+ * from an install (package managers drop the executable bit): on Linux a statically linked program,
+ * run under ptrace; on macOS the system's cat through the system's shell, both run as shadow copies.
+ * Null where there is none.
  */
-function staticProgram(dir) {
+function tracedProgram(dir) {
+  if (process.platform === 'darwin') return "execSync('cat fixtures/data.txt')"
   if (process.platform !== 'linux') return null
   const source = path.join(dir, 'fixtures', 'show.c')
   fs.mkdirSync(path.dirname(source), { recursive: true })
@@ -127,7 +129,7 @@ function staticProgram(dir) {
     if (process.env.CI) throw new Error(`cannot build a static program:\n${cc.stderr}`)
     return null
   }
-  return path.join(dir, 'fixtures', 'show')
+  return "execFileSync('./fixtures/show', ['fixtures/data.txt'])"
 }
 
 try {
@@ -149,19 +151,19 @@ try {
         'fixtures/data.txt': 'hello\n',
       },
     )
-    const program = staticProgram(vitestDir)
+    const program = tracedProgram(vitestDir)
     if (program) {
       fs.writeFileSync(
         path.join(vitestDir, 'test/show.test.ts'),
-        "import { execFileSync } from 'node:child_process'\nimport { expect, test } from 'vitest'\ntest('show', () => expect(execFileSync('./fixtures/show', ['fixtures/data.txt']).toString()).toMatch(/^h/))\n",
+        `import { execFileSync, execSync } from 'node:child_process'\nimport { expect, test } from 'vitest'\ntest('show', () => expect(${program}.toString()).toMatch(/^h/))\n`,
       )
     }
     const next = cycle(vitestDir, 'src/math.ts', 'test/mul.test.ts', program ? 3 : 2)
     if (program) {
       fs.writeFileSync(path.join(vitestDir, 'fixtures/data.txt'), 'hi\n')
-      next('static program input', 'test/show.test.ts')
+      next('traced program input', 'test/show.test.ts')
     }
-    process.stdout.write(`vitest ${vitestVersion}: ok${program ? ' (with a static program)' : ''}\n`)
+    process.stdout.write(`vitest ${vitestVersion}: ok${program ? ' (with a traced program)' : ''}\n`)
   }
 
   // Node's own runner needs nothing installed but Veyrum; checked with the full run only.

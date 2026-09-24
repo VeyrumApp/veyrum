@@ -26,7 +26,7 @@ const changed = (a: Record<string, string>, b: Record<string, string>): string[]
     .sort()
 
 /** The variables child-process tracing gives the programs a test starts (see trace.ts). */
-const TRACER_VARIABLES = ['LD_PRELOAD', 'UV_USE_IO_URING', 'VEYRUM_TRACE']
+const TRACER_VARIABLES = ['DYLD_INSERT_LIBRARIES', 'LD_PRELOAD', 'UV_USE_IO_URING', 'VEYRUM_TRACE']
 
 describe.each(['vitest', 'jest'] as const)('under Veyrum (%s)', (runner) => {
   test('a test sees the process it would under the plain runner', () => {

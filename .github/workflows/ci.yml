@@ -18,7 +18,7 @@ jobs:
           # Child-process tracing is native code: build and test it on arm64 too.
           - node: 22
             os: ubuntu-24.04-arm
-          # Developers run Veyrum locally; macOS and Windows have no child-process tracing.
+          # macOS has its own native tracer; Windows traces Node programs only.
           - node: 22
             os: macos-latest
           - node: 22
@@ -38,6 +38,12 @@ jobs:
       - name: Install pytest
         if: runner.os == 'Linux'
         run: python -m pip install pytest
+      # The Go scenario in hazards-launched.test.ts needs Go, which the macOS image has off PATH.
+      - uses: actions/setup-go@v5
+        if: runner.os == 'macOS'
+        with:
+          go-version: stable
+          cache: false
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
       - run: pnpm build

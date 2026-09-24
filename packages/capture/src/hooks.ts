@@ -739,8 +739,34 @@ function prepareSpawn(name: SpawnFunction, args: unknown[]): unknown[] | undefin
             env: childEnv,
           })
     }
-    const kind = classifyExecutable(resolved, traceFs)
     const tools = nativeTools(path.dirname(log))
+    if (process.platform === 'darwin') {
+      // Every program starts through the launcher, whose exec the library handles: it records the
+      // program and runs a protected one (a system binary such as /bin/sh, or one signed with the
+      // hardened runtime) as a shadow copy the library is loaded into (see native/trace-darwin.c).
+      if (!tools.launcher) {
+        sink.spawn(label)
+        return undefined
+      }
+      recordStart()
+      const { argv0, ...options } = call.options ?? {}
+      const insert = envValue(env, 'DYLD_INSERT_LIBRARIES')
+      const childEnv = {
+        ...env,
+        DYLD_INSERT_LIBRARIES:
+          !insert || insert.split(':').includes(tools.library)
+            ? (insert ?? tools.library)
+            : `${tools.library}:${insert}`,
+        VEYRUM_TRACE: log,
+        VEYRUM_LAUNCH: resolved,
+      }
+      // The program keeps the argv[0] it would have had: the shell, or the file as given.
+      const launched = { ...options, argv0: String(argv0 ?? call.shell ?? call.file), env: childEnv }
+      if (call.shell !== null) return call.rebuild({ ...launched, shell: tools.launcher })
+      if (name === 'fork') return call.rebuild({ ...launched, execPath: tools.launcher })
+      return call.relaunch(tools.launcher, call.args, launched)
+    }
+    const kind = classifyExecutable(resolved, traceFs)
     // A program run through a shell option would need the shell command rebuilt: only a program
     // run directly is launched.
     const launcher = kind === 'launched' && call.shell === null && name !== 'fork' ? tools.launcher : null

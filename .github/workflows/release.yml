@@ -1,8 +1,9 @@
 name: Release
 
 # Publishes every package to npm for a version tag (v0.1.0): the tracer is built on each platform
-# it supports (on the oldest Ubuntu runners, so it loads with older C libraries), then the packages
-# are tested once more and published with provenance.
+# it supports (on the oldest Ubuntu runners, so it loads with older C libraries; on macOS as
+# universal binaries for both architectures), then the packages are tested once more and published
+# with provenance.
 on:
   push:
     tags: ['v*']
@@ -20,7 +21,7 @@ jobs:
   native:
     strategy:
       matrix:
-        runner: [ubuntu-22.04, ubuntu-22.04-arm]
+        runner: [ubuntu-22.04, ubuntu-22.04-arm, macos-latest]
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -30,8 +31,10 @@ jobs:
       - run: node scripts/build-native.mjs
       - name: Check both binaries were built
         run: |
-          dir="packages/capture/dist/native/linux-$(node -p process.arch)"
-          test -f "$dir/libveyrum-trace.so" && test -x "$dir/veyrum-exec"
+          dir="packages/capture/dist/native/$(node -p "process.platform + '-' + process.arch")"
+          library=libveyrum-trace.so
+          if [ "$RUNNER_OS" = macOS ]; then library=libveyrum-trace.dylib; fi
+          test -f "$dir/$library" && test -x "$dir/veyrum-exec"
           echo "dir=$dir" >> "$GITHUB_ENV"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -70,6 +73,15 @@ jobs:
         with:
           name: native-ubuntu-22.04-arm
           path: packages/capture/dist/native/linux-arm64
+      # Universal binaries: the same files serve both macOS architectures.
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: native-macos-latest
+          path: packages/capture/dist/native/darwin-arm64
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: native-macos-latest
+          path: packages/capture/dist/native/darwin-x64
       - name: License and readme in every package
         run: |
           for d in packages/*/; do cp LICENSE "$d"; done

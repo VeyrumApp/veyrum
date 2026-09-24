@@ -7,9 +7,10 @@ import { Sandbox } from '../../../test/support/sandbox.ts'
 import { TRACED_PLATFORMS } from '../../capture/src/trace.ts'
 
 /**
- * Statically linked and Go programs, which make system calls themselves: the preloaded tracer
- * cannot see them, so they run under veyrum-exec's ptrace tracer. What they read is an input like
- * anything a traced program reads.
+ * Statically linked and Go programs, which make system calls themselves on Linux: the preloaded
+ * tracer cannot see them, so they run under veyrum-exec's ptrace tracer. What they read is an input
+ * like anything a traced program reads. On macOS, Go programs call the system's library like any
+ * other, and the preloaded tracer follows them.
  */
 
 let sandbox: Sandbox | undefined
@@ -20,14 +21,16 @@ const launcher = path.resolve(
   `../../../capture/dist/native/${process.platform}-${process.arch}/veyrum-exec`,
 )
 const tracing = TRACED_PLATFORMS.includes(`${process.platform}-${process.arch}`)
-const tool = tracing ? staticTool() : null
+/** macOS has no statically linked programs. */
+const staticPrograms = tracing && process.platform === 'linux'
+const tool = staticPrograms ? staticTool() : null
 const go = tracing ? goTool() : null
 
 const spawnTest = (body: string): string =>
   `import { execFileSync, execSync, spawnSync } from 'node:child_process'\nimport { expect, test } from 'vitest'\ntest('child', () => {\n${body}\n})\n`
 const plain = "import { expect, test } from 'vitest'\ntest('plain', () => expect(1).toBe(1))\n"
 
-describe.runIf(tracing)('statically linked programs', () => {
+describe.runIf(staticPrograms)('statically linked programs', () => {
   // Where tracing is built, so is the launcher: without it these programs would block reuse.
   test('the launcher and a static test program build here', () => {
     expect(fs.existsSync(launcher)).toBe(true)

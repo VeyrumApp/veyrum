@@ -5,7 +5,7 @@ import { type HookSink, installHooks, setSink } from './hooks.ts'
 
 /**
  * Traces a Node program a test starts, or a worker thread it creates, with capture's own hooks,
- * where no native tracer follows it (macOS, Windows, and worker threads everywhere). What it
+ * where no native tracer follows it (Windows, and worker threads everywhere). What it
  * reads, lists, writes, starts and connects to is appended to the trace log the test's worker
  * replays (the format of native/trace.c), and so is every module it loads: the program's code is
  * an input of the test, file by file.

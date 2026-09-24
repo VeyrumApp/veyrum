@@ -6,11 +6,14 @@ import { fileURLToPath } from 'node:url'
 import { threadId } from 'node:worker_threads'
 
 /**
- * Child processes a test starts are traced by a preloaded library (native/trace.c) that logs the
- * files they open, check and list, what they execute and where they connect. Programs it cannot
- * follow, statically linked and Go ones, run under a ptrace tracer (native/exec.c) that writes the
- * same log. This module decides how a program runs and parses the log. Everything here runs with the capture
- * layer's hooks suspended, on the unpatched fs functions it is given.
+ * Child processes a test starts are traced by a preloaded library (native/trace.c on Linux,
+ * native/trace-darwin.c on macOS) that logs the files they open, check and list, what they execute
+ * and where they connect. On Linux, programs it cannot follow, statically linked and Go ones, run
+ * under a ptrace tracer (native/exec.c) that writes the same log. On macOS every program starts
+ * through a launcher (native/launch-darwin.c) whose exec the library handles, so a protected
+ * program runs as a shadow copy the library can be loaded into. This module decides how a program
+ * runs and parses the log. Everything here runs with the capture layer's hooks suspended, on the
+ * unpatched fs functions it is given.
  */
 
 /**
@@ -22,12 +25,18 @@ export const NATIVE_DIR = path.join(
   'native',
   `${process.platform}-${process.arch}`,
 )
-export const TRACE_LIBRARY = path.join(NATIVE_DIR, 'libveyrum-trace.so')
+export const TRACE_LIBRARY = path.join(
+  NATIVE_DIR,
+  process.platform === 'darwin' ? 'libveyrum-trace.dylib' : 'libveyrum-trace.so',
+)
 
 /** Preloaded into Node programs and worker threads no native tracer follows (see child.ts). */
 export const CHILD_PRELOAD = path.join(path.dirname(fileURLToPath(import.meta.url)), 'child-preload.cjs')
 
-/** The launcher that traces statically linked and Go programs with ptrace; built with the library. */
+/**
+ * The launcher, built with the library: on Linux it traces statically linked and Go programs with
+ * ptrace; on macOS every program starts through it (see launch-darwin.c).
+ */
 export const EXEC_LAUNCHER = path.join(NATIVE_DIR, 'veyrum-exec')
 
 export interface TraceFs {
@@ -38,7 +47,7 @@ export interface TraceFs {
 }
 
 /** Where the tracer is built (scripts/build-native.mjs keeps the same list). */
-export const TRACED_PLATFORMS: readonly string[] = ['linux-x64', 'linux-arm64']
+export const TRACED_PLATFORMS: readonly string[] = ['linux-x64', 'linux-arm64', 'darwin-x64', 'darwin-arm64']
 
 let libraryPresent: boolean | undefined
 /**
@@ -60,14 +69,17 @@ export function tracingAvailable(raw: TraceFs): boolean {
 /**
  * Whether the dynamic loader here loads the library: one built against a newer C library than the
  * system's is skipped with a warning, and its children would then run unobserved. Its constructor
- * creates the log, so a trivial traced program shows whether it loaded.
+ * creates the log, so a trivial traced program shows whether it loaded. On macOS that program is
+ * this Node: dyld ignores DYLD_* variables for /bin/sh, a system binary.
  */
 function libraryLoads(): boolean {
   const log = path.join(os.tmpdir(), `veyrum-probe-${process.pid}-${threadId}-${Date.now()}.log`)
   try {
-    const shell = fs.existsSync('/bin/sh') ? '/bin/sh' : process.execPath
+    const darwin = process.platform === 'darwin'
+    const shell = !darwin && fs.existsSync('/bin/sh') ? '/bin/sh' : process.execPath
+    const preload = darwin ? 'DYLD_INSERT_LIBRARIES' : 'LD_PRELOAD'
     childProcess.spawnSync(shell, shell === '/bin/sh' ? ['-c', ':'] : ['-e', '0'], {
-      env: { PATH: process.env.PATH ?? '', LD_PRELOAD: TRACE_LIBRARY, VEYRUM_TRACE: log },
+      env: { PATH: process.env.PATH ?? '', [preload]: TRACE_LIBRARY, VEYRUM_TRACE: log },
       stdio: 'ignore',
       timeout: 10_000,
     })

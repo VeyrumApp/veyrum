@@ -128,8 +128,27 @@ it creates, is traced. How depends on the program and the platform:
   `no_new_privs`, so a set-user-ID program started this way does not gain privileges. Where
   ptrace is not allowed (Yama `ptrace_scope` 2 or 3, a container that forbids it, a debugger
   already attached), the program runs untraced and blocks reuse, as below.
+- **On macOS, through libSystem.** Every program, Go ones included (they call libSystem on
+  macOS), gets a library dyld inserts (`packages/capture/native/trace-darwin.c`, through
+  `DYLD_INSERT_LIBRARIES`) that interposes libSystem's functions and writes the same log. Because
+  interposing rebinds libSystem's calls between its own libraries too, the C library's internal
+  file access (`fopen`, `opendir`, `fts`, `glob`, locale files) is seen; a directory counts as
+  listed when its entries are read, whatever opened it. The test's child starts through a launcher
+  (`packages/capture/native/launch-darwin.c`), so it is handled like any program a traced process
+  executes. dyld does not load the library into protected programs: Apple's platform binaries
+  (System Integrity Protection removes `DYLD_*` variables for `/bin/sh`, `cat`, `ls` and the rest
+  of the system) and programs signed with the hardened runtime without the
+  `allow-dyld-environment-variables` and `disable-library-validation` entitlements. Such a program
+  runs as a shadow copy: copied into the run's scratch directory once per file version, signed ad
+  hoc without the runtime flag, and executed with the arguments and `argv[0]` it would have had;
+  a script whose interpreter is protected runs that interpreter's copy, with the arguments the
+  kernel would pass. On Apple silicon, system binaries exist only as arm64e, and a machine with
+  System Integrity Protection on may refuse ad hoc arm64e programs; the run checks once with a
+  copy of `/usr/bin/true`, and where it fails, protected arm64e programs run untraced and block
+  reuse, as below. Every library loaded from outside the dyld shared cache is an input too, so a
+  program's own dependencies are.
 
-- **Through capture's own hooks.** Where no native tracer follows it (macOS, Windows, or with
+- **Through capture's own hooks.** Where no native tracer follows it (Windows, or with
   `VEYRUM_NATIVE_TRACING=off`), a program that is the test's own Node binary, or a script whose
   `#!` line runs it, starts with a preload (`packages/capture/src/child.ts`) that installs the same
   hooks as the test's worker and logs what the program reads, lists, writes, starts and connects
@@ -154,8 +173,13 @@ The test file's closure gets what its children did like its own reads. On top of
   system call or `fexecve` from a dynamically linked program, `glob`, `ftw` and `nftw` (which read
   directories internally), system calls of another architecture, `io_uring`, `open_by_handle_at`,
   and a statically linked shell started through a `shell` option are reported as untraceable, and
-  the check gets the `spawn` flag. On macOS and Windows, so does any program other than the test's
-  own Node, including a shell.
+  the check gets the `spawn` flag. On macOS, so are a set-user-ID program, one with a `__RESTRICT`
+  segment, a protected program that loads libraries relative to its own file (`@executable_path`,
+  `@loader_path`) or is an application's executable (a copy would not run as the original does),
+  a protected program whose shadow copy cannot be made or run, a file opened by its
+  file-system identifiers (`openbyid_np`) and an exec through `syscall()`; system calls made
+  without libSystem are not seen, which macOS does not support as an interface. On Windows, so
+  does any program other than the test's own Node, including a shell.
 
 Temporary files are ignored for children as for tests. Unix socket connections count as local
 network use, as they do for the test itself.

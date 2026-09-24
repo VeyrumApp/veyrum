@@ -32,7 +32,9 @@ function writeForeignProgram(dir: string, rel: string): void {
   fs.writeFileSync(file, elf, { mode: 0o755 })
 }
 
-const tracing = TRACED_PLATFORMS.includes(`${process.platform}-${process.arch}`)
+/** An ELF program is foreign on macOS too, where the kernel refuses to run it at all. */
+const tracing =
+  TRACED_PLATFORMS.includes(`${process.platform}-${process.arch}`) && process.platform === 'linux'
 
 describe.runIf(tracing)('programs that cannot be traced', () => {
   const spawnTest = (body: string): string =>
