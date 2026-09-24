@@ -177,7 +177,9 @@ function ignored(absolute: string): boolean {
   // Temporary files are assumed to be created by the test itself, but a repository can live under
   // the temporary directory (some CI systems check out there): its files are always inputs.
   if (state.rootPrefix && absolute.startsWith(state.rootPrefix)) return false
-  for (const prefix of state.tempPrefixes) if (absolute.startsWith(prefix)) return true
+  // The temporary directory itself too: its listing is every process's scratch space.
+  for (const prefix of state.tempPrefixes)
+    if (absolute.startsWith(prefix) || absolute === prefix.slice(0, -1)) return true
   return false
 }
 
@@ -611,7 +613,12 @@ function prepareSpawn(name: SpawnFunction, args: unknown[]): unknown[] | undefin
       return undefined
     }
     if (!ignored(resolved)) sink.path(resolved, 'read', 'file', 'other')
-    for (const [n, v] of Object.entries(env)) sink.env(n, v, false, 'test')
+    // The child's environment is an input where it comes from this process's: a value the call set
+    // itself comes from the test's code, which is recorded already.
+    for (const [n, v] of Object.entries(env)) {
+      if (given !== undefined && unobserved(() => process.env[n]) !== v) continue
+      sink.env(n, v, false, 'test')
+    }
     const preload = env.LD_PRELOAD ? `${TRACE_LIBRARY}:${env.LD_PRELOAD}` : TRACE_LIBRARY
     // libuv can read files through io_uring, which the tracer cannot see.
     const childEnv = { ...env, LD_PRELOAD: preload, VEYRUM_TRACE: log, UV_USE_IO_URING: '0' }

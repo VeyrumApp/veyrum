@@ -116,8 +116,10 @@ and the test file's closure gets them like its own reads. On top of that:
 
 - **The program and its lookup are inputs.** The executed file's content, and the absence of the
   program in PATH directories searched before it.
-- **The whole environment is an input.** A shell imports every variable at startup, so each
-  variable the child receives is recorded, not just those it reads.
+- **The whole inherited environment is an input.** A shell imports every variable at startup,
+  so each variable the child receives from the test's environment is recorded, not just those it
+  reads. A value the call sets itself (`spawn(cmd, { env: { ...process.env, TZ: 'UTC' } })`) comes
+  from the test's code, which is recorded already.
 - **Descendants stay traced.** Every exec restores the tracer's variables, even when a program
   clears its environment for its own children.
 - **Anything else blocks reuse.** Executing a statically linked or Go program, a raw `execve`
@@ -276,9 +278,14 @@ These produce no capture, so they always run. Both are safe and cost little:
    again. The traced child sees the tracer's variables (`LD_PRELOAD`, `VEYRUM_TRACE`,
    `UV_USE_IO_URING=0`) in its environment.
 9. **Manifest readers.** Code in the runner's main process, and the known manifest readers in
-   workers, use neither the package's own version, dependency version ranges nor scripts from a repository
-   manifest. A
-   plugin that did would change what it emits, which the transform-output fingerprints observe.
+   workers, use neither the package's own version, dependency version ranges nor scripts from a
+   repository manifest. A plugin that did would change what it emits, which the transform-output
+   fingerprints observe.
+10. **The system temporary directory is scratch space.** What a test reads or lists under
+   `os.tmpdir()`, and the listing of that directory itself, are not inputs: tests create their
+   own files there, other processes add and remove entries all the time, and a glob crawling
+   toward a test's own temporary directory lists it on the way. A repository checked out under
+   the temporary directory is still recorded like any other.
 
 The audit (full runs on the main branch, plus sampled re-execution of reused files) is the
 backstop for every assumption. Its escape rate is the real safety number.

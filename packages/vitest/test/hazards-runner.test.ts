@@ -242,6 +242,23 @@ describe('parallel jobs', () => {
   })
 })
 
+describe('the system temporary directory', () => {
+  test('its listing is scratch space, not an input', () => {
+    sandbox = new Sandbox('tmp-listing').write(
+      'test/tmp.test.ts',
+      "import fs from 'node:fs'\nimport os from 'node:os'\nimport { expect, test } from 'vitest'\ntest('tmp', () => expect(fs.readdirSync(os.tmpdir()).length).toBeGreaterThan(0))\n",
+    )
+    sandbox.capture()
+    const unrelated = path.join(os.tmpdir(), `veyrum-unrelated-${process.pid}`)
+    fs.writeFileSync(unrelated, '')
+    try {
+      expect(sandbox.actions()['test/tmp.test.ts']).toBe('skip')
+    } finally {
+      fs.rmSync(unrelated, { force: true })
+    }
+  })
+})
+
 describe('evidence store placement', () => {
   test('a store in a parent directory of the project does not hide the project', () => {
     sandbox = new Sandbox('store-above')
@@ -391,6 +408,19 @@ describe.runIf(tracing)('child processes', () => {
     expect(sandbox.actions()['test/child.test.ts']).toBe('skip')
     sandbox.write('fixtures/mod.cjs', 'module.exports = 43\n')
     expect(sandbox.actions()['test/child.test.ts']).toBe('run')
+  })
+
+  test('a variable the test sets for its child is not an input; one it passes on is', () => {
+    sandbox = new Sandbox('child-env-set').write(
+      'test/child.test.ts',
+      spawnTest(
+        "  expect(execSync('printf %s \"$STAMP$GREETING\"', { env: { PATH: process.env.PATH, GREETING: process.env.GREETING, STAMP: '1' } }).toString()).toBe('1hi')",
+      ),
+    )
+    sandbox.capture({ GREETING: 'hi', STAMP: 'outer' })
+    // STAMP comes from the test's code, whatever the environment holds.
+    expect(sandbox.actions({ GREETING: 'hi', STAMP: 'other' })['test/child.test.ts']).toBe('skip')
+    expect(sandbox.actions({ GREETING: 'bye', STAMP: 'outer' })['test/child.test.ts']).toBe('run')
   })
 
   test("the child process's environment is an input", () => {
