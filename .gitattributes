@@ -1,0 +1,2 @@
+# LF everywhere, Windows checkouts included: the formatter and fingerprints expect it.
+* text=auto eol=lf
