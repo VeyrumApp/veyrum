@@ -26,11 +26,12 @@ interface CaptureConfig {
 }
 
 interface EnvironmentConfig {
-  projectConfig: { id: string }
+  projectConfig: { id: string; rootDir: string } & Record<string, unknown>
 }
 
 interface EnvironmentContext {
   testPath: string
+  docblockPragmas?: Record<string, string | string[]>
 }
 
 interface JestEnvironmentLike {
@@ -55,8 +56,20 @@ function interop(loaded: unknown): EnvironmentClass {
   return candidate as EnvironmentClass
 }
 
-const environments = new Map<string, EnvironmentClass>()
-for (const [id, file] of Object.entries(config.environments)) environments.set(id, interop(require(file)))
+/**
+ * Environments load on first use, after the worker's hooks are installed: the modules they load
+ * are then recorded as toolchain inputs of the run, so editing a custom environment (configured,
+ * or named by a docblock) invalidates the files that ran in it.
+ */
+const loadedEnvironments = new Map<string, EnvironmentClass>()
+function loadEnvironment(file: string): EnvironmentClass {
+  let loaded = loadedEnvironments.get(file)
+  if (!loaded) {
+    loaded = interop(require(file))
+    loadedEnvironments.set(file, loaded)
+  }
+  return loaded
+}
 
 let capture: { index: typeof Capture; worker: typeof CaptureWorker } | null = null
 function loadCapture(): { index: typeof Capture; worker: typeof CaptureWorker } {
@@ -74,13 +87,32 @@ function loadCapture(): { index: typeof Capture; worker: typeof CaptureWorker } 
 }
 
 /**
+ * The environment a `@jest-environment` docblock names, resolved as Jest would (the preload made
+ * Jest hand the file to this wrapper instead). Environments written in TypeScript would need
+ * Jest's transform, which this native loader cannot apply.
+ */
+type Resolve = (options: Record<string, unknown>) => string
+function docblockEnvironment(name: string, envConfig: EnvironmentConfig): EnvironmentClass {
+  const resolve = (globalThis as Record<symbol, unknown>)[Symbol.for('veyrum.jest.resolveTestEnvironment')] as
+    | Resolve
+    | undefined
+  if (!resolve) throw new Error('Veyrum: a docblock environment was requested without the Veyrum preload')
+  // The preload only redirects JavaScript environments here.
+  return loadEnvironment(
+    resolve({
+      ...envConfig.projectConfig,
+      requireResolveFunction: (m: string) => require.resolve(m),
+      testEnvironment: name,
+    }),
+  )
+}
+
+/**
  * Constructed by Jest with `new`. Returns the configured environment's instance with setup and
  * teardown wrapped, so everything else (globals, export conditions, test event handlers) is the
  * project's own environment, untouched.
  */
 function VeyrumEnvironment(envConfig: EnvironmentConfig, context: EnvironmentContext): JestEnvironmentLike {
-  const Base = environments.get(envConfig.projectConfig.id)
-  if (!Base) throw new Error(`Veyrum: no environment recorded for Jest project ${envConfig.projectConfig.id}`)
   const { index, worker } = loadCapture()
   const options: CaptureWorker.WorkerCaptureOptions = {
     root: config.root,
@@ -89,8 +121,15 @@ function VeyrumEnvironment(envConfig: EnvironmentConfig, context: EnvironmentCon
     volatileEnv: index.VOLATILE_ENV,
     layout: 'jest',
   }
-  // Hooks first: the environment copies `process` (and its environment) into the test context.
+  // Hooks first: the environment module's loads are recorded, and the environment copies
+  // `process` (and its environment) into the test context.
   worker.prepareWorkerHooks(options)
+  const pragma = context.docblockPragmas?.['jest-environment']
+  const configured = config.environments[envConfig.projectConfig.id]
+  if (typeof pragma !== 'string' && !configured)
+    throw new Error(`Veyrum: no environment recorded for Jest project ${envConfig.projectConfig.id}`)
+  const Base =
+    typeof pragma === 'string' ? docblockEnvironment(pragma, envConfig) : loadEnvironment(configured!)
   const env = new Base(envConfig, context)
   const testProcess = env.global.process
   // Test code reads the context's copy of process.env, not the worker's.

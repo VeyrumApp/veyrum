@@ -157,6 +157,11 @@ Jest-specific observation rules, each covered by `packages/jest/test/hazards.tes
 - **Test code is what Jest compiled into the file's context.** Sources are recorded as Jest
   compiles them (`vm.compileFunction`, `vm.Script`, `vm.SourceTextModule`). Scripts executed in
   the worker's own realm during the window are the runner and its transformers, not test code.
+- **Environments are the wrapper's to load.** A `@jest-environment` docblock names a file's
+  own environment, which Jest resolves with jest-resolve's `resolveTestEnvironment`. A preload in
+  every worker (and in the main process, for files run in band) makes that resolution return the
+  wrapper, which loads the named environment itself. Environments, configured or named by a
+  docblock, load after the worker's hooks are installed, so their modules are toolchain inputs.
 - **The toolchain is a shared input.** Packages the worker loads through Node's own loader
   (transformers, Babel plugins, presets), local files it loads the same way, and the variables the
   worker reads from its own environment (`BABEL_ENV`, CI detection) are shared inputs of the run.
@@ -212,8 +217,9 @@ These produce no capture, so they always run. Both are safe and cost little:
 - **A Vitest file whose tests are all skipped at collection** (for example
   `describe.skipIf(!global.gc)`). Vitest runs no file-level hook for it, so capture never
   finishes. Such a file runs in milliseconds.
-- **A Jest file that selects its own environment** with a `@jest-environment` docblock. It
-  bypasses the environment wrapper.
+- **A Jest file whose `@jest-environment` docblock names an environment written in
+  TypeScript.** Loading it needs Jest's transform, so the file keeps Jest's own environment
+  and bypasses the wrapper.
 
 ## Assumptions
 

@@ -110,6 +110,45 @@ describe('code', () => {
     })
   })
 
+  for (const workers of [1, 2]) {
+    test(`a file that picks its environment in a docblock is captured, and the environment is an input (${workers === 1 ? 'in band' : 'workers'})`, () => {
+      const s = jest(`docblock-environment-${workers}`, workers)
+        .write('src/math.js', MATH)
+        .write(
+          'env/custom.js',
+          "const { TestEnvironment } = require('jest-environment-node')\nmodule.exports = class extends TestEnvironment { constructor(...a) { super(...a); this.global.MARK = 'custom' } }\n",
+        )
+        .write(
+          'test/custom.test.js',
+          `/** @jest-environment ./env/custom.js */\n${ADD_TEST}test('env', () => expect(globalThis.MARK).toBe('custom'))\n`,
+        )
+        .write('test/node.test.js', `/** @jest-environment node */\n${MUL_TEST}`)
+      s.capture()
+      expect(s.actions()).toEqual({ 'test/custom.test.js': 'skip', 'test/node.test.js': 'skip' })
+      s.edit('src/math.js', 'return a * b', 'return a * b * 1')
+      expect(s.actions()).toEqual({ 'test/custom.test.js': 'skip', 'test/node.test.js': 'run' })
+      s.edit('env/custom.js', "'custom'", "'custom' + ''")
+      expect(s.actions()['test/custom.test.js']).toBe('run')
+    })
+  }
+
+  for (const workers of [1, 2]) {
+    test(`a configured custom environment is an input (${workers === 1 ? 'in band' : 'workers'})`, () => {
+      const s = jest(`configured-environment-${workers}`, workers)
+        .write('jest.config.js', "module.exports = { testEnvironment: '<rootDir>/env/custom.js' }\n")
+        .write(
+          'env/custom.js',
+          "const { TestEnvironment } = require('jest-environment-node')\nmodule.exports = class extends TestEnvironment { constructor(...a) { super(...a); this.global.MARK = 'custom' } }\n",
+        )
+        .write('test/a.test.js', "test('env', () => expect(globalThis.MARK).toBe('custom'))\n")
+        .write('test/b.test.js', PLAIN_TEST)
+      s.capture()
+      expect(s.actions()).toEqual({ 'test/a.test.js': 'skip', 'test/b.test.js': 'skip' })
+      s.edit('env/custom.js', "'custom'", "'custom' + ''")
+      expect(s.actions()).toEqual({ 'test/a.test.js': 'run', 'test/b.test.js': 'run' })
+    })
+  }
+
   test('a dependency change invalidates only the files that loaded it', () => {
     const s = jest('dependency')
       .write(

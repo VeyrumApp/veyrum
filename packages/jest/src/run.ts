@@ -51,6 +51,8 @@ export interface TargetJest {
   readonly hasteMap: string
   /** jest-resolve as jest-runtime loads it: the resolver test files resolve through. */
   readonly runtimeResolve: string
+  /** jest-resolve as jest-runner loads it: the one that resolves each file's test environment. */
+  readonly runnerResolve: string
 }
 
 export function resolveTargetJest(root: string): TargetJest {
@@ -89,6 +91,7 @@ export function resolveTargetJest(root: string): TargetJest {
     resolve: fromCore.resolve('jest-resolve'),
     hasteMap: createRequire(runtime).resolve('jest-haste-map'),
     runtimeResolve: createRequire(runtime).resolve('jest-resolve'),
+    runnerResolve: createRequire(fromCore.resolve('jest-runner')).resolve('jest-resolve'),
   }
 }
 
@@ -272,6 +275,8 @@ export async function runJest(options: JestRunOptions): Promise<RunResult> {
       captureIndex: ownRequire.resolve('@veyrum/capture'),
       captureWorker: ownRequire.resolve('@veyrum/capture/worker'),
       resolver: target.runtimeResolve,
+      environmentResolver: target.runnerResolve,
+      environmentPath,
       environments,
       sequencer: globalConfig.testSequencer,
     }
@@ -353,17 +358,28 @@ export async function runJest(options: JestRunOptions): Promise<RunResult> {
     const session = openSession(names)
     let runError = false
     if (selected.length > 0) {
-      const { results } = await api.runCLI(
-        {
-          ...baseArgv,
-          _: [...new Set(selected.map((s) => s.file))],
-          runTestsByPath: true,
-          testEnvironment: environmentPath,
-          ...(STOCK_SEQUENCER.test(globalConfig.testSequencer) ? { testSequencer: sequencerPath } : {}),
-          reporters: options.printTests ? ['default', reporterPath] : [reporterPath],
-        },
-        [root],
-      )
+      // Workers inherit this process's execArgv: the preload reaches every worker before its first
+      // test (docblock environments), and loading it here covers tests run in band.
+      const preload = path.join(here, 'preload.cjs')
+      ownRequire(preload)
+      const execArgv = [...process.execArgv]
+      process.execArgv.push('--require', preload)
+      let results: { runExecError?: unknown }
+      try {
+        ;({ results } = await api.runCLI(
+          {
+            ...baseArgv,
+            _: [...new Set(selected.map((s) => s.file))],
+            runTestsByPath: true,
+            testEnvironment: environmentPath,
+            ...(STOCK_SEQUENCER.test(globalConfig.testSequencer) ? { testSequencer: sequencerPath } : {}),
+            reporters: options.printTests ? ['default', reporterPath] : [reporterPath],
+          },
+          [root],
+        ))
+      } finally {
+        process.execArgv.splice(0, process.execArgv.length, ...execArgv)
+      }
       runError = results.runExecError != null
       // Files that ran in band left a coverage session open in this process.
       await endWorkerCapture()
