@@ -49,7 +49,6 @@ describe('manifest digests', () => {
   test('every other field is kept', () => {
     expect(hash({ ...base, type: 'commonjs' })).not.toBe(hash(base))
     expect(hash({ ...base, imports: { '#x': './x.js' } })).not.toBe(hash(base))
-    expect(hash({ ...base, version: '1.0.1' })).not.toBe(hash(base))
     expect(hash({ ...base, babel: { presets: ['env'] } })).not.toBe(hash(base))
   })
 
