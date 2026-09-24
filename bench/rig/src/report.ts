@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import {
   BASELINES,
   type BaselineName,
+  type BrokenResult,
   type CommitResult,
   type MutantResult,
   type ResultLine,
@@ -123,6 +124,12 @@ export function renderReport(title: string, lines: readonly ResultLine[]): strin
     `${commits.length} replayed commits, ${flips} outcome flips on the mainline, ${mutants.length} mutants (${killed.length} killed by at least one test file).`,
     '',
   )
+  const broken = lines.filter((l): l is BrokenResult => l.kind === 'broken')
+  if (broken.length > 0) {
+    out.push(`${broken.length} commit(s) could not be replayed and are not scored:`, '')
+    for (const b of broken) out.push(`- ${b.sha.slice(0, 10)}: ${b.error.split('\n')[0]}`)
+    out.push('')
+  }
   out.push('## Selection and safety', '')
   out.push(
     '| Selector | Files run (median) | Files run (p90) | Test time run (median) | Test time run (mean) | Mainline escapes | Missed failing | Mutant escapes |',

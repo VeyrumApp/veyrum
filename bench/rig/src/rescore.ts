@@ -66,6 +66,7 @@ export function rescoreFileCoverage(corpus: Corpus, benchRoot: string): { commit
           },
         }
       }
+      if (line.kind === 'broken') return line
       const at = commitLines.find((c) => c.sha === line.sha)
       if (!at) return line
       const sel = select(at, at.index, [toTestRoot(line.mutant.file)])

@@ -51,16 +51,20 @@ test('pools killed mutants and mainline flips into one escape bound', () => {
     {
       name: 'b',
       runner: 'jest',
-      lines: [commit(1, 50, ['t2.test.ts'], ['t2.test.ts']), mutant(['t2.test.ts'], ['t2.test.ts'])],
+      lines: [
+        commit(1, 50, ['t2.test.ts'], ['t2.test.ts']),
+        mutant(['t2.test.ts'], ['t2.test.ts']),
+        { kind: 'broken', index: 2, sha: 'c2', error: 'install failed' },
+      ],
     },
   ])
   // Repository a: time shares 10% and 30%, one killed mutant (the survivor drops out), one flip.
   expect(summary).toContain(
     '| a | vitest | 2 | 20.0% / 20.0% | 100.0% / 100.0% | - / - | 1 + 1 | 0 | 0 | 20.0% |',
   )
-  // Repository b: the mutant escape and the commit escape both count.
+  // Repository b: the mutant escape and the commit escape both count; one commit was unreplayable.
   expect(summary).toContain(
-    '| b | jest | 1 | 50.0% / 50.0% | 100.0% / 100.0% | - / - | 1 + 1 | 2 | 0 | 20.0% |',
+    '| b | jest | 1 (1) | 50.0% / 50.0% | 100.0% / 100.0% | - / - | 1 + 1 | 2 | 0 | 20.0% |',
   )
   expect(summary).toContain('2 of 4 killed mutants and mainline flips')
 })

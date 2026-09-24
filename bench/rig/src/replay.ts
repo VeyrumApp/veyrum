@@ -66,7 +66,15 @@ export interface MutantResult {
   >
 }
 
-export type ResultLine = CommitResult | MutantResult
+/** A commit that could not be replayed (install, runner or Veyrum failed); not scored. */
+export interface BrokenResult {
+  readonly kind: 'broken'
+  readonly index: number
+  readonly sha: string
+  readonly error: string
+}
+
+export type ResultLine = CommitResult | MutantResult | BrokenResult
 
 interface ReplayPaths {
   readonly work: string
@@ -216,8 +224,10 @@ export async function replay(corpus: Corpus, benchRoot: string, options: ReplayO
     .filter(Boolean)
     .reverse()
 
-  const done = readResults(paths.results).filter((r): r is CommitResult => r.kind === 'commit')
-  const doneShas = new Set(done.map((r) => r.sha))
+  const lines = readResults(paths.results)
+  const done = lines.filter((r): r is CommitResult => r.kind === 'commit')
+  const doneShas = new Set([...done, ...lines.filter((r) => r.kind === 'broken')].map((r) => r.sha))
+  let broken = 0
   let prev: CommitResult | undefined = done[done.length - 1]
   const store = Store.open(paths.store)
   // Synchronous appends: everything else in the loop is synchronous, so a buffered stream would
@@ -234,129 +244,143 @@ export async function replay(corpus: Corpus, benchRoot: string, options: ReplayO
       // A shard's own warm-up commit is scored by the previous shard; it only records evidence.
       const scored = index === 0 || index !== firstIndex
       log(`commit ${index}/${shas.length - 1} ${sha.slice(0, 10)}`)
-      // A replay interrupted after this commit's capture was stored, but before its result line was
-      // written, left evidence from this very commit. Plans must only see earlier commits.
-      const purged = store.forgetRevision(sha)
-      if (purged > 0) log(`  discarded ${purged} run(s) recorded at this commit by an interrupted replay`)
-      checkout(paths.repo, sha)
-      // As CI does on every run. The clean removed what install generates outside node_modules
-      // (postinstall steps such as `nuxt prepare`), and a state CI never sees skews every selector.
-      install(corpus, paths.repo)
-      prepare(corpus, paths.repo)
+      try {
+        // A replay interrupted after this commit's capture was stored, but before its result line was
+        // written, left evidence from this very commit. Plans must only see earlier commits.
+        const purged = store.forgetRevision(sha)
+        if (purged > 0) log(`  discarded ${purged} run(s) recorded at this commit by an interrupted replay`)
+        checkout(paths.repo, sha)
+        // As CI does on every run. The clean removed what install generates outside node_modules
+        // (postinstall steps such as `nuxt prepare`), and a state CI never sees skews every selector.
+        install(corpus, paths.repo)
+        prepare(corpus, paths.repo)
 
-      const parent = prev?.sha ?? null
-      const changed = parent
-        ? git(paths.repo, 'diff', '--name-only', parent, sha).split('\n').filter(Boolean)
-        : []
+        const parent = prev?.sha ?? null
+        const changed = parent
+          ? git(paths.repo, 'diff', '--name-only', parent, sha).split('\n').filter(Boolean)
+          : []
 
-      // 1. Plans, made before anything runs at this commit, from evidence of earlier commits only.
-      let selections: Record<BaselineName, Set<string> | null> | null = null
-      let veyrumPlanMs: number | null = null
-      let veyrumReasons: Record<string, { count: number; details: string[] }> | undefined
-      let checks: CheckRef[] = []
-      if (parent) {
-        const p = veyrumPlan(corpus, paths.testRoot, paths.store, paths.scratch)
-        veyrumPlanMs = p.planMs
-        veyrumReasons = {}
-        for (const d of p.decisions) {
-          if (d.action !== 'run') continue
-          const entry = veyrumReasons[d.reason] ?? { count: 0, details: [] }
-          veyrumReasons[d.reason] = entry
-          entry.count++
-          for (const detail of d.details.length > 0 ? d.details : ['']) {
-            if (entry.details.length >= 8) break
-            const line = `${d.check.path}: ${detail}`
-            if (!entry.details.includes(line)) entry.details.push(line)
+        // 1. Plans, made before anything runs at this commit, from evidence of earlier commits only.
+        let selections: Record<BaselineName, Set<string> | null> | null = null
+        let veyrumPlanMs: number | null = null
+        let veyrumReasons: Record<string, { count: number; details: string[] }> | undefined
+        let checks: CheckRef[] = []
+        if (parent) {
+          const p = veyrumPlan(corpus, paths.testRoot, paths.store, paths.scratch)
+          veyrumPlanMs = p.planMs
+          veyrumReasons = {}
+          for (const d of p.decisions) {
+            if (d.action !== 'run') continue
+            const entry = veyrumReasons[d.reason] ?? { count: 0, details: [] }
+            veyrumReasons[d.reason] = entry
+            entry.count++
+            for (const detail of d.details.length > 0 ? d.details : ['']) {
+              if (entry.details.length >= 8) break
+              const line = `${d.check.path}: ${detail}`
+              if (!entry.details.includes(line)) entry.details.push(line)
+            }
+          }
+          checks = p.decisions.map((d) => d.check)
+          const veyrumSelection = new Set(
+            p.decisions.filter((d) => d.action === 'run').map((d) => d.check.path),
+          )
+          selections = await selectAll(
+            corpus,
+            paths,
+            store,
+            checks,
+            changed,
+            parent,
+            veyrumSelection,
+            p.runtimeKey,
+          )
+        }
+
+        // 2. Optional uninstrumented run for overhead (before capture, alternating order is not needed
+        //    since both runs are sequential on the same tree).
+        let plainWallMs: number | null = null
+        if (scored && options.overheadEvery > 0 && index % options.overheadEvery === 0) {
+          plainWallMs = plainRun(corpus, paths.testRoot, paths.scratch).wallMs
+        }
+
+        // 3. Ground truth and evidence for the next commit.
+        const capture = captureRun(corpus, paths.testRoot, paths.store, paths.scratch)
+        const outcomes = capture.outcomes
+        const flaky = detectFlaky(corpus, paths.testRoot, paths.scratch, outcomes)
+        const prevOutcomes = new Map(Object.entries(prev?.outcomes ?? {}))
+        const flips: string[] = []
+        for (const [file, o] of outcomes) {
+          if (flaky.has(file)) continue
+          const before = prevOutcomes.get(file)
+          if (before ? before[0] !== o.verdict : o.verdict === 'fail') flips.push(file)
+        }
+        const failing = [...outcomes]
+          .filter(([f, o]) => o.verdict === 'fail' && !flaky.has(f))
+          .map(([f]) => f)
+
+        let baselines: CommitResult['baselines'] = null
+        if (selections) {
+          baselines = {}
+          for (const name of BASELINES) {
+            const sel = selections[name]
+            baselines[name] = sel
+              ? {
+                  selected: [...sel].sort(),
+                  selectedMs: durationOf(outcomes, sel),
+                  escapes: flips.filter((f) => !sel.has(f)),
+                  missedFailing: failing.filter((f) => !sel.has(f)),
+                }
+              : { selected: null, selectedMs: 0, escapes: [], missedFailing: [] }
           }
         }
-        checks = p.decisions.map((d) => d.check)
-        const veyrumSelection = new Set(
-          p.decisions.filter((d) => d.action === 'run').map((d) => d.check.path),
-        )
-        selections = await selectAll(
-          corpus,
-          paths,
-          store,
-          checks,
-          changed,
+        const result: CommitResult = {
+          kind: 'commit',
+          index,
+          sha,
           parent,
-          veyrumSelection,
-          p.runtimeKey,
-        )
-      }
-
-      // 2. Optional uninstrumented run for overhead (before capture, alternating order is not needed
-      //    since both runs are sequential on the same tree).
-      let plainWallMs: number | null = null
-      if (scored && options.overheadEvery > 0 && index % options.overheadEvery === 0) {
-        plainWallMs = plainRun(corpus, paths.testRoot, paths.scratch).wallMs
-      }
-
-      // 3. Ground truth and evidence for the next commit.
-      const capture = captureRun(corpus, paths.testRoot, paths.store, paths.scratch)
-      const outcomes = capture.outcomes
-      const flaky = detectFlaky(corpus, paths.testRoot, paths.scratch, outcomes)
-      const prevOutcomes = new Map(Object.entries(prev?.outcomes ?? {}))
-      const flips: string[] = []
-      for (const [file, o] of outcomes) {
-        if (flaky.has(file)) continue
-        const before = prevOutcomes.get(file)
-        if (before ? before[0] !== o.verdict : o.verdict === 'fail') flips.push(file)
-      }
-      const failing = [...outcomes].filter(([f, o]) => o.verdict === 'fail' && !flaky.has(f)).map(([f]) => f)
-
-      let baselines: CommitResult['baselines'] = null
-      if (selections) {
-        baselines = {}
-        for (const name of BASELINES) {
-          const sel = selections[name]
-          baselines[name] = sel
-            ? {
-                selected: [...sel].sort(),
-                selectedMs: durationOf(outcomes, sel),
-                escapes: flips.filter((f) => !sel.has(f)),
-                missedFailing: failing.filter((f) => !sel.has(f)),
-              }
-            : { selected: null, selectedMs: 0, escapes: [], missedFailing: [] }
+          changed,
+          testFiles: outcomes.size,
+          totalMs: durationOf(outcomes, outcomes.keys()),
+          outcomes: Object.fromEntries(
+            [...outcomes].map(([f, o]) => [f, [o.verdict, Math.round(o.durationMs)] as const]),
+          ),
+          flips,
+          flaky: [...flaky],
+          baselines,
+          veyrumPlanMs,
+          ...(veyrumReasons ? { veyrumReasons } : {}),
+          capture: { runMs: capture.runMs, recordMs: capture.recordMs, wallMs: capture.wallMs },
+          plainWallMs,
         }
-      }
-      const result: CommitResult = {
-        kind: 'commit',
-        index,
-        sha,
-        parent,
-        changed,
-        testFiles: outcomes.size,
-        totalMs: durationOf(outcomes, outcomes.keys()),
-        outcomes: Object.fromEntries(
-          [...outcomes].map(([f, o]) => [f, [o.verdict, Math.round(o.durationMs)] as const]),
-        ),
-        flips,
-        flaky: [...flaky],
-        baselines,
-        veyrumPlanMs,
-        ...(veyrumReasons ? { veyrumReasons } : {}),
-        capture: { runMs: capture.runMs, recordMs: capture.recordMs, wallMs: capture.wallMs },
-        plainWallMs,
-      }
-      write(result)
-      const summary = baselines
-        ? BASELINES.map((b) => `${b}=${baselines?.[b]?.selected?.length ?? '-'}`).join(' ')
-        : 'warm-up'
-      log(`  ${outcomes.size} files, ${flips.length} flips, ${flaky.size} flaky; ${summary}`)
+        write(result)
+        const summary = baselines
+          ? BASELINES.map((b) => `${b}=${baselines?.[b]?.selected?.length ?? '-'}`).join(' ')
+          : 'warm-up'
+        log(`  ${outcomes.size} files, ${flips.length} flips, ${flaky.size} flaky; ${summary}`)
 
-      // 4. Mutants on sampled commits, using evidence recorded at this commit.
-      if (scored && corpus.mutantsPerCommit > 0 && index % corpus.mutationEvery === 0) {
-        for (const m of runMutants(corpus, paths, store, sha, changed, outcomes, capture.wallMs)) {
-          const result = await m
-          if (result) write(result)
+        // 4. Mutants on sampled commits, using evidence recorded at this commit.
+        if (scored && corpus.mutantsPerCommit > 0 && index % corpus.mutationEvery === 0) {
+          for (const m of runMutants(corpus, paths, store, sha, changed, outcomes, capture.wallMs)) {
+            const result = await m
+            if (result) write(result)
+          }
         }
+        prev = result
+      } catch (error) {
+        // A commit whose tree cannot be tested (for example a test glob that walks into
+        // node_modules) is recorded and skipped; the replay fails at the end so it is noticed.
+        const message = error instanceof Error ? (error.stack ?? error.message) : String(error)
+        log(`  commit ${sha.slice(0, 10)} could not be replayed:\n${message.slice(0, 4000)}`)
+        store.forgetRevision(sha)
+        write({ kind: 'broken', index, sha, error: message.slice(0, 2000) })
+        broken++
       }
-      prev = result
     }
   } finally {
     store.close()
   }
+  if (broken > 0)
+    throw new Error(`${broken} commit(s) could not be replayed; see the broken lines in ${paths.results}`)
 }
 
 function* runMutants(

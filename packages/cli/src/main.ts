@@ -194,6 +194,34 @@ function describe(decision: Decision): string {
   return `${head}\n${decision.details.map((d) => `        ${d}`).join('\n')}`
 }
 
+/**
+ * Writes an object whose array fields are written one element at a time: a run over a huge tree
+ * produces more JSON than fits in one string.
+ */
+function writeJson(file: string, fields: Record<string, unknown>): void {
+  const fd = fs.openSync(file, 'w')
+  try {
+    let separator = '{'
+    for (const [key, value] of Object.entries(fields)) {
+      fs.writeSync(fd, `${separator}\n${JSON.stringify(key)}: `)
+      separator = ','
+      if (!Array.isArray(value)) {
+        fs.writeSync(fd, JSON.stringify(value))
+        continue
+      }
+      let itemSeparator = '['
+      for (const item of value) {
+        fs.writeSync(fd, `${itemSeparator}\n${JSON.stringify(item)}`)
+        itemSeparator = ','
+      }
+      fs.writeSync(fd, itemSeparator === '[' ? '[]' : '\n]')
+    }
+    fs.writeSync(fd, '\n}\n')
+  } finally {
+    fs.closeSync(fd)
+  }
+}
+
 function summarize(result: RunResult, mode: RunMode): string {
   const reused = result.decisions.filter((d) => d.action === 'skip')
   const savedMs = reused.reduce((sum, d) => sum + d.durationMs, 0)
@@ -317,20 +345,13 @@ async function main(argv: string[]): Promise<number> {
     }
     if (args.summary) fs.appendFileSync(args.summary, markdownSummary(result, { mode, audit: args.audit }))
     if (args.json) {
-      fs.writeFileSync(
-        args.json,
-        JSON.stringify(
-          {
-            runtimeKey: result.runtimeKey,
-            decisions: result.decisions,
-            records: result.records,
-            outcomes: result.outcomes,
-            timings: result.timings,
-          },
-          null,
-          2,
-        ),
-      )
+      writeJson(args.json, {
+        runtimeKey: result.runtimeKey,
+        decisions: result.decisions,
+        records: result.records,
+        outcomes: result.outcomes,
+        timings: result.timings,
+      })
     }
     return result.ok ? 0 : 1
   } finally {
