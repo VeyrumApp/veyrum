@@ -1,0 +1,50 @@
+# Temporary: runs the Windows tracing work on its branch, which ci.yml does not run for pushes.
+# Drop this file before merging.
+name: Windows tracing
+
+on:
+  push:
+    branches: [windows-native-tracing]
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - name: Raw trace of a few programs
+        shell: node {0}
+        run: |
+          const { spawnSync } = require('node:child_process')
+          const fs = require('node:fs')
+          const path = require('node:path')
+          const dir = path.resolve('packages/capture/dist/native/win32-x64')
+          const launcher = path.join(dir, 'veyrum-exec.exe')
+          const work = path.join(process.env.RUNNER_TEMP, 'smoke')
+          fs.mkdirSync(path.join(work, 'sub'), { recursive: true })
+          fs.writeFileSync(path.join(work, 'x.txt'), 'hello')
+          const cmd = path.join(process.env.SystemRoot, 'System32', 'cmd.exe')
+          const run = (name, program, commandLine) => {
+            const log = path.join(work, `${name}.log`)
+            fs.rmSync(log, { force: true })
+            const r = spawnSync(launcher, [program.includes(' ') ? `"${program}"` : program, commandLine], {
+              cwd: work, argv0: 'veyrum-exec', windowsVerbatimArguments: true,
+              env: { ...process.env, VEYRUM_TRACE: log },
+            })
+            console.log(`---- ${name}: status ${r.status} error ${r.error}`)
+            console.log(`stdout: ${r.stdout}`)
+            console.log(`stderr: ${r.stderr}`)
+            console.log(fs.existsSync(log) ? fs.readFileSync(log, 'utf8') : '(no log)')
+          }
+          run('cmd', cmd, 'cmd /d /s /c "type x.txt & dir /b sub & if exist later (echo yes) else (echo no)"')
+          run('node', process.execPath, `node -e "require('fs').readFileSync('x.txt'); console.log(require('child_process').execSync('type x.txt').toString())"`)
+          run('cmd32', path.join(process.env.SystemRoot, 'SysWOW64', 'cmd.exe'), 'cmd /d /c exit 3')
+      - name: Test
+        run: pnpm exec vitest run packages/vitest/test/hazards-windows.test.ts packages/capture/test/trace.test.ts packages/jest/test/hazards.test.ts packages/vitest/test/hazards-runner.test.ts --maxWorkers=2
