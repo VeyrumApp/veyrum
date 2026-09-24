@@ -54,6 +54,7 @@ export interface TargetJest {
   readonly runtimeResolve: string
   /** jest-resolve as jest-runner loads it: the one that resolves each file's test environment. */
   readonly runnerResolve: string
+  readonly runnerTransform: string
 }
 
 export function resolveTargetJest(root: string): TargetJest {
@@ -93,6 +94,7 @@ export function resolveTargetJest(root: string): TargetJest {
     hasteMap: createRequire(runtime).resolve('jest-haste-map'),
     runtimeResolve: createRequire(runtime).resolve('jest-resolve'),
     runnerResolve: createRequire(fromCore.resolve('jest-runner')).resolve('jest-resolve'),
+    runnerTransform: createRequire(fromCore.resolve('jest-runner')).resolve('@jest/transform'),
   }
 }
 
@@ -228,9 +230,9 @@ export async function runJest(options: JestRunOptions): Promise<RunResult> {
   const ignored = [...veyrumDirs(here), scratch + path.sep, ...storeFiles(options.store.file)]
   const ownRequire = createRequire(import.meta.url)
 
-  // The wrapper lives under a node_modules directory so no project transform applies to it, at a
-  // path that depends only on its content: the path is part of the project config, which Jest's
-  // transformers put in their cache keys, so a per-run path would defeat the transform cache.
+  // The wrappers live under a node_modules directory so no project transform applies to them, at a
+  // path that depends only on their content: the sequencer's path is part of the global config,
+  // which Jest's transformers put in their cache keys, so a per-run path would defeat the cache.
   const source = (name: string): string =>
     fs.readFileSync(path.join(here, name), 'utf8').replace(/\n\/\/# sourceMappingURL=.*$/m, '\n')
   const environmentSource = source('environment.cjs')
@@ -311,6 +313,7 @@ export async function runJest(options: JestRunOptions): Promise<RunResult> {
       captureWorker: ownRequire.resolve('@veyrum/capture/worker'),
       resolver: target.runtimeResolve,
       environmentResolver: target.runnerResolve,
+      runnerTransform: target.runnerTransform,
       environmentPath,
       preload: path.join(here, 'preload.cjs'),
       environments,
@@ -409,7 +412,6 @@ export async function runJest(options: JestRunOptions): Promise<RunResult> {
             ...baseArgv,
             _: [...new Set(selected.map((s) => s.file))],
             runTestsByPath: true,
-            testEnvironment: environmentPath,
             ...(STOCK_SEQUENCER.test(globalConfig.testSequencer) ? { testSequencer: sequencerPath } : {}),
             reporters: options.printTests ? ['default', reporterPath] : [reporterPath],
           },

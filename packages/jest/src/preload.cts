@@ -1,21 +1,39 @@
 /**
  * Loaded into Jest's worker processes (through the execArgv they inherit) and into the main
- * process for tests run in band. A test file can pick its own environment with a
- * `@jest-environment` docblock, which Jest resolves with jest-resolve's resolveTestEnvironment in
- * place of the configured one: without this, such a file would bypass Veyrum's environment
- * wrapper and never be captured. Every environment resolution for a docblock now returns the
- * wrapper, and the wrapper loads the environment the docblock names (see environment.cts).
+ * process for tests run in band. For every test file, jest-runner creates the project's script
+ * transformer and loads the file's environment with it: the configured one, or the one a
+ * `@jest-environment` docblock names. That load is Jest's own (a TypeScript or ESM environment is
+ * transformed as usual); what it returns is then wrapped by Veyrum's environment wrapper
+ * (environment.cts), which captures the file.
  *
  * Self-contained: no relative imports. Does nothing outside a Veyrum run.
  */
 interface PreloadConfig {
+  /** jest-resolve as jest-runner resolves it, which resolves docblock environments. */
   environmentResolver: string
+  /** @jest/transform as jest-runner resolves it. */
+  runnerTransform: string
+  /** The environment wrapper, loaded natively (see environment.cts). */
   environmentPath: string
+  /** The environments the projects configured. */
+  environments: Record<string, string>
 }
 
 type Resolve = (options: { testEnvironment: string } & Record<string, unknown>) => string
 
-const ORIGINAL = Symbol.for('veyrum.jest.resolveTestEnvironment')
+interface Transformer {
+  requireAndTranspileModule(moduleName: string, ...rest: unknown[]): Promise<unknown>
+}
+type CreateTransformer = (...args: unknown[]) => Promise<Transformer>
+
+interface Wrapper {
+  /** Installs capture's hooks, so the environment's own loads are recorded. */
+  prepare(): void
+  /** The environment class, wrapped; anything else as it is. */
+  wrap(loaded: unknown): unknown
+}
+
+const PATCHED = Symbol.for('veyrum.jest.transformPatched')
 
 /**
  * The run's configuration, from the variable Veyrum's main process sets for its workers. In a
@@ -45,15 +63,53 @@ function install(): void {
     return
   }
   const globals = globalThis as Record<symbol, unknown>
-  if (globals[ORIGINAL]) return
-  require(config.environmentResolver)
-  const cached = require.cache[config.environmentResolver]
-  const exports = cached?.exports as { resolveTestEnvironment?: Resolve } | undefined
-  const original = exports?.resolveTestEnvironment
+  if (globals[PATCHED]) return
+  require(config.runnerTransform)
+  const cached = require.cache[config.runnerTransform]
+  const original = (cached?.exports as { createScriptTransformer?: CreateTransformer } | undefined)
+    ?.createScriptTransformer
   if (!cached || typeof original !== 'function') return
-  globals[ORIGINAL] = original
-  // jest-resolve's exports are getters that cannot be redefined. jest-runner requires the module
-  // lazily, on its first test, so a copy put in the module cache now is what it gets.
+  globals[PATCHED] = true
+  // The modules jest-runner loads as environments: the configured ones, and those docblocks name,
+  // noted as jest-runner resolves them (just before it loads them).
+  const environments = new Set(Object.values(config.environments))
+  noteDocblockEnvironments(config.environmentResolver, environments)
+  let wrapper: Wrapper | null = null
+  const loadWrapper = (): Wrapper => {
+    wrapper ??= require(config.environmentPath) as Wrapper
+    return wrapper
+  }
+  // @jest/transform's exports are getters that cannot be redefined. jest-runner requires the
+  // module lazily, on its first test, so a copy put in the module cache now is what it gets.
+  const { createScriptTransformer: _, ...descriptors } = Object.getOwnPropertyDescriptors(cached.exports)
+  const patched = Object.defineProperties({}, descriptors)
+  Object.defineProperty(patched, 'createScriptTransformer', {
+    enumerable: true,
+    configurable: true,
+    value: async (...args: unknown[]): Promise<Transformer> => {
+      const transformer = await original(...args)
+      const load = transformer.requireAndTranspileModule.bind(transformer)
+      transformer.requireAndTranspileModule = async (moduleName: string, ...rest: unknown[]) => {
+        if (!environments.has(moduleName)) return load(moduleName, ...rest)
+        const w = loadWrapper()
+        w.prepare()
+        return w.wrap(await load(moduleName, ...rest))
+      }
+      return transformer
+    },
+  })
+  cached.exports = patched
+}
+
+/** Notes the environments docblocks name, as jest-runner resolves them; the result is unchanged. */
+function noteDocblockEnvironments(resolver: string, environments: Set<string>): void {
+  require(resolver)
+  const cached = require.cache[resolver]
+  const original = (cached?.exports as { resolveTestEnvironment?: Resolve } | undefined)
+    ?.resolveTestEnvironment
+  if (!cached || typeof original !== 'function') return
+  // Same as for @jest/transform: a copy of the exports, in the module cache before jest-runner's
+  // first test requires it.
   const { resolveTestEnvironment: _, ...descriptors } = Object.getOwnPropertyDescriptors(cached.exports)
   const patched = Object.defineProperties({}, descriptors)
   Object.defineProperty(patched, 'resolveTestEnvironment', {
@@ -61,10 +117,8 @@ function install(): void {
     configurable: true,
     value: (options: Parameters<Resolve>[0]): string => {
       const resolved = original(options)
-      // The wrapper resolves the docblock's environment itself, with the original function. An
-      // environment that needs Jest's transform (TypeScript) keeps Jest's own path: the file then
-      // runs as it would without Veyrum, and is not captured.
-      return /\.c?js$/.test(resolved) ? config.environmentPath : resolved
+      environments.add(resolved)
+      return resolved
     },
   })
   cached.exports = patched

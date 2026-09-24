@@ -133,6 +133,35 @@ describe('code', () => {
     })
   }
 
+  // A transform that runs TypeScript the way ts-jest or babel would; `enum` needs a transform, not
+  // just Node's type stripping, so the environment must load through Jest's own loader.
+  const STRIP_TRANSFORM =
+    "const { stripTypeScriptTypes } = require('node:module')\nmodule.exports = { process: (src) => ({ code: stripTypeScriptTypes(src, { mode: 'transform' }) }) }\n"
+  const TS_ENVIRONMENT =
+    "const { TestEnvironment } = require('jest-environment-node')\nenum Mark { Custom = 'custom' }\nmodule.exports = class extends TestEnvironment { constructor(...a: any[]) { super(...a); this.global.MARK = Mark.Custom } }\n"
+  for (const how of ['docblock', 'configured'] as const) {
+    for (const workers of [1, 2]) {
+      test(`an environment written in TypeScript is captured, and an input (${how}, ${workers === 1 ? 'in band' : 'workers'})`, () => {
+        const s = jest(`typescript-environment-${how}-${workers}`, workers, ['jest-environment-node'])
+          .write('strip.js', STRIP_TRANSFORM)
+          .write('env/custom.ts', TS_ENVIRONMENT)
+          .write(
+            'jest.config.js',
+            `module.exports = { transform: { '\\\\.[jt]s$': '<rootDir>/strip.js' }${how === 'configured' ? ", testEnvironment: '<rootDir>/env/custom.ts'" : ''} }\n`,
+          )
+          .write(
+            'test/a.test.js',
+            `${how === 'docblock' ? '/** @jest-environment ./env/custom.ts */\n' : ''}test('env', () => expect(globalThis.MARK).toBe('custom'))\n`,
+          )
+          .write('test/b.test.js', PLAIN_TEST)
+        s.capture()
+        expect(s.actions()).toEqual({ 'test/a.test.js': 'skip', 'test/b.test.js': 'skip' })
+        s.edit('env/custom.ts', "Custom = 'custom'", "Custom = 'custom' + ''")
+        expect(s.actions()['test/a.test.js']).toBe('run')
+      })
+    }
+  }
+
   for (const workers of [1, 2]) {
     test(`a configured custom environment is an input (${workers === 1 ? 'in band' : 'workers'})`, () => {
       const s = jest(`configured-environment-${workers}`, workers, ['jest-environment-node'])

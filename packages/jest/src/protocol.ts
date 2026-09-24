@@ -9,9 +9,11 @@ export interface JestCaptureConfig {
   readonly captureWorker: string
   /** The jest-resolve module Jest's runtime resolves with, whose haste lookups are observed. */
   readonly resolver: string
-  /** The jest-resolve module Jest's runner resolves test environments with (see preload.cts). */
+  /** The jest-resolve module Jest's runner resolves docblock environments with (see preload.cts). */
   readonly environmentResolver: string
-  /** The environment wrapper, which the preload makes docblock environments resolve to. */
+  /** The @jest/transform module Jest's runner loads environments with (see preload.cts). */
+  readonly runnerTransform: string
+  /** The environment wrapper, which wraps every environment jest-runner loads (see preload.cts). */
   readonly environmentPath: string
   /** The preload workers load (see preload.cts), which tests must not see in their execArgv. */
   readonly preload: string
@@ -19,7 +21,7 @@ export interface JestCaptureConfig {
   readonly projectCoverage?: boolean
   /** The sequencer the project configured, which Veyrum's own wraps (see sequencer.cts). */
   readonly sequencer: string
-  /** The environment each project configured, by Jest project config id, that the wrapper runs. */
+  /** The environment each project configured, by Jest project config id. */
   readonly environments: Readonly<Record<string, string>>
 }
 

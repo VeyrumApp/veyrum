@@ -256,11 +256,12 @@ failure is stored as a record with that closure, so no later plan reuses the pas
 behind it. Under Jest, files that need capture run first, so a worker ends its coverage session
 at most once.
 
-## Files that are never reused
+## Environments and skipped files
 
-A Jest file whose `@jest-environment` docblock names an environment written in TypeScript
-produces no capture, so it always runs: loading the environment needs Jest's transform, so the
-file keeps Jest's own environment and bypasses the wrapper. This is safe and costs little.
+Under Jest, the preload wraps every environment jest-runner loads, configured or named by a
+`@jest-environment` docblock, after Jest has loaded it with the project's own transform: an
+environment written in TypeScript or as an ES module is captured like any other, and its files
+are inputs of the files that ran in it.
 
 A Vitest file whose tests are all skipped at collection (for example
 `describe.skipIf(!process.env.TOKEN)`) runs no file-level hook, so its capture finishes when its
