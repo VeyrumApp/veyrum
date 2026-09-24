@@ -18,10 +18,12 @@ export type ClosureEntry =
       /** The transform depends on more than the file itself (import.meta.glob); always re-transform. */
       readonly dyn?: true
       /**
-       * The test read the source text of a function in this module, so formatting and comments
-       * can change its outcome: the module is compared by raw source instead of by units.
+       * Compared by raw source instead of by units: `true` when the test read the source text of a
+       * function in this module, so formatting and comments can change its outcome; `'whole'` when
+       * its code could not be fingerprinted by function (not compiled reproducibly, or run in more
+       * than one environment).
        */
-      readonly raw?: true
+      readonly raw?: true | 'whole'
     }
   /** A file loaded without transformation (node_modules, native addons, outside the repository). */
   | { readonly k: 'dep'; readonly p: string; readonly h: Digest | null }

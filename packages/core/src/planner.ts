@@ -154,7 +154,12 @@ export async function plan(options: PlanOptions): Promise<Decision[]> {
     for (const entry of record.closure) {
       if (entry.k === 'mod') {
         modStems.set(stem(entry.p), entry.p)
-        const change = await checkModule(entry, check.project, strict || entry.raw === true, run)
+        const change = await checkModule(
+          entry,
+          check.project,
+          strict || entry.raw === true ? 'observed' : entry.raw === 'whole' ? 'raw' : null,
+          run,
+        )
         if (change) changes.push(change)
       } else {
         const change = checkPlainEntry(entry, state, listFiles, run.injectedEnv, run.injectedVaryingEnv)
@@ -175,14 +180,19 @@ export async function plan(options: PlanOptions): Promise<Decision[]> {
   const checkModule = async (
     entry: Extract<ClosureEntry, { k: 'mod' }>,
     project: string,
-    strict: boolean,
+    /**
+     * Compared by raw source: the test observes source text or positions (in this module, or where
+     * it could not be located), or the module's code could not be fingerprinted by function.
+     */
+    strict: 'observed' | 'raw' | null,
     run: RunInfo,
   ): Promise<string | null> => {
     const srcNow = state.fileDigest(entry.p)
     if (srcNow === null) return `${entry.p} was removed`
     if (srcNow === entry.src && !entry.dyn) return null
-    if (strict)
+    if (strict === 'observed')
       return `${entry.p} changed (raw source compared because the test observes source text or positions)`
+    if (strict === 'raw') return `${entry.p} changed (compared by its raw source)`
     const now = await currentUnits(entry, project, srcNow, run)
     if (!now) return `${entry.p} changed and could not be re-fingerprinted`
     const changed: string[] = []

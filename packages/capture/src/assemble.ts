@@ -353,9 +353,11 @@ export function assemble(input: AssembleInput): Assembled {
           units,
           env: envs.size === 1 ? versions[0]!.env : outcome.env,
           ...(isDynamic(absolute) ? { dyn: true as const } : {}),
-          ...(rawModules.has(absolute) || payload.wholeModules?.includes(absolute) || envs.size > 1
+          ...(rawModules.has(absolute)
             ? { raw: true as const }
-            : {}),
+            : payload.wholeModules?.includes(absolute) || envs.size > 1
+              ? { raw: 'whole' as const }
+              : {}),
         })
       }
       for (const absolute of payload.wholeModules ?? []) {
@@ -367,7 +369,7 @@ export function assemble(input: AssembleInput): Assembled {
           flags.add(FLAGS.captureIncomplete)
           continue
         }
-        add(`mod:${repoPath}`, { k: 'mod', p: repoPath, src, units: {}, env: outcome.env, raw: true })
+        add(`mod:${repoPath}`, { k: 'mod', p: repoPath, src, units: {}, env: outcome.env, raw: 'whole' })
       }
       for (const absolute of [...payload.natives, ...payload.dlopen]) {
         if (ignored(absolute)) continue

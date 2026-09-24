@@ -402,7 +402,7 @@ test('${name}', async ({ baseURL }) => {
     expect(s.actions()).toEqual({ 'e2e/add.spec.js': 'skip', 'e2e/mul.spec.js': 'skip' })
     s.edit('src/math.js', 'return a * b', 'return b * a')
     expect(s.actions()).toEqual({ 'e2e/add.spec.js': 'run', 'e2e/mul.spec.js': 'run' })
-    expect(s.plan()['e2e/add.spec.js']?.details).toEqual([expect.stringMatching(/^src\/math\.js changed/)])
+    expect(s.plan()['e2e/add.spec.js']?.details).toEqual(['src/math.js changed (compared by its raw source)'])
   })
 
   test('when Veyrum fails before the run, Playwright runs every file on its own', async () => {
