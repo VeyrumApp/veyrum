@@ -154,7 +154,7 @@ export async function plan(options: PlanOptions): Promise<Decision[]> {
     for (const entry of record.closure) {
       if (entry.k === 'mod') {
         modStems.set(stem(entry.p), entry.p)
-        const change = await checkModule(entry, check.project, strict, run)
+        const change = await checkModule(entry, check.project, strict || entry.raw === true, run)
         if (change) changes.push(change)
       } else {
         const change = checkPlainEntry(entry, state, listFiles, run.injectedEnv, run.injectedVaryingEnv)

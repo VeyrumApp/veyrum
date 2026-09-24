@@ -37,6 +37,11 @@ export interface WorkerPayload {
   /** Number of executed scripts compiled from strings (eval, new Function). */
   readonly evalScripts: number
   readonly sourceObserved: boolean
+  /**
+   * The function source texts read (Function.prototype.toString), when few enough to keep. Absent
+   * with sourceObserved set means every module of the file is compared by raw source.
+   */
+  readonly observedSources?: readonly string[]
   readonly snapshot: { readonly added: number; readonly updated: number }
   /**
    * Manifests of packages the worker loaded natively, outside the runner's module system. Under the

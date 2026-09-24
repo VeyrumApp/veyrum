@@ -97,7 +97,7 @@ Flags record channels the closure cannot fully observe.
 | `snapshot-written` | the pass wrote a snapshot | not evidence |
 | `flaky-suspect` | the pass needed a retry | not evidence |
 | `capture-incomplete` | capture failed for the file | not evidence |
-| `source-observed` | code read function source text | compare raw source |
+| `source-observed` | code read function source text that could not be located | compare raw source |
 | `positions-observed` | a snapshot embeds source positions | compare raw source |
 | `net-local` | loopback connection | allowed |
 | `eval` | code compiled from strings | allowed |
@@ -183,6 +183,19 @@ Jest-specific observation rules, each covered by `packages/jest/test/hazards.tes
   configuration-like addition.
 - **Changed modules are re-transformed with the project's own Jest transform**, with the options
   the runtime uses for CommonJS or ECMAScript modules.
+
+## Function source and generated files
+
+- **Reading a function's source pins its module.** When a test reads the source text of a
+  function (`Function.prototype.toString`), the text is located in the executed code of the
+  modules it loaded, and those modules are compared by raw source (`raw`), so formatting and
+  comments in them count. Text found in a dependency needs nothing more, since dependencies are
+  compared whole. Text found nowhere (compiled from a string, or more than capture keeps) sets
+  the `source-observed` flag, and every module of the file is compared by raw source.
+- **What a test creates is not its input.** A file that did not exist when the run started and
+  was written by a test (or lies under a directory it created) derives from that test's code,
+  and from whatever the test read to produce it, which is recorded. Executing it as a module, or
+  the runner's main process reading it afterwards, adds no input.
 
 ## Files that run without capture
 

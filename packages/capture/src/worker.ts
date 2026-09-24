@@ -252,6 +252,10 @@ class FileRecorder implements HookSink {
   readonly packageNames = new Set<string>()
   readonly dlopens = new Set<string>()
   sourceObservedFlag = false
+  /** The function source texts code read, to find the modules they belong to (see assemble). */
+  readonly observedSources = new Set<string>()
+  observedSourcesOverflow = false
+  private observedSourceBytes = 0
   private readonly volatileEnv: RegExp
   /** Under the Jest layout, tests read their context's copy of the environment, never the process's. */
   private readonly testScopeOnly: boolean
@@ -331,8 +335,12 @@ class FileRecorder implements HookSink {
   dlopen(absolute: string): void {
     this.dlopens.add(absolute)
   }
-  sourceObserved(): void {
+  sourceObserved(text: string): void {
     this.sourceObservedFlag = true
+    if (this.observedSources.has(text)) return
+    this.observedSourceBytes += text.length
+    if (this.observedSourceBytes > MAX_OBSERVED_SOURCE_BYTES) this.observedSourcesOverflow = true
+    else this.observedSources.add(text)
   }
 }
 
@@ -352,6 +360,9 @@ export interface WorkerCapture {
   /** Ends capture without a payload, for a file that turns out to need none. */
   abandon(): Promise<void>
 }
+
+/** Function source text kept per file for locating it; beyond this, all modules compare raw. */
+const MAX_OBSERVED_SOURCE_BYTES = 4 * 1024 * 1024
 
 /** Where a run lists the test files that execute without capture (their evidence is valid). */
 export const UNCAPTURED_FILE = 'uncaptured.json'
@@ -725,6 +736,9 @@ export async function beginWorkerCapture(options: WorkerCaptureOptions): Promise
         dlopen: [...recorder.dlopens],
         evalScripts,
         sourceObserved: recorder.sourceObservedFlag,
+        ...(recorder.sourceObservedFlag && !recorder.observedSourcesOverflow
+          ? { observedSources: [...recorder.observedSources] }
+          : {}),
         snapshot,
         toolchain: [...state.toolchain],
         toolchainFiles: [...state.toolchainFiles],

@@ -189,6 +189,24 @@ describe('code edits', () => {
     const plan = sandbox.plan()
     expect(plan['test/source.test.ts']?.action).toBe('run')
   })
+
+  test('only the module whose function source a test read is compared by raw source', () => {
+    sandbox = new Sandbox('to-string-scoped')
+      .write('src/math.ts', MATH)
+      .write('src/other.ts', 'export function twice(n: number): number {\n  return n * 2\n}\n')
+      .write(
+        'test/source.test.ts',
+        "import { expect, test } from 'vitest'\nimport { add } from '../src/math'\nimport { twice } from '../src/other'\ntest('source', () => {\n  expect(add.toString()).toContain('return')\n  expect(twice(2)).toBe(4)\n})\n",
+      )
+    sandbox.capture()
+    // A comment in the other module changes no unit it executed.
+    sandbox.edit('src/other.ts', 'return n * 2', 'return n * 2 // double')
+    expect(sandbox.actions()['test/source.test.ts']).toBe('skip')
+    sandbox.edit('src/math.ts', 'return a + b', 'return a + b // sum')
+    expect(sandbox.plan()['test/source.test.ts']?.details).toEqual([
+      'src/math.ts changed (raw source compared because the test observes source text or positions)',
+    ])
+  })
 })
 
 describe('module loading', () => {

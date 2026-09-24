@@ -262,6 +262,20 @@ describe('dependencies and configuration', () => {
     expect(sandbox.actions()['test/plain.test.ts']).toBe('run')
   })
 
+  test('a module the test generated and imported is not an input', () => {
+    sandbox = new Sandbox('generated-by-tests')
+      .write(
+        'test/generate.test.ts',
+        "import fs from 'node:fs'\nimport { expect, test } from 'vitest'\ntest('generate', async () => {\n  fs.mkdirSync('out', { recursive: true })\n  fs.writeFileSync('out/site.mjs', 'export const built = 1\\n')\n  const site = await import('../out/site.mjs')\n  expect(site.built).toBe(1)\n})\n",
+      )
+      .write('test/plain.test.ts', PLAIN_TEST)
+    sandbox.capture()
+    // A fresh checkout does not have the generated module.
+    sandbox.remove('out/site.mjs')
+    expect(sandbox.plan()['test/generate.test.ts']?.details).toEqual([])
+    expect(sandbox.actions()).toEqual({ 'test/generate.test.ts': 'skip', 'test/plain.test.ts': 'skip' })
+  })
+
   test('a Vitest config change reruns everything', () => {
     sandbox = new Sandbox('config').write('test/plain.test.ts', PLAIN_TEST)
     sandbox.capture()

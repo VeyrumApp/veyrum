@@ -53,7 +53,8 @@ export interface HookSink {
   /** A package name looked up among the repository's own manifests (Jest's haste packages). */
   packageName(name: string): void
   dlopen(absolute: string): void
-  sourceObserved(): void
+  /** Code read the source text of a (non-native) function: that text. */
+  sourceObserved(text: string): void
 }
 
 const noop: HookSink = {
@@ -695,7 +696,7 @@ export function observeSourceIn(realmFunction: FunctionConstructor): void {
     apply(target, thisArg, args) {
       const text = Reflect.apply(target, thisArg, args) as string
       if (recording() && !text.endsWith('[native code] }') && !sourceReaderIsBenign())
-        state.sink.sourceObserved()
+        state.sink.sourceObserved(text)
       return text
     },
   })

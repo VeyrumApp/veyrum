@@ -129,6 +129,26 @@ export function assemble(input: AssembleInput): Assembled {
     }
     return m
   }
+  const codeCache = new Map<string, string>()
+  const codeOf = (codeDigest: string): string => {
+    let code = codeCache.get(codeDigest)
+    if (code === undefined) {
+      try {
+        code = fs.readFileSync(path.join(input.outDir, 'blobs', `${codeDigest}.js`), 'utf8')
+      } catch {
+        code = ''
+      }
+      codeCache.set(codeDigest, code)
+    }
+    return code
+  }
+  const depText = (absolute: string): string => {
+    try {
+      return input.fs.readFileSync(absolute, 'utf8') as string
+    } catch {
+      return ''
+    }
+  }
   const dynCache = new Map<string, boolean>()
   const isDynamic = (absolute: string): boolean => {
     let d = dynCache.get(absolute)
@@ -173,6 +193,22 @@ export function assemble(input: AssembleInput): Assembled {
   }
 
   const outcomes = [...input.outcomes]
+  // Files a test created during the run (fixture output such as a generated site or module) are
+  // its own products, derived from its code: not inputs of that test, nor of the runner's main
+  // process when it reads them afterwards. A file that existed when the run started stays an
+  // input, since it may have been read before a test changed it.
+  const filesAtStart = new Set(input.files)
+  const createdDuringRun = (writes: ReadonlySet<string>, absolute: string): boolean => {
+    if (writes.size === 0 || !isInside(root, absolute) || filesAtStart.has(toRepoPath(root, absolute)))
+      return false
+    for (let dir = absolute; dir !== path.dirname(dir); dir = path.dirname(dir)) {
+      if (writes.has(dir)) return true
+      if (dir === root) break
+    }
+    return false
+  }
+  const testWrites = new Set(payloads.flatMap((p) => p.writes))
+
   for (const outcome of outcomes) {
     const check = toRepoPath(root, outcome.file)
     const flags = new Set<string>()
@@ -187,7 +223,6 @@ export function assemble(input: AssembleInput): Assembled {
       if (payload.captureErrors.length > 0) flags.add(FLAGS.captureIncomplete)
       if (payload.isolateReused || input.sharedWorkerProjects.has(outcome.project))
         flags.add(FLAGS.sharedWorker)
-      if (payload.sourceObserved) flags.add(FLAGS.sourceObserved)
       if (payload.envEnumerated) flags.add(FLAGS.envEnumerated)
       if (payload.evalScripts > 0) flags.add(FLAGS.evalCode)
       if (payload.spawns.length > 0) flags.add(FLAGS.spawn)
@@ -210,8 +245,33 @@ export function assemble(input: AssembleInput): Assembled {
         if (list) list.push(item)
         else modulesByPath.set(mod.path, [item])
       }
+      // Source text a test read pins the module it came from to raw comparison. Text found in a
+      // dependency needs nothing more (dependencies are compared whole); text found nowhere
+      // (compiled from a string, or too much to keep) pins every module.
+      const rawModules = new Set<string>()
+      if (payload.sourceObserved) {
+        const texts = payload.observedSources
+        let located = texts !== undefined && texts.length > 0
+        for (const text of texts ?? []) {
+          let found = false
+          for (const [absolute, versions] of modulesByPath) {
+            if (versions.some((v) => codeOf(v.code).includes(text))) {
+              rawModules.add(absolute)
+              found = true
+            }
+          }
+          if (!found) found = payload.natives.some((dep) => !ignored(dep) && depText(dep).includes(text))
+          if (!found) {
+            located = false
+            break
+          }
+        }
+        if (!located) flags.add(FLAGS.sourceObserved)
+      }
+      const checkWrites = new Set(payload.writes)
       for (const [absolute, versions] of modulesByPath) {
         allModulePaths.add(absolute)
+        if (createdDuringRun(checkWrites, absolute)) continue
         const repoPath = toRepoPath(root, absolute)
         const src = state.fileDigest(repoPath)
         if (src === null) {
@@ -235,6 +295,7 @@ export function assemble(input: AssembleInput): Assembled {
           units,
           env: outcome.env,
           ...(isDynamic(absolute) ? { dyn: true as const } : {}),
+          ...(rawModules.has(absolute) ? { raw: true as const } : {}),
         })
       }
       for (const absolute of [...payload.natives, ...payload.dlopen]) {
@@ -340,6 +401,7 @@ export function assemble(input: AssembleInput): Assembled {
   const testFiles = new Set(outcomes.map((o) => o.file))
   for (const obs of input.main.paths) {
     if (ignored(obs.p) || allModulePaths.has(obs.p) || obs.kind === 'dir') continue
+    if (createdDuringRun(testWrites, obs.p)) continue
     // Reads inside node_modules are resolution metadata. Each check records the manifests of the
     // packages it loaded, and the toolchain's own packages are recorded below by module load.
     if (obs.p.includes(`${path.sep}node_modules${path.sep}`)) continue
