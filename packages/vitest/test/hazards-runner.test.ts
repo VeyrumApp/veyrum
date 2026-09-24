@@ -200,6 +200,30 @@ describe('coverage', () => {
   })
 })
 
+describe("Veyrum's own reads", () => {
+  // Planning hashes the inputs of every recorded file; those reads are not the run's inputs.
+  test('are never inputs of the files that run', () => {
+    sandbox = new Sandbox('own-reads')
+      .write('fixtures/x.txt', 'a')
+      .write('src/b.ts', 'export const b = () => 1\n')
+      .write(
+        'test/a.test.ts',
+        "import fs from 'node:fs'\nimport { expect, test } from 'vitest'\ntest('a', () => expect(fs.readFileSync('fixtures/x.txt', 'utf8')).toMatch(/^./))\n",
+      )
+      .write(
+        'test/b.test.ts',
+        "import { expect, test } from 'vitest'\nimport { b } from '../src/b'\ntest('b', () => expect(b()).toBeGreaterThan(0))\n",
+      )
+    sandbox.capture()
+    // b reruns for its edit while the plan hashes a's changed fixture.
+    sandbox.write('fixtures/x.txt', 'b')
+    sandbox.edit('src/b.ts', '=> 1', '=> 2')
+    expect(sandbox.cli(['run']).code).toBe(0)
+    sandbox.write('fixtures/x.txt', 'c')
+    expect(sandbox.actions()).toEqual({ 'test/a.test.ts': 'run', 'test/b.test.ts': 'skip' })
+  })
+})
+
 describe('files whose tests are all skipped', () => {
   // Vitest runs no hook of such a file: its capture finishes when its worker stops.
   test('are reused, and what decided the skip is an input', () => {

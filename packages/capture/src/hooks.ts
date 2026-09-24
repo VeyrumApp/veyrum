@@ -125,7 +125,19 @@ function sharedState(): HookState {
 // One state per isolate, even if several copies of this module load (native and bundled).
 const state: HookState = sharedState()
 
-export const rawFs: RawFs = state.raw
+/**
+ * The unpatched fs functions, for Veyrum's own reads (planning, digests). They run with recording
+ * suspended: Node's readFileSync opens through the patched fs.openSync, so the original function
+ * alone would still be observed.
+ */
+export const rawFs: RawFs = {
+  statSync: ((...args: Parameters<typeof fs.statSync>) =>
+    unobserved(() => state.raw.statSync(...args))) as typeof fs.statSync,
+  readFileSync: ((...args: Parameters<typeof fs.readFileSync>) =>
+    unobserved(() => state.raw.readFileSync(...args))) as typeof fs.readFileSync,
+  readdirSync: ((...args: Parameters<typeof fs.readdirSync>) =>
+    unobserved(() => state.raw.readdirSync(...args))) as typeof fs.readdirSync,
+}
 
 export function setSink(sink: HookSink | null): void {
   state.sink = sink ?? noop
