@@ -18,9 +18,11 @@ jobs:
           # Child-process tracing is native code: build and test it on arm64 too.
           - node: 22
             os: ubuntu-24.04-arm
-          # Developers run Veyrum locally; macOS has no child-process tracing.
+          # Developers run Veyrum locally; macOS and Windows have no child-process tracing.
           - node: 22
             os: macos-latest
+          - node: 22
+            os: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4

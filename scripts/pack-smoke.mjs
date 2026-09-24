@@ -4,7 +4,7 @@
  * from npm, and runs the edit cycle: record, reuse everything, edit one function, rerun only the
  * file that executed it. Run after `pnpm build`.
  */
-import { execFileSync, spawnSync } from 'node:child_process'
+import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -25,8 +25,16 @@ const pinned = process.env.SMOKE_VITEST || process.env.SMOKE_JEST
 const vitestVersion = pinned ? process.env.SMOKE_VITEST : devVersion('vitest', 'vitest')
 const jestVersion = pinned ? process.env.SMOKE_JEST : devVersion('jest', '@jest/core')
 
+// On Windows, pnpm and package binaries are .cmd shims, which only a shell runs: they get one
+// quoted command line.
+const shell = process.platform === 'win32'
+const commandLine = (command, args) =>
+  [command, ...args].map((a) => (/[\s"]/.test(a) ? `"${a}"` : a)).join(' ')
+const spawn = (command, args, options) =>
+  shell ? spawnSync(commandLine(command, args), { ...options, shell }) : spawnSync(command, args, options)
+
 function run(command, args, cwd) {
-  const result = spawnSync(command, args, { cwd, encoding: 'utf8', env: { ...process.env, CI: 'true' } })
+  const result = spawn(command, args, { cwd, encoding: 'utf8', env: { ...process.env, CI: 'true' } })
   const output = `${result.stdout}${result.stderr}`
   if (result.status !== 0) throw new Error(`${command} ${args.join(' ')} failed in ${cwd}:\n${output}`)
   return output
@@ -83,10 +91,7 @@ function cycle(dir, source, testExt) {
 try {
   fs.mkdirSync(packDir)
   for (const p of PACKAGES)
-    execFileSync('pnpm', ['pack', '--pack-destination', packDir], {
-      cwd: path.join(repo, 'packages', p),
-      stdio: 'ignore',
-    })
+    run('pnpm', ['pack', '--pack-destination', packDir], path.join(repo, 'packages', p))
 
   if (vitestVersion) {
     const vitestDir = project(
