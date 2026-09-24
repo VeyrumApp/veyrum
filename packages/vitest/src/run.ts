@@ -16,6 +16,8 @@ import {
   forcedDecisions,
   listRepoFiles,
   needsPlan,
+  PROJECT_CONFIG,
+  ProjectConfigs,
   plan,
   type RunOptions,
   type RunResult,
@@ -165,6 +167,37 @@ function runnerEnvironmentFiles(servers: readonly unknown[]): string[] {
   return [...out]
 }
 
+interface NamedConfigOptions {
+  root?: string
+  tsconfig?: unknown
+  oxc?: { tsconfig?: unknown } | false
+  optimizeDeps?: { rolldownOptions?: { tsconfig?: unknown }; esbuildOptions?: { tsconfig?: unknown } }
+}
+
+/**
+ * Project configurations the projects' configuration names, as repository paths: Vite's `tsconfig`
+ * (rolldown's TsconfigCache then uses it for every file), a path in the transform or dependency
+ * optimizer options, and Vitest's type-checking configuration. Each applies to files anywhere.
+ */
+function namedProjectConfigs(root: string, vitest: Vitest): string[] {
+  const out: string[] = []
+  const configs = [vitest, ...vitest.projects].map((p) => ({ vite: p.vite.config, test: p.config }))
+  for (const config of configs) {
+    const vite = config.vite as unknown as NamedConfigOptions
+    const test = config.test as unknown as { typecheck?: { tsconfig?: unknown } }
+    const named = [
+      vite.tsconfig,
+      vite.oxc ? vite.oxc.tsconfig : undefined,
+      vite.optimizeDeps?.rolldownOptions?.tsconfig,
+      vite.optimizeDeps?.esbuildOptions?.tsconfig,
+      test.typecheck?.tsconfig,
+    ]
+    for (const name of named)
+      if (typeof name === 'string') out.push(toRepoPath(root, path.resolve(vite.root ?? root, name)))
+  }
+  return out
+}
+
 function checkOf(root: string, spec: TestSpecification): CheckRef {
   return { path: toRepoPath(root, spec.moduleId), project: spec.project.name }
 }
@@ -297,8 +330,19 @@ export async function runVitest(options: VitestRunOptions): Promise<VitestRunRes
       if (viteConfig.configFile) configFiles.add(path.resolve(viteConfig.configFile))
       for (const dep of viteConfig.configFileDependencies ?? []) configFiles.add(path.resolve(root, dep))
     }
-    for (const f of files)
-      if (/(^|\/)(tsconfig|jsconfig)[^/]*\.json$/.test(f)) configFiles.add(path.join(root, f))
+    // Vite 8 discovers project configurations in native code, which fs hooks cannot see: every
+    // tsconfig and jsconfig in the repository is a shared input, with the files they extend or
+    // reference. Each affects only the files it can govern (see @veyrum/core's tsconfig.ts),
+    // except those the configuration names, which apply to every file, and those Vite's
+    // configuration loading depends on.
+    const configGraph = new ProjectConfigs(root, rawFs, files)
+    const allProjectConfigs = configGraph
+      .related(files.filter((f) => PROJECT_CONFIG.test(f)))
+      .map((f) => path.join(root, f))
+    const projectConfigs = new Set(allProjectConfigs.filter((f) => !configFiles.has(f)))
+    for (const f of configGraph.related(namedProjectConfigs(root, vitest)))
+      projectConfigs.delete(path.join(root, f))
+    for (const f of allProjectConfigs) configFiles.add(f)
 
     // Initializes reporters and the coverage provider without running.
     // Vitest 4.1 renamed init() to standalone().
@@ -360,8 +404,10 @@ export async function runVitest(options: VitestRunOptions): Promise<VitestRunRes
     }
     const runMs = performance.now() - runStarted
     const main = recorder.stop()
-    for (const f of runnerEnvironmentFiles([vitest.vite, ...vitest.projects.map((p) => p.vite)]))
+    for (const f of runnerEnvironmentFiles([vitest.vite, ...vitest.projects.map((p) => p.vite)])) {
       configFiles.add(f)
+      projectConfigs.delete(f)
+    }
 
     const recordStarted = performance.now()
     const pool = String((vitest.config as unknown as { pool?: string }).pool ?? '')
@@ -396,6 +442,7 @@ export async function runVitest(options: VitestRunOptions): Promise<VitestRunRes
           sharedWorkerProjects,
           ignored,
           configFiles: [...configFiles],
+          projectConfigs: [...projectConfigs],
         }),
       )
       options.store.transaction(() => {

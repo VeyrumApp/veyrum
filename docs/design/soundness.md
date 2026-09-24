@@ -17,7 +17,9 @@ A test file is reused when all of the following hold for some earlier record:
   flags, and runner versions (Vitest and Vite, Jest, or Mocha);
 - every shared input of the run that produced the record is unchanged: configuration files and
   their dependencies, `tsconfig`/`jsconfig` files, the packages the runner's main process loaded,
-  modules of custom Vitest environments and global setup, and variables the main process read;
+  modules of custom Vitest environments and global setup, and variables the main process read.
+  Under Vitest, a project configuration counts only for the files it can govern (see Project
+  configurations);
 - every entry in the file's own closure is unchanged;
 - no newly added file could shadow a module in the closure during resolution, and no new
   configuration-like file appeared that can affect the file: a new manifest, tsconfig, runner or
@@ -247,6 +249,78 @@ closes after the file's tests finish.
   whose code V8 cannot attribute to a file. Every module Vitest serves through its `__vitest__`
   environment (custom environments, global setup, the VCS provider) is recorded as a shared input
   by raw source.
+
+## Project configurations
+
+Vite 8 reads `tsconfig` files in native code, where fs hooks cannot see it: its oxc transform
+takes compiler options such as `jsx`, `experimentalDecorators` and `useDefineForClassFields`
+from rolldown's `TsconfigCache`, and with `resolve.tsconfigPaths` oxc's resolver applies `paths`.
+So under Vitest, every `tsconfig*.json` and `jsconfig*.json` in the repository is a shared input,
+generated ones in ignored directories included (Nuxt writes `.nuxt/tsconfig.json` on every
+install), with every path they extend or reference. A change to one reruns only the test files
+it can govern (`packages/core/src/tsconfig.ts`); `packages/vitest/test/hazards-tsconfig.test.ts`
+covers the cases below.
+
+**Who reads a configuration.** Checked against rolldown 1.2 (`resolveTsconfig`) and Vite 7's
+bundled tsconfck (`find`, `resolveSolutionTSConfig`): a file's configuration is the nearest
+`tsconfig.json` in its directory or an ancestor that covers it by `files`/`include`/`exclude`, or
+a project that one `references` and that covers it (reference patterns may reach outside its
+directory); otherwise the search goes on upward. Only files named `tsconfig.json` are discovered,
+and esbuild, which Vite 7 builds with, also discovers `jsconfig.json`. `extends` merges a base's
+options into the configuration that extends it.
+
+**Scope.** A configuration's scope is the directory of every discovered `tsconfig.json` or
+`jsconfig.json` whose chain of `extends` and `references` edges reaches it, its own included. A
+file a configuration governs always lies below one of those directories, whatever the patterns
+say: discovery only walks up from the file, and a referenced project is only consulted for files
+below the configuration that references it. Patterns are therefore never evaluated, which is
+what lets the scope be computed without the content the configuration had when evidence was
+recorded. A test file reruns when a changed configuration's scope contains the test file, a module
+its closure executed, or anything else its closure read.
+
+**Edges come from content alone.** A relative `extends` names a path (and that path with `.json`
+added); a reference names a path and that directory's `tsconfig.json`; a package specifier names
+`node_modules/<package>/...` in the configuration's directory and in every ancestor up to the
+repository root, the package manifest among them, and whatever the nearest manifest's `exports`
+or `tsconfig` field maps the specifier to. All of those paths are recorded as inputs, absent ones
+as absent, so a reinstall, a nearer install, or a workspace link that now points elsewhere is a
+change to a recorded input rather than a silent change of an edge. A workspace base is recorded
+through its link, so an edit to the workspace file changes that recorded path.
+
+**Why the current graph is enough.** Scopes are computed from the configurations as they are at
+plan time. Take a file F that the old configuration X governed through a chain F → T0 → T1 → … →
+Tk = X, where T0 is the configuration discovered for F and each step is an `extends` or
+`references` edge. Discovery depends only on where F and T0 are, so F lies below T0's directory.
+Let Tj be the first configuration in the chain that changed (there is one: X did). The edges
+before it come from unchanged content, so they are the same now, and F is in Tj's scope. An edge
+that also depends on a package manifest passes through the manifest, which is a node of its own:
+if the manifest changed, it plays the part of Tj. So every file a changed configuration governed
+then, or governs now, is in the scope of some changed configuration.
+
+**Path mappings belong to the importer.** A `paths` mapping (or `baseUrl`, `rootDirs`) is applied
+for the configuration that governs the importing file, not the file the mapping points to. The
+importer ran, so it is in the closure, and a change to its configuration reruns the test file
+even when the new mapping points into a directory the test file never touched before.
+
+**What stays shared by every check.** Everything the model does not cover keeps rerunning every
+test file:
+
+- a configuration that exists but does not parse, one whose scope includes the repository root
+  (the root `tsconfig.json` and everything it extends), and one whose scope contains another
+  shared input (a global setup file, a custom environment, a configuration file or anything else
+  the main process read), since every test file depends on those;
+- a configuration whose edges are not modeled (an `extends` that is not a string, a package that
+  cannot be found in the repository's node_modules directories, or whose manifest maps the
+  specifier in a way not modeled): it may extend any configuration, so its own scope joins every
+  other configuration's;
+- a configuration the runner's main process read, checked or loaded in JavaScript, whatever for
+  (Vite 7's tsconfck, `vite-tsconfig-paths`, a configuration file reading it), and every
+  configuration the Vite or Vitest configuration names (`tsconfig`, `oxc.tsconfig`, the dependency
+  optimizer's, `typecheck.tsconfig`) with what it extends, since those apply to every file;
+- runs recorded before configurations were scoped, and every runner other than Vitest.
+
+A new configuration file is a configuration-like addition, as before: it affects the files below
+its directory.
 
 ## Jest
 
@@ -506,6 +580,11 @@ variable, here) is in its closure like any input.
    loads as code nor writes, affects a test only through what the browser does with it. A server
    that also derives other responses from such a file (a count of the records in a JSON file it
    also serves as is) could change a test whose browser never received the file.
+12. **Native configuration readers.** Under Vitest, the only code that reads project
+   configurations without the fs hooks seeing it is Vite's own discovery and the configurations
+   Vite's and Vitest's options name. A plugin that hands a configuration path to native code
+   itself (rolldown's transform with an explicit `tsconfig`) is not observed. Configurations
+   outside the repository (above its root, or in a global install) are not inputs.
 
 The audit (full runs on the main branch, plus sampled re-execution of reused files) is the
 backstop for every assumption. Its escape rate is the real safety number.

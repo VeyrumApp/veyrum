@@ -1,3 +1,4 @@
+import fs from 'node:fs'
 import { configScope, isConfigLike, listRepoFiles } from './files.ts'
 import { TOP_UNIT } from './fingerprint.ts'
 import { type Digest, digest } from './hash.ts'
@@ -5,6 +6,7 @@ import { fromRepoPath, stem } from './paths.ts'
 import { DEFAULT_POLICY, type Policy, STRICT_SOURCE_FLAGS } from './policy.ts'
 import { CurrentState, type StateFs } from './state.ts'
 import type { Store } from './store.ts'
+import { ProjectConfigs } from './tsconfig.ts'
 import type { CheckRef, ClosureEntry, Decision, EvidenceRecord, RunInfo } from './types.ts'
 
 /** Produces the transformed code the runner would execute for a module, for unit fingerprinting. */
@@ -57,18 +59,48 @@ export async function plan(options: PlanOptions): Promise<Decision[]> {
     return runs.get(id)
   }
 
+  let configs: ProjectConfigs | undefined
+  const projectConfigs = (): ProjectConfigs => {
+    configs ??= new ProjectConfigs(options.root, options.fs ?? fs, listFiles())
+    return configs
+  }
+
+  /**
+   * Changes to the run's shared inputs. Those that affect every check are returned; a changed
+   * project configuration that can only affect the files below some directories is kept aside in
+   * `scopedShared`, unless it governs another shared input (a global setup file, a custom
+   * environment or a configuration file), which every check depends on.
+   */
+  const scopedShared = new Map<string, readonly ScopedChange[]>()
   const sharedChanges = (run: RunInfo): readonly string[] => {
     const cached = sharedVerdicts.get(run.id)
     if (cached) return cached
     const changes: string[] = []
+    const configPaths = new Set(run.projectConfigs ?? [])
+    const changedConfigs: { path: string; change: string }[] = []
     for (const entry of run.shared) {
       // Shared inputs were read by the runner's main process, which sees the environment as is.
       const change = checkPlainEntry(entry, state, listFiles, NO_INJECTED_ENV)
-      if (change) {
+      if (change && entry.k === 'file' && configPaths.has(entry.p)) {
+        changedConfigs.push({ path: entry.p, change: `runner input ${change}` })
+      } else if (change) {
         changes.push(`runner input ${change}`)
         if (changes.length >= MAX_DETAILS) break
       }
     }
+    const scoped: ScopedChange[] = []
+    if (changes.length === 0 && changedConfigs.length > 0) {
+      const graph = projectConfigs()
+      const sharedPaths = run.shared.flatMap((e) => ('p' in e && !configPaths.has(e.p) ? [e.p] : []))
+      for (const { path: config, change } of changedConfigs) {
+        // A configuration that exists but does not parse is not modeled: it may affect anything.
+        const dirs = state.fileDigest(config) === null || graph.parses(config) ? graph.scope(config) : null
+        const within = dirs && new Set(dirs)
+        if (!within || sharedPaths.some((p) => isWithin(p, within))) changes.push(change)
+        else if (within.size > 0) scoped.push({ change, dirs: within })
+      }
+    }
+    scopedShared.set(run.id, scoped)
     if (currentFiles) {
       for (const added of addedFiles(run)) {
         if (isConfigLike(added) && configScope(added) === null) {
@@ -138,6 +170,13 @@ export async function plan(options: PlanOptions): Promise<Decision[]> {
     const run = getRun(record.runId)
     if (!run) return ['run metadata missing']
     changes.push(...sharedChanges(run))
+    if (changes.length > 0) return changes
+    // A project configuration governs the files below its scope's directories: the check's own
+    // modules, which it transforms and resolves imports from, and anything else the check read.
+    for (const { change, dirs } of scopedShared.get(run.id) ?? []) {
+      if (isWithin(check.path, dirs) || record.closure.some((e) => 'p' in e && isWithin(e.p, dirs)))
+        changes.push(change)
+    }
     if (changes.length > 0) return changes
     const scoped = scopedAdditions(run)
     if (scoped.length > 0) {
@@ -276,6 +315,20 @@ export async function plan(options: PlanOptions): Promise<Decision[]> {
 }
 
 const PLAN_CONCURRENCY = 8
+
+/** A change to a shared input that affects only the checks with files below some directories. */
+interface ScopedChange {
+  readonly change: string
+  readonly dirs: ReadonlySet<string>
+}
+
+/** Whether a repository path is one of the directories, or below one. */
+function isWithin(p: string, dirs: ReadonlySet<string>): boolean {
+  if (dirs.has(p)) return true
+  for (let i = p.lastIndexOf('/'); i > 0; i = p.lastIndexOf('/', i - 1))
+    if (dirs.has(p.slice(0, i))) return true
+  return false
+}
 
 function decision(
   check: CheckRef,

@@ -56,6 +56,7 @@ export {
   type StatType,
 } from './state.ts'
 export { Store } from './store.ts'
+export { PROJECT_CONFIG, ProjectConfigs, parseJsonc } from './tsconfig.ts'
 export {
   type Action,
   type CheckRef,
