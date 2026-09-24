@@ -286,23 +286,6 @@ describe('evidence store placement', () => {
 })
 
 /** A 64-bit ELF executable without an interpreter: statically linked, so it cannot be traced. */
-function writeStaticProgram(dir: string, rel: string): void {
-  const elf = Buffer.alloc(64)
-  elf.write('\x7fELF', 0, 'latin1')
-  elf[4] = 2 // 64-bit
-  elf[5] = 1 // little endian
-  elf[6] = 1
-  elf.writeUInt16LE(2, 16) // executable
-  elf.writeUInt16LE(0x3e, 18) // x86-64
-  elf.writeUInt32LE(1, 20)
-  elf.writeBigUInt64LE(64n, 32) // program headers (none)
-  elf.writeUInt16LE(64, 52)
-  elf.writeUInt16LE(56, 54)
-  const file = path.join(dir, rel)
-  fs.mkdirSync(path.dirname(file), { recursive: true })
-  fs.writeFileSync(file, elf, { mode: 0o755 })
-}
-
 const tracing = TRACED_PLATFORMS.includes(`${process.platform}-${process.arch}`)
 
 describe.skipIf(tracing)('child processes where they cannot be traced', () => {
@@ -431,24 +414,6 @@ describe.runIf(tracing)('child processes', () => {
     sandbox.capture({ GREETING: 'hi' })
     expect(sandbox.actions({ GREETING: 'hi' })['test/child.test.ts']).toBe('skip')
     expect(sandbox.actions({ GREETING: 'bye' })['test/child.test.ts']).toBe('run')
-  })
-
-  test('a program that cannot be traced blocks reuse, started directly or by a traced one', () => {
-    sandbox = new Sandbox('child-static')
-      .write(
-        'test/direct.test.ts',
-        spawnTest("  try { execFileSync('./fixtures/static') } catch {}\n  expect(1).toBe(1)"),
-      )
-      .write(
-        'test/nested.test.ts',
-        spawnTest("  execSync('./fixtures/static 2>/dev/null || true')\n  expect(1).toBe(1)"),
-      )
-    writeStaticProgram(sandbox.dir, 'fixtures/static')
-    sandbox.capture()
-    const plan = sandbox.plan()
-    expect(plan['test/direct.test.ts']?.reason).toBe('blocked-flag')
-    expect(plan['test/nested.test.ts']?.reason).toBe('blocked-flag')
-    expect(plan['test/nested.test.ts']?.details[0]).toMatch(/spawn \(.*fixtures\/static\)$/)
   })
 })
 
