@@ -114,6 +114,9 @@ export function readResults(file: string): ResultLine[] {
 }
 
 function checkout(repo: string, sha: string): void {
+  // The rig is this clone's only writer and runs one step at a time, so a lock left here is from
+  // a git process that was killed (a test's, or one outliving its run): stale.
+  fs.rmSync(path.join(repo, '.git', 'index.lock'), { force: true })
   git(repo, '-c', 'advice.detachedHead=false', 'checkout', '-q', '-f', sha)
   git(repo, 'clean', '-ffdxq', '-e', 'node_modules', '-e', '.veyrum')
 }
