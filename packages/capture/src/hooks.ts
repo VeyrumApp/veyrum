@@ -938,9 +938,15 @@ function installProcessHooks(): void {
 
 /**
  * Callers whose use of function source text cannot change a test outcome through formatting:
- * Vitest parses a test callback's parameter list to find the fixtures it uses.
+ * Vitest parses a test callback's parameter list to find the fixtures it uses, and so does
+ * Playwright, for test callbacks and fixture functions (`fixtureParameterNames` in its bundled
+ * lib/common/index.js, the only code there that reads function source).
  */
-const BENIGN_SOURCE_READERS = [/[\\/]@vitest[\\/]runner[\\/]/, /[\\/]vitest[\\/]dist[\\/]/]
+const BENIGN_SOURCE_READERS = [
+  /[\\/]@vitest[\\/]runner[\\/]/,
+  /[\\/]vitest[\\/]dist[\\/]/,
+  /[\\/]playwright[\\/]lib[\\/]common[\\/]index\.js$/,
+]
 
 function sourceReaderIsBenign(): boolean {
   const caller = callerFiles(6).find((file) => !file.startsWith(OWN_DIR)) ?? ''

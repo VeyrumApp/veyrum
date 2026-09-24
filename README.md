@@ -92,8 +92,9 @@ of its own, so root hooks and global fixtures run once per file.
 
 With Playwright, a test file's inputs span three processes: the test process, the browser (the
 functions each page ran, through Chromium's coverage) and the app server (`webServer`), which
-counts for every file that talked to it. A client-only edit reruns only the files whose pages ran
-the changed code; a server edit reruns every file that used the server. Firefox and WebKit
+counts for every file that talked to it. An edit to a function the test process loaded (a helper
+or page object) reruns only the files that ran it, and so does a client-only edit, for the files
+whose pages ran the changed code; a server edit reruns every file that used the server. Firefox and WebKit
 projects, servers that are not Node programs, and remote requests block reuse (`--allow net`
 allows the latter). See `docs/design/soundness.md` for exactly what is observed.
 

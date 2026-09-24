@@ -32,6 +32,7 @@ import {
   toRepoPath,
 } from '@veyrum/core'
 import { analyze, groupKey } from './analyze.ts'
+import { loadPlaywrightCompiler, type PlaywrightCompiler } from './compile.ts'
 import { LIST_ENV } from './lister.ts'
 import {
   CONFIG_ENV,
@@ -59,6 +60,8 @@ interface PlaywrightInstall {
   readonly cli: string
   /** Digest of the browser builds this Playwright version installs and drives. */
   readonly browsers: string
+  /** Directory of the `playwright` package that runs the tests (null if not found). */
+  readonly playwright: string | null
 }
 
 /** The project's Playwright: @playwright/test, or the playwright package, which carries the same runner. */
@@ -74,15 +77,18 @@ export function resolvePlaywright(root: string): PlaywrightInstall {
     const version = (JSON.parse(fs.readFileSync(manifest, 'utf8')) as { version: string }).version
     const cli = path.join(path.dirname(manifest), 'cli.js')
     let browsers = ''
+    let playwright: string | null = null
     try {
       const local = createRequire(manifest)
-      const playwright = name === 'playwright' ? manifest : local.resolve('playwright/package.json')
-      const core = createRequire(playwright).resolve('playwright-core/package.json')
+      playwright = path.dirname(name === 'playwright' ? manifest : local.resolve('playwright/package.json'))
+      const core = createRequire(path.join(playwright, 'package.json')).resolve(
+        'playwright-core/package.json',
+      )
       browsers = digest(fs.readFileSync(path.join(path.dirname(core), 'browsers.json')))
     } catch {
       // Older layouts: the version decides the browser builds.
     }
-    return { version, cli, browsers }
+    return { version, cli, browsers, playwright }
   }
   throw new ConfigurationError(
     `Playwright is not installed in ${root} (install @playwright/test, or pass --runner for another runner)`,
@@ -177,6 +183,12 @@ export async function runPlaywright(options: PlaywrightRunOptions): Promise<RunR
     browsers: install.browsers,
   })
   const runtimeKey = runtimeKeyOf(facts)
+  // Playwright's own transform, loaded only when a module must be compiled again.
+  let compiler: PlaywrightCompiler | null | undefined
+  const playwrightCompiler = (): PlaywrightCompiler | null => {
+    if (compiler === undefined) compiler = loadPlaywrightCompiler(install.playwright)
+    return compiler
+  }
   const recorder = new MainRecorder({ root, ignoredPrefixes: ignored, volatileEnv: VOLATILE_ENV })
 
   recorder.start()
@@ -206,7 +218,7 @@ export async function runPlaywright(options: PlaywrightRunOptions): Promise<RunR
         store: options.store,
         checks,
         runtimeKey,
-        transformer: createTransformer(root),
+        transformer: createTransformer(root, playwrightCompiler),
         files,
         fs: rawFs,
         env: recorder.initialEnv as NodeJS.ProcessEnv,
@@ -298,6 +310,7 @@ export async function runPlaywright(options: PlaywrightRunOptions): Promise<RunR
         scratch,
         ignored,
         testFiles: new Set(specs.map((s) => path.resolve(s.file))),
+        compiler: playwrightCompiler,
       })
       const main = mergeMain(veyrumMain, analysis.main)
       const common = {

@@ -70,6 +70,14 @@ export function startWorker(config: PlaywrightCaptureConfig): void {
   } as typeof process.emit
 }
 
+/**
+ * Stack frames of Playwright's module load hook, in its bundled lib/common/index.js: it reads each
+ * module of the test process to compile it, so that read is the module itself, recorded by what
+ * ran. What else that code reads (tsconfig files, package manifests) is not compiled as a module
+ * and stays an input.
+ */
+const PLAYWRIGHT_LOADER_FRAME = /[\\/]playwright[\\/]lib[\\/]common[\\/]index\.js$/
+
 /** Answers a test group as done without running it; the runner runs it in a fresh worker. */
 function decline(id: number | undefined): void {
   process.send?.({
@@ -107,6 +115,7 @@ async function begin(
       ignoredPrefixes: config.ignored,
       volatileEnv: VOLATILE_ENV,
       layout: 'node',
+      runnerReaders: [PLAYWRIGHT_LOADER_FRAME],
     })
   } catch {
     // Without capture the file runs as usual and records nothing (it is then not reusable).

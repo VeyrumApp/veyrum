@@ -84,4 +84,10 @@ export interface PayloadModule {
   readonly units?: Readonly<Record<string, Digest>>
   /** With `units`: digest of the source file they were computed from. */
   readonly src?: Digest
+  /**
+   * The transform environment this code came from, when it is not the test file's own (see
+   * CheckOutcome.env): a Playwright test file runs modules in its test process and client files in
+   * the browser, each compiled again differently at plan time.
+   */
+  readonly env?: string
 }

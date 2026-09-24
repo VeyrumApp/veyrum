@@ -363,9 +363,24 @@ server. Each is observed separately, and a check is one test file under one Play
   project; a worker that already ran a group answers the next one as done without running it, and
   Playwright runs it in a fresh worker, as it does after a failure. The worker is captured like a
   `node --test` process, from the moment its group arrives until it exits (worker fixtures torn
-  down). Repository modules it loads are compared by raw source, since Playwright compiles them
-  with its own transform. Browsers it launches are inputs by their executable; their own reads
-  are not traced.
+  down). Browsers it launches are inputs by their executable; their own reads are not traced.
+- **Test-process modules are compiled code.** Playwright compiles every module of the test
+  process outside node_modules (specs, helpers, page objects, the configuration) with Babel, and
+  capture records the code V8 compiled, not the file. After the run, Veyrum runs Playwright's own
+  transform (`babelTransform` from the project's installed `playwright` package) on each module's
+  source, with the arguments Playwright passes: the module format Playwright decides for the file
+  (its extension, else the nearest package.json's `type`), the `playwright` package as the JSX
+  import source, and no component-testing plugin. A module whose compiled code this reproduces
+  byte for byte is recorded by the functions that ran, and a changed one is compiled the same way
+  at plan time, so editing a function reruns only the files that ran it. Any other module is
+  compared by its source: one Playwright left uncompiled (`build.external`), loaded in another
+  format (required although its package is a module), served from Playwright's compile cache
+  with output the transform no longer produces, changed since the run, or any module at all under
+  component testing (`PW_TEST_SOURCE_TRANSFORM`). At plan time, a module that cannot be compiled
+  again (Playwright's internals not found or not the shape this adapter knows, a Babel error,
+  component testing) runs its files. Playwright's load hook reads each module's file to compile
+  it; that read is the module itself, recorded by what ran. A file both the test process and a
+  page ran is compared by its source, since the two compile it differently.
 - **The browser, through Chromium's coverage.** Every page gets its own DevTools session, and
   `context.newPage()` returns only once that page's precise coverage has started. Every request
   is recorded where it went (the URL, or the loopback address a name resolved to), and the body of
@@ -457,8 +472,9 @@ variable, here) is in its closure like any input.
    configuration-like file rule. Other resolution changes are not observed.
 4. **Stack traces outside snapshots.** A test that inspects stack traces without snapshotting
    them can observe line numbers that formatting edits change.
-5. **Benign source readers.** Vitest's own reading of test callback source (fixture detection)
-   is treated as benign.
+5. **Benign source readers.** Vitest's and Playwright's own reading of test callback and
+   fixture function source (fixture detection, which uses only the parameter list) is treated as
+   benign.
 6. **Runner-set environment variables.** A variable the runner sets in workers to values that
    differ between files (Vitest's `SSR`, `"1"` in server environments and `""` in DOM
    environments) is not compared: its value follows from the runner's configuration, a shared
