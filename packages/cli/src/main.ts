@@ -88,6 +88,18 @@ interface Args {
   allow: string[]
 }
 
+/**
+ * A path in the spelling runners use for it: symbolic links resolved, and on Windows short (8.3)
+ * names expanded, as Jest and Vite resolve the files they run. Paths that do not exist stay as given.
+ */
+function canonicalPath(p: string): string {
+  const resolved = path.resolve(p)
+  try {
+    return fs.realpathSync.native(resolved)
+  } catch {
+    return resolved
+  }
+}
 function parse(argv: string[]): Args | null {
   const { values, positionals } = parseArgs({
     args: argv,
@@ -120,7 +132,7 @@ function parse(argv: string[]): Args | null {
   })
   const [command, ...rest] = positionals
   if (values.help || !command) return null
-  const root = path.resolve(values.root ?? process.cwd())
+  const root = canonicalPath(values.root ?? process.cwd())
   const maxWorkers = values['max-workers'] ? Number(values['max-workers']) : undefined
   if (values.runner !== undefined && values.runner !== 'vitest' && values.runner !== 'jest') {
     throw new Error(`Unknown runner "${values.runner}" (expected vitest or jest)`)
@@ -345,7 +357,7 @@ async function main(argv: string[]): Promise<number> {
   // Test files named on the command line restrict every command to them.
   const only =
     args.positionals.length > 0
-      ? args.positionals.map((p) => path.relative(args.root, path.resolve(p)).split(path.sep).join('/'))
+      ? args.positionals.map((p) => path.relative(args.root, canonicalPath(p)).split(path.sep).join('/'))
       : undefined
   if (args.command === 'explain' && (!only || only.length === 0)) {
     process.stderr.write('explain needs a test file\n')
