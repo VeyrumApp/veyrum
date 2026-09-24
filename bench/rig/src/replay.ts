@@ -5,7 +5,14 @@ import { type SelectionContext, selectFileClosure, selectFileCoverage, selectNai
 import type { Corpus } from './corpus.ts'
 import { exec, git, KilledError, profiled } from './exec.ts'
 import { applyMutant, type Mutant, mutationSites, rng } from './mutate.ts'
-import { captureRun, type Outcomes, plainRun, runnerChanged, veyrumPlan } from './runners.ts'
+import {
+  type CaptureResult,
+  captureRun,
+  type Outcomes,
+  plainRun,
+  runnerChanged,
+  veyrumPlan,
+} from './runners.ts'
 
 export const BASELINES = [
   'all',
@@ -234,6 +241,7 @@ export async function replay(corpus: Corpus, benchRoot: string, options: ReplayO
   const doneShas = new Set([...done, ...lines.filter((r) => r.kind === 'broken')].map((r) => r.sha))
   let broken = 0
   let profiledCommits = 0
+  let measuredCommits = 0
   let prev: CommitResult | undefined = done[done.length - 1]
   const store = Store.open(paths.store)
   // Synchronous appends: everything else in the loop is synchronous, so a buffered stream would
@@ -302,13 +310,12 @@ export async function replay(corpus: Corpus, benchRoot: string, options: ReplayO
           )
         }
 
-        // 2. On sampled commits, overhead: a plain warm-up run first, since the first run after a
-        //    checkout pays for cold transform caches, then the captured run, then the plain run it
-        //    is compared with. Both measured runs start equally warm.
+        // 2-3. The captured run: ground truth and evidence for the next commit. On sampled commits,
+        //    overhead: a plain run as well. Every commit installs afresh, so each runs as in CI,
+        //    after a fresh install; plain and Veyrum configurations keep separate transform caches,
+        //    so both runs are cold for their own. The order alternates between sampled commits to
+        //    cancel what one run warms for the other (the OS page cache, shared runner caches).
         const measureOverhead = scored && options.overheadEvery > 0 && index % options.overheadEvery === 0
-        if (measureOverhead) plainRun(corpus, paths.testRoot, paths.scratch)
-
-        // 3. Ground truth and evidence for the next commit.
         // Diagnostics: with RIG_NODE_PROFILE_DIR, the first two measured commits are CPU-profiled.
         // The shard's first commit records everything; profiles are of the commits after it.
         const profile =
@@ -316,16 +323,27 @@ export async function replay(corpus: Corpus, benchRoot: string, options: ReplayO
             ? `${index}-${sha.slice(0, 8)}`
             : null
         if (profile) profiledCommits++
-        const capture = profile
-          ? profiled(`${profile}/veyrum`, () =>
-              captureRun(corpus, paths.testRoot, paths.store, paths.scratch),
-            )
-          : captureRun(corpus, paths.testRoot, paths.store, paths.scratch)
-        const plainWallMs = !measureOverhead
-          ? null
-          : profile
+        const runCapture = (): CaptureResult =>
+          profile
+            ? profiled(`${profile}/veyrum`, () =>
+                captureRun(corpus, paths.testRoot, paths.store, paths.scratch),
+              )
+            : captureRun(corpus, paths.testRoot, paths.store, paths.scratch)
+        const runPlain = (): number =>
+          profile
             ? profiled(`${profile}/plain`, () => plainRun(corpus, paths.testRoot, paths.scratch).wallMs)
             : plainRun(corpus, paths.testRoot, paths.scratch).wallMs
+        let capture: CaptureResult
+        let plainWallMs: number | null = null
+        if (!measureOverhead) {
+          capture = runCapture()
+        } else if (measuredCommits++ % 2 === 0) {
+          plainWallMs = runPlain()
+          capture = runCapture()
+        } else {
+          capture = runCapture()
+          plainWallMs = runPlain()
+        }
         const outcomes = capture.outcomes
         const flaky = detectFlaky(corpus, paths.testRoot, paths.scratch, outcomes)
         const prevOutcomes = new Map(Object.entries(prev?.outcomes ?? {}))
