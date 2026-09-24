@@ -200,6 +200,27 @@ describe('coverage', () => {
   })
 })
 
+describe('files whose tests are all skipped', () => {
+  // Vitest runs no hook of such a file: its capture finishes when its worker stops.
+  test('are reused, and what decided the skip is an input', () => {
+    sandbox = new Sandbox('all-skipped')
+      .write(
+        'test/gated.test.ts',
+        "import { describe, expect, it } from 'vitest'\ndescribe.skipIf(process.env.LIVE === undefined)('live', () => {\n  it('works', () => expect(1).toBe(1))\n})\n",
+      )
+      .write(
+        'test/skipped.test.ts',
+        "import { expect, it } from 'vitest'\nit.skip('later', () => expect(1).toBe(1))\n",
+      )
+    sandbox.capture()
+    expect(sandbox.actions()).toEqual({ 'test/gated.test.ts': 'skip', 'test/skipped.test.ts': 'skip' })
+    expect(sandbox.actions({ LIVE: '1' })).toEqual({
+      'test/gated.test.ts': 'run',
+      'test/skipped.test.ts': 'skip',
+    })
+  })
+})
+
 describe('the environment tests see', () => {
   test('is the one the vitest command gives them', () => {
     sandbox = new Sandbox('runner-env').write(

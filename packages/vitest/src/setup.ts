@@ -33,6 +33,8 @@ interface SetupConfig {
 }
 
 const PENDING = Symbol.for('veyrum.vitest.pending')
+/** Finishes the capture of the previous file in this worker, when no hook of that file did. */
+const UNFINISHED = Symbol.for('veyrum.vitest.unfinished')
 
 interface EvaluatedModuleLike {
   meta?: { code?: unknown }
@@ -73,9 +75,12 @@ if (config) {
   const { VOLATILE_ENV } = nativeRequire(config.captureIndex) as typeof Capture
   const { beginWorkerCapture, uncapturedFiles } = nativeRequire(config.captureWorker) as typeof CaptureWorker
   const g = globalThis as unknown as Record<symbol, Promise<CaptureWorker.WorkerCapture> | undefined>
-  const testFile = (
-    (globalThis as Record<string, unknown>).__vitest_worker__ as { filepath?: string } | undefined
-  )?.filepath
+  const unfinished = globalThis as unknown as Record<symbol, (() => Promise<void>) | undefined>
+  await unfinished[UNFINISHED]?.()
+  const worker = (globalThis as Record<string, unknown>).__vitest_worker__ as
+    | { filepath?: string; onCleanup?: (listener: () => Promise<void>) => void }
+    | undefined
+  const testFile = worker?.filepath
   // A file whose evidence is still valid runs plain: its record already describes this execution.
   const plain = testFile !== undefined && uncapturedFiles(config.outDir).has(testFile)
   if (plain) {
@@ -101,18 +106,31 @@ if (config) {
   const capture = pending ? await pending : null
   // A capture the preload began has recorded I/O since the worker started; coverage starts now,
   // before any setup file or test code, and what the runner evaluated so far is recorded whole.
-  if (capture) await capture.startCoverage(evaluatedFiles())
-  if (capture)
-    vitest.afterAll(async () => {
-      const state = vitest.expect.getState() as unknown as {
-        testPath?: string
-        snapshotState?: SnapshotStateLike
-      }
-      const snapshot = state.snapshotState
-      await capture.finish(
-        state.testPath ?? '',
-        { added: Number(snapshot?.added ?? 0), updated: Number(snapshot?.updated ?? 0) },
-        evaluatedSources,
-      )
+  if (capture) {
+    await capture.startCoverage(evaluatedFiles())
+    let finishing: Promise<void> | undefined
+    const finish = (): Promise<void> => {
+      if (unfinished[UNFINISHED] === finish) unfinished[UNFINISHED] = undefined
+      finishing ??= (async () => {
+        const state = vitest.expect.getState() as unknown as {
+          testPath?: string
+          snapshotState?: SnapshotStateLike
+        }
+        const snapshot = state.snapshotState
+        await capture.finish(
+          state.testPath ?? testFile ?? '',
+          { added: Number(snapshot?.added ?? 0), updated: Number(snapshot?.updated ?? 0) },
+          evaluatedSources,
+        )
+      })()
+      return finishing
+    }
+    vitest.afterAll(finish)
+    // Vitest runs no hook of a file whose tests are all skipped. Its capture then finishes when the
+    // worker stops (each isolated file has its own), or when the next file starts in this worker.
+    unfinished[UNFINISHED] = finish
+    worker?.onCleanup?.(async () => {
+      await unfinished[UNFINISHED]?.()
     })
+  }
 }

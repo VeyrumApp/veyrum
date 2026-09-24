@@ -353,6 +353,9 @@ export async function runVitest(options: VitestRunOptions): Promise<VitestRunRes
     if (selected.length > 0) {
       const result = await vitest.runTestSpecifications(selected, selected.length === allSpecs.length)
       unhandled = result.unhandledErrors.length
+      // Vitest stops each worker in the background once its file has run, and a file whose tests
+      // were all skipped finishes its capture only then (see setup.ts): wait for every worker.
+      await (vitest as unknown as { pool?: { close?: () => Promise<void> } }).pool?.close?.()
     }
     const runMs = performance.now() - runStarted
     const main = recorder.stop()
