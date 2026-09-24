@@ -3,7 +3,17 @@ import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { parseArgs } from 'node:util'
-import { type Decision, makePolicy, type RunMode, type RunOptions, type RunResult, Store } from '@veyrum/core'
+import {
+  DEFAULT_POLICY,
+  type Decision,
+  makePolicy,
+  parseShard,
+  type RunMode,
+  type RunOptions,
+  type RunResult,
+  type Shard,
+  Store,
+} from '@veyrum/core'
 import { openStoreOrReset, runPlain } from './fallback.ts'
 import { markdownSummary } from './summary.ts'
 
@@ -15,6 +25,7 @@ Usage:
   veyrum plan [files] [options] Show what would run and why, without running anything
   veyrum explain <file>         Explain the decision for one test file
   veyrum stats [options]        Show evidence store statistics
+  veyrum merge <store...>       Add the evidence of other stores (parallel CI jobs) to the store
 
 Options:
   --root <dir>         Project root (default: current directory)
@@ -32,12 +43,16 @@ Options:
   --quiet              Do not print the runner's test output
   --audit              With --full: also report files the plan would have reused that fail
   --canary <fraction>  Also run this fraction of reusable files and report any that fail
+  --shard <i>/<n>      Plan and run only this job's share of the test files, for n parallel
+                       jobs; merge their stores afterwards
   --allow <flag>       Allow reuse despite a flag (repeatable), for example spawn; at your own risk
   --isolate            Vitest: run each test file in its own isolate even if the project
                        disables isolation (evidence from shared isolates is never reused)
   --strict             Fail on Veyrum's own errors. By default, if Veyrum fails before tests
                        run, the project's own runner runs every test instead; if recording
                        evidence fails, the test results stand and nothing is reused later
+  --no-prune           Keep every record (by default a run keeps, per file and runtime, only the
+                       records the planner reads); for tools that analyse the store's history
   --keep-scratch       Keep raw worker payloads under .veyrum/tmp (debugging)
   -h, --help           Show this help
 `
@@ -62,6 +77,8 @@ interface Args {
   audit: boolean
   recordAll: boolean
   canary: number
+  shard: Shard | undefined
+  prune: boolean
   allow: string[]
 }
 
@@ -87,6 +104,8 @@ function parse(argv: string[]): Args | null {
       audit: { type: 'boolean', default: false },
       'record-all': { type: 'boolean', default: false },
       canary: { type: 'string' },
+      shard: { type: 'string' },
+      'no-prune': { type: 'boolean', default: false },
       allow: { type: 'string', multiple: true },
       help: { type: 'boolean', short: 'h', default: false },
     },
@@ -118,6 +137,8 @@ function parse(argv: string[]): Args | null {
     audit: values.audit,
     recordAll: values['record-all'],
     canary: values.canary ? Math.max(0, Math.min(1, Number(values.canary))) : 0,
+    shard: values.shard ? parseShard(values.shard) : undefined,
+    prune: !values['no-prune'],
     allow: values.allow ?? [],
   }
 }
@@ -243,6 +264,17 @@ function summarize(result: RunResult, mode: RunMode): string {
   return lines.join('\n')
 }
 
+/** Prunes the store after a run; a failure only leaves it larger (unless strict). */
+function pruneStore(store: Store, strict: boolean): void {
+  try {
+    store.prune({ keepRecords: DEFAULT_POLICY.maxCandidates })
+  } catch (error) {
+    if (strict) throw error
+    const message = error instanceof Error ? error.message : String(error)
+    process.stderr.write(`veyrum: pruning the evidence store failed (${message})\n`)
+  }
+}
+
 async function main(argv: string[]): Promise<number> {
   let args: Args | null
   try {
@@ -266,9 +298,32 @@ async function main(argv: string[]): Promise<number> {
     const v = store.verificationStats()
     store.close()
     process.stdout.write(
-      `store ${args.store}\nruns ${s.runs}\nrecords ${s.records}\ndistinct closures ${s.closures}\nsize ${(s.bytes / 1024 / 1024).toFixed(2)} MB\n` +
+      `store ${args.store}\nruns ${s.runs}\nrecords ${s.records}\ndistinct closures ${s.closures}\nclosure entries ${s.entries}\nsize ${(s.bytes / 1024 / 1024).toFixed(2)} MB\n` +
         `verified reuse decisions ${v.verified}\nescapes ${v.escapes}\n`,
     )
+    return 0
+  }
+
+  if (args.command === 'merge') {
+    if (args.positionals.length === 0) {
+      process.stderr.write('merge needs the stores to add\n')
+      return 2
+    }
+    const store = openStoreOrReset(args.store)
+    try {
+      for (const p of args.positionals) {
+        const file = path.resolve(p)
+        if (file === args.store) continue
+        if (!fs.existsSync(file)) {
+          process.stderr.write(`veyrum: no evidence store at ${file}, skipped\n`)
+          continue
+        }
+        process.stdout.write(`veyrum: merged ${store.merge(file)} new records from ${file}\n`)
+      }
+      if (args.prune) store.prune({ keepRecords: DEFAULT_POLICY.maxCandidates })
+    } finally {
+      store.close()
+    }
     return 0
   }
 
@@ -302,6 +357,7 @@ async function main(argv: string[]): Promise<number> {
       keepScratch: args.keepScratch,
       audit: args.audit,
       canary: args.canary,
+      ...(args.shard ? { shard: args.shard } : {}),
       recordAll: args.recordAll,
       ...(args.allow.length > 0 ? { policy: makePolicy({ allow: args.allow }) } : {}),
     }
@@ -315,6 +371,12 @@ async function main(argv: string[]): Promise<number> {
       process.stderr.write(
         `veyrum: internal error (${message}); running the tests with ${runner} directly, without Veyrum\n`,
       )
+      // The runner's own sharding splits files differently from Veyrum's, so a shard that falls
+      // back runs every file: otherwise files of this shard could run in no job at all.
+      if (args.shard)
+        process.stderr.write(
+          `veyrum: running every test file, not only shard ${args.shard.index}/${args.shard.count}\n`,
+        )
       return runPlain({
         root: args.root,
         runner,
@@ -343,7 +405,11 @@ async function main(argv: string[]): Promise<number> {
         )
       }
     }
-    if (args.summary) fs.appendFileSync(args.summary, markdownSummary(result, { mode, audit: args.audit }))
+    if (args.summary)
+      fs.appendFileSync(
+        args.summary,
+        markdownSummary(result, { mode, audit: args.audit, ...(args.shard ? { shard: args.shard } : {}) }),
+      )
     if (args.json) {
       writeJson(args.json, {
         runtimeKey: result.runtimeKey,
@@ -353,6 +419,7 @@ async function main(argv: string[]): Promise<number> {
         timings: result.timings,
       })
     }
+    if (mode !== 'plan' && args.prune) pruneStore(store, args.strict)
     return result.ok ? 0 : 1
   } finally {
     store.close()

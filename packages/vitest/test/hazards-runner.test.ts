@@ -129,6 +129,48 @@ describe('audit and canaries', () => {
   })
 })
 
+describe('parallel jobs', () => {
+  test('shards split the files, and their merged stores serve every shard', () => {
+    sandbox = new Sandbox('shards').write(
+      'src/value.ts',
+      'export const value = () => 1\nexport const other = () => 2\n',
+    )
+    const files = Array.from({ length: 8 }, (_, i) => `test/t${i}.test.ts`)
+    for (const [i, file] of files.entries())
+      sandbox.write(
+        file,
+        i === 0
+          ? "import { expect, test } from 'vitest'\nimport { value } from '../src/value'\ntest('value', () => expect(value()).toBe(1))\n"
+          : PLAIN_TEST,
+      )
+    const stores = [1, 2, 3].map((i) => `.veyrum/shard-${i}.sqlite`)
+    const ran = stores.map((store, i) =>
+      sandbox!
+        .cli(['run', '--full', '--shard', `${i + 1}/3`, '--store', store])
+        .outcomes.map((o) => o.check.path),
+    )
+    // Every file ran in exactly one shard.
+    expect(ran.flat().sort()).toEqual(files)
+    expect(ran.every((paths) => paths.length < files.length)).toBe(true)
+
+    const merged = sandbox.raw(['merge', ...stores])
+    expect(merged.code).toBe(0)
+    expect(Object.values(sandbox.actions()).every((a) => a === 'skip')).toBe(true)
+
+    sandbox.edit('src/value.ts', '=> 1', '=> 1 + 0')
+    const runs = [1, 2, 3].map((i) => sandbox!.cli(['run', '--shard', `${i}/3`]))
+    expect(runs.flatMap((r) => r.outcomes.map((o) => o.check.path))).toEqual(['test/t0.test.ts'])
+    expect(runs.flatMap((r) => r.decisions.map((d) => d.check.path)).sort()).toEqual(files)
+  })
+
+  test('an invalid shard is refused', () => {
+    sandbox = new Sandbox('bad-shard').write('test/a.test.ts', PLAIN_TEST)
+    const result = sandbox.raw(['run', '--shard', '4/3'])
+    expect(result.code).toBe(2)
+    expect(result.output).toContain('Invalid shard "4/3"')
+  })
+})
+
 describe('evidence store placement', () => {
   test('a store in a parent directory of the project does not hide the project', () => {
     sandbox = new Sandbox('store-above')

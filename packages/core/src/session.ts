@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { digest } from './hash.ts'
 import type { Policy } from './policy.ts'
 import type { Store } from './store.ts'
@@ -13,6 +14,33 @@ export type RunMode =
   /** Only compute decisions; run nothing. */
   | 'plan'
 
+/** One of `count` parallel jobs splitting a run's test files; `index` counts from 1. */
+export interface Shard {
+  readonly index: number
+  readonly count: number
+}
+
+/** Parses `<index>/<count>`, as Jest and Vitest take it. */
+export function parseShard(text: string): Shard {
+  const match = /^(\d+)\/(\d+)$/.exec(text.trim())
+  const index = Number(match?.[1])
+  const count = Number(match?.[2])
+  if (!match || count < 1 || index < 1 || index > count)
+    throw new Error(`Invalid shard "${text}" (expected <index>/<count>, for example 2/4)`)
+  return { index, count }
+}
+
+/**
+ * Whether a test file belongs to a shard. The split depends on the file's path alone, never on the
+ * evidence store, so shards that restored different stores still cover every file exactly once, and
+ * a file that several projects run lands in one shard with all of them.
+ */
+export function inShard(repoPath: string, shard: Shard | undefined): boolean {
+  if (!shard || shard.count === 1) return true
+  const bucket = createHash('sha256').update(repoPath).digest().readUInt32BE(0) % shard.count
+  return bucket === shard.index - 1
+}
+
 /** Options every runner adapter accepts. */
 export interface RunOptions {
   readonly root: string
@@ -24,6 +52,8 @@ export interface RunOptions {
   readonly printTests?: boolean
   /** Restrict to these repository-relative test files (others are neither planned nor run). */
   readonly only?: readonly string[]
+  /** Plan and run only this shard's test files (see inShard). */
+  readonly shard?: Shard
   /** Keep worker payloads and module code after the run (for debugging). */
   readonly keepScratch?: boolean
   /**
@@ -247,4 +277,17 @@ export function seededRandom(seed: string): () => number {
     t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296
   }
+}
+
+/** The test files a run covers: those named (if any) that belong to its shard (if any). */
+export function selectFiles<T>(
+  items: readonly T[],
+  pathOf: (item: T) => string,
+  options: Pick<RunOptions, 'only' | 'shard'>,
+): T[] {
+  const wanted = options.only ? new Set(options.only) : null
+  return items.filter((item) => {
+    const p = pathOf(item)
+    return (!wanted || wanted.has(p)) && inShard(p, options.shard)
+  })
 }

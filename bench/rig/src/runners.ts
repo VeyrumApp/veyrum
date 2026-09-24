@@ -34,6 +34,8 @@ function veyrum(corpus: Corpus, repo: string, store: string, args: readonly stri
       '--quiet',
       // A degraded run (Veyrum falling back to the plain runner) must never become a measurement.
       '--strict',
+      // Baselines and rescoring read the store's whole history.
+      '--no-prune',
       '--store',
       store,
       '--max-workers',

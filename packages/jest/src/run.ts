@@ -25,6 +25,7 @@ import {
   runtimeFacts,
   runtimeKeyOf,
   selectExecution,
+  selectFiles,
   toRepoPath,
 } from '@veyrum/core'
 import { JEST_CAPTURE_ENV, type JestCaptureConfig } from './protocol.ts'
@@ -300,11 +301,7 @@ export async function runJest(options: JestRunOptions): Promise<RunResult> {
       for (const test of tests)
         specs.push({ check: { path: toRepoPath(root, test.path), project }, file: test.path })
     }
-    let selectedSpecs = specs
-    if (options.only) {
-      const wanted = new Set(options.only)
-      selectedSpecs = specs.filter((s) => wanted.has(s.check.path))
-    }
+    const selectedSpecs = selectFiles(specs, (s) => s.check.path, options)
     const checks = selectedSpecs.map((s) => s.check)
 
     const configFiles = new Set<string>()

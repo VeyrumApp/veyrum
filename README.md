@@ -38,7 +38,10 @@ veyrum run               Run test files whose inputs changed; reuse evidence for
 veyrum plan              Show what would run and why
 veyrum explain <file>    Explain one decision
 veyrum stats             Evidence store statistics
+veyrum merge <stores>    Add other stores' evidence (parallel CI jobs) to this one
 ```
+
+`--shard <index>/<count>` splits a run across parallel jobs (see `docs/github-actions.md`).
 
 Recording is what costs time, so a full run records only where it is needed: a file whose
 evidence is still valid runs at full speed, and its existing record already describes that

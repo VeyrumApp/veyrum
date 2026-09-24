@@ -201,7 +201,7 @@ export async function plan(options: PlanOptions): Promise<Decision[]> {
     const reject = (reason: Decision['reason'], record: EvidenceRecord, details: string[]): void => {
       if (!firstRejection) firstRejection = { reason, record, details }
     }
-    for (const record of options.store.candidates(check, policy.maxCandidates)) {
+    for (const record of options.store.candidates(check, options.runtimeKey, policy.maxCandidates)) {
       latest ??= record
       if (record.verdict !== 'pass') {
         reject('no-evidence', record, ['the most recent evidence is a failure'])

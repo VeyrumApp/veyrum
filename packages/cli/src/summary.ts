@@ -1,10 +1,12 @@
-import type { Decision, RunMode, RunResult } from '@veyrum/core'
+import type { Decision, RunMode, RunResult, Shard } from '@veyrum/core'
 
 /** Options that change what a run did, as far as the summary needs to say. */
 export interface SummaryContext {
   readonly mode: RunMode
   /** A full run that also planned, to measure what reuse would have done (shadow mode). */
   readonly audit: boolean
+  /** The share of the test files this job covered, when the run was split across jobs. */
+  readonly shard?: Shard
 }
 
 const REASON_TEXT: Record<Decision['reason'], string> = {
@@ -45,7 +47,10 @@ export function markdownSummary(result: RunResult, context: SummaryContext): str
   const mustRunMs = mustRun.reduce((sum, d) => sum + d.durationMs, 0)
   const totalMs = reusableMs + mustRunMs
   const shadow = context.mode === 'full' && context.audit
-  const out: string[] = ['## Veyrum', '']
+  const out: string[] = [
+    context.shard ? `## Veyrum (shard ${context.shard.index}/${context.shard.count})` : '## Veyrum',
+    '',
+  ]
 
   if (shadow) {
     out.push(

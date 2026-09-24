@@ -24,6 +24,7 @@ import {
   runtimeFacts,
   runtimeKeyOf,
   selectExecution,
+  selectFiles,
   toRepoPath,
 } from '@veyrum/core'
 import type { TestSpecification, Vitest } from 'vitest/node'
@@ -270,11 +271,8 @@ export async function runVitest(options: VitestRunOptions): Promise<VitestRunRes
     // Vitest 4.1 renamed init() to standalone().
     const legacy = vitest as unknown as { standalone?: () => Promise<void>; init: () => Promise<void> }
     await (legacy.standalone ? legacy.standalone() : legacy.init())
-    let specs = await vitest.globTestSpecifications()
-    if (options.only) {
-      const wanted = new Set(options.only)
-      specs = specs.filter((s) => wanted.has(toRepoPath(root, s.moduleId)))
-    }
+    const allSpecs = await vitest.globTestSpecifications()
+    const specs = selectFiles(allSpecs, (s) => toRepoPath(root, s.moduleId), options)
     const checks = specs.map((s) => checkOf(root, s))
 
     const planStarted = performance.now()
@@ -321,7 +319,7 @@ export async function runVitest(options: VitestRunOptions): Promise<VitestRunRes
     const runStarted = performance.now()
     let unhandled = 0
     if (selected.length > 0) {
-      const result = await vitest.runTestSpecifications(selected, selected.length === specs.length)
+      const result = await vitest.runTestSpecifications(selected, selected.length === allSpecs.length)
       unhandled = result.unhandledErrors.length
     }
     const runMs = performance.now() - runStarted
