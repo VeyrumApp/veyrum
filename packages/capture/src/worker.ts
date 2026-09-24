@@ -556,8 +556,10 @@ export async function beginWorkerCapture(options: WorkerCaptureOptions): Promise
   const hub = coverageHub()
   let session: Session | null = null
   const loadedBeforeCoverage = new Set<string>()
+  let startMs = 0
   const startCoverage = async (loadedBefore: Iterable<string>): Promise<void> => {
     if (session) return
+    const started = performance.now()
     if (layout === 'jest' && isolate.session && heapGrown(isolate))
       await hub.restart((fresh) => collectDeadCode(fresh, isolate))
     // Under Vitest, a second file in the same isolate (isolation off) starts coverage again, but
@@ -572,6 +574,7 @@ export async function beginWorkerCapture(options: WorkerCaptureOptions): Promise
     // Reported before this file began: under Jest, scripts of earlier files, which it ignores anyway.
     hub.discard(CAPTURE_CONSUMER)
     if (CPU_PROFILE_DIR) await session.post('Profiler.start')
+    startMs = performance.now() - started
   }
   if (!options.deferCoverage) await startCoverage([])
   isolate.files++
@@ -795,7 +798,7 @@ export async function beginWorkerCapture(options: WorkerCaptureOptions): Promise
         toolchain: [...state.toolchain],
         toolchainFiles: [...state.toolchainFiles],
         captureErrors: errors,
-        timings: { beginMs, finishMs: performance.now() - finishStarted, takeMs },
+        timings: { beginMs, finishMs: performance.now() - finishStarted, takeMs, startMs },
       }
       if (CPU_PROFILE_DIR) {
         try {
