@@ -7,6 +7,8 @@ import { childEnv, exec, VEYRUM_CLI } from './exec.ts'
 export interface FileOutcome {
   readonly verdict: 'pass' | 'fail'
   readonly durationMs: number
+  /** For a failing file: its first failing test and message (diagnostics). */
+  readonly failure?: string
 }
 
 /** Per test file outcome, keyed by repository-relative path. */
@@ -183,13 +185,26 @@ export function plainRun(
     )
   // Vitest's JSON reporter follows Jest's format.
   const data = JSON.parse(fs.readFileSync(json, 'utf8')) as {
-    testResults: { name: string; status: string; startTime?: number; endTime?: number }[]
+    testResults: {
+      name: string
+      status: string
+      startTime?: number
+      endTime?: number
+      message?: string
+      assertionResults?: { status: string; fullName?: string; failureMessages?: string[] }[]
+    }[]
   }
   for (const t of data.testResults) {
     const rel = path.relative(repo, t.name).split(path.sep).join('/')
+    const verdict = fileVerdict(t.status)
+    const failedTest = t.assertionResults?.find((a) => a.status === 'failed')
+    const why = failedTest
+      ? `${failedTest.fullName ?? ''}: ${failedTest.failureMessages?.[0] ?? ''}`
+      : (t.message ?? '')
     outcomes.set(rel, {
-      verdict: fileVerdict(t.status),
+      verdict,
       durationMs: (t.endTime ?? 0) - (t.startTime ?? 0),
+      ...(verdict === 'fail' ? { failure: why.replace(/\s+/g, ' ').slice(0, 400) } : {}),
     })
   }
   return { outcomes, wallMs: r.ms }

@@ -57,6 +57,8 @@ export interface MutantResult {
   readonly pool: 'changed' | 'random'
   /** Test files that passed at the commit and fail with the mutant. */
   readonly killed: readonly string[]
+  /** Why each killed file failed on its confirming rerun (first failing test and message). */
+  readonly why?: Readonly<Record<string, string>>
   readonly timedOut: boolean
   readonly baselines: Partial<
     Record<
@@ -442,6 +444,7 @@ function* runMutants(
         )
         let timedOut = false
         let killed: string[] = []
+        const why: Record<string, string> = {}
         try {
           const kill = plainRun(
             corpus,
@@ -457,6 +460,7 @@ function* runMutants(
           if (failing.length > 0) {
             const again = plainRun(corpus, paths.testRoot, paths.scratch, failing)
             killed = failing.filter((f) => again.outcomes.get(f)?.verdict === 'fail')
+            for (const f of killed) why[f] = again.outcomes.get(f)?.failure ?? ''
             const flaky = failing.length - killed.length
             if (flaky > 0)
               log(`  mutant ${m.file}:${m.line}: ${flaky} failing file(s) passed on rerun, not counted`)
@@ -486,6 +490,7 @@ function* runMutants(
           pool,
           killed,
           timedOut,
+          ...(Object.keys(why).length > 0 ? { why } : {}),
           baselines,
         }
       } finally {
