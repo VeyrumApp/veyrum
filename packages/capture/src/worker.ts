@@ -128,19 +128,19 @@ const JEST29_WRAPPER_OPEN = '){'
 const JEST29_WRAPPER_CLOSE = '\n}});'
 
 /**
- * Jest coverage mode. Count coverage (the default) keeps V8 from optimizing any code in the worker,
- * the toolchain included; binary coverage does not, but needs each file to compile its modules
- * afresh (FILE_SUFFIX), which defeats V8's compilation cache. Replays measured count coverage
- * cheaper where recompiling dominates (Apollo Client +40% against +81%, twenty +124% against
- * +242%) and binary coverage cheaper where ts-jest type-checks in the workers (apollo-server +53%
- * against +91%). A V8 code cache across files made binary coverage slower overall.
+ * Coverage mode. Capture uses binary coverage: count coverage keeps V8 from optimizing any code in
+ * the worker, the toolchain included (Apollo Client +47%, apollo-server +97%, where ts-jest
+ * type-checks in the workers). Binary coverage reports each compiled function once per session,
+ * though, and Jest's files share compiled functions through V8's compilation cache, so a later
+ * file's calls would go unreported. Repository modules are therefore compiled afresh for each file
+ * (FILE_SUFFIX); dependencies keep the cache, because only their loading is recorded (Apollo Client
+ * +6%, apollo-server +22%). When the project collects its own V8 coverage, capture shares its count
+ * coverage instead (see coverage.ts) and nothing is suffixed.
  */
-const JEST_BINARY_COVERAGE = process.env.VEYRUM_JEST_COVERAGE === 'binary'
-
 /**
- * Appended under binary coverage to every script Jest compiles while a file is captured, unique
- * per file: binary coverage reports each compiled function once per session, and identical
- * source would reuse earlier files' functions. A trailing comment shifts no offsets.
+ * Appended under binary coverage to every repository module Jest compiles while a file is
+ * captured, unique per file: identical source would reuse earlier files' functions, which binary
+ * coverage has already reported. A trailing comment shifts no offsets.
  */
 const FILE_SUFFIX = /\n\/\/# veyrum-file \d+$/
 
@@ -161,12 +161,19 @@ function jestModuleCode(compiled: string): { code: string; offset: number } {
  * Records the source of every script compiled through node:vm, keyed by filename. Jest compiles
  * each module per test file this way, so this replaces asking the Debugger for script sources.
  */
-function installCompileHooks(isolate: IsolateState): void {
-  /** The source to compile: recorded while a file is captured, and suffixed under binary coverage. */
+function installCompileHooks(isolate: IsolateState, options: WorkerCaptureOptions): void {
+  /**
+   * The source to compile: recorded while a file is captured. Under binary coverage a repository
+   * module is suffixed, so its functions are compiled afresh and reported; dependencies keep V8's
+   * compilation cache, since only their loading is recorded.
+   */
   const note = (filename: unknown, source: string): string => {
     const map = isolate.compiled
     if (!map || typeof filename !== 'string' || typeof source !== 'string') return source
-    const compiled = JEST_BINARY_COVERAGE ? `${source}\n//# veyrum-file ${isolate.files}` : source
+    const compiled =
+      !options.projectCoverage && scriptLocation(filename, options).repositoryModule
+        ? `${source}\n//# veyrum-file ${isolate.files}`
+        : source
     const list = map.get(filename)
     if (list) list.push(compiled)
     else map.set(filename, [compiled])
@@ -420,7 +427,7 @@ export function prepareWorkerHooks(options: WorkerCaptureOptions): void {
   }
   g[ISOLATE_KEY] = isolate
   if (options.layout === 'jest') {
-    installCompileHooks(isolate)
+    installCompileHooks(isolate, options)
     isolate.toolchainObserved = recordToolchain(isolate.toolchain, isolate.toolchainFiles)
   }
 }
@@ -541,9 +548,7 @@ export async function beginWorkerCapture(options: WorkerCaptureOptions): Promise
   // modules cached by earlier files will not re-execute, so its payload is marked as reused.
   const session = await hub.acquire(
     CAPTURE_CONSUMER,
-    options.projectCoverage
-      ? { callCount: true, detailed: true }
-      : { callCount: layout === 'jest' && !JEST_BINARY_COVERAGE, detailed: false },
+    options.projectCoverage ? { callCount: true, detailed: true } : { callCount: false, detailed: false },
     (fresh) => collectDeadCode(fresh, isolate),
   )
   isolate.session = session
@@ -658,14 +663,15 @@ export async function beginWorkerCapture(options: WorkerCaptureOptions): Promise
           if (where.ignored) continue
           const absolute = where.absolute
           const executed = script.functions.some((f) => (f.ranges[0]?.count ?? 0) > 0)
+          if (!where.repositoryModule) {
+            // Under Jest, dependencies come from what the file compiled (below).
+            if (layout !== 'jest') natives.add(absolute)
+            continue
+          }
           // Jest keeps earlier files' scripts in the isolate; only those that ran now belong to this
           // file. Scripts Jest did not compile into the test context during this file are the runner
           // and its toolchain (transformers), recorded as shared inputs instead.
           if (layout === 'jest' && (!executed || !compiled?.has(absolute))) continue
-          if (!where.repositoryModule) {
-            natives.add(absolute)
-            continue
-          }
           const scriptLength = Math.max(0, ...script.functions.map((f) => f.ranges[0]?.endOffset ?? 0))
           const found =
             layout === 'jest'
@@ -698,6 +704,14 @@ export async function beginWorkerCapture(options: WorkerCaptureOptions): Promise
             mod.executed.set(`${start}:${end}`, [start, end])
           }
         }
+        // Every dependency Jest compiled into the file's context ran there: Jest runs each module it
+        // compiles. Under binary coverage, a dependency an earlier file already ran is not reported
+        // again, so what was compiled is the record of what was loaded.
+        if (layout === 'jest')
+          for (const file of compiled?.keys() ?? []) {
+            const where = scriptLocation(file, options)
+            if (!where.ignored && !where.repositoryModule) natives.add(where.absolute)
+          }
         for (const mod of byKey.values())
           modules.push({ path: mod.path, code: mod.code, executed: [...mod.executed.values()] })
       } catch (error) {

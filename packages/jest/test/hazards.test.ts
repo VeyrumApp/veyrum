@@ -150,6 +150,27 @@ describe('code', () => {
     })
   }
 
+  test('a dependency an earlier file in the same worker loaded is still an input of a later one', () => {
+    // In band, one process runs all three files in turn and V8 shares the dependency's compiled
+    // functions between them.
+    const s = jest('dependency-shared')
+      .write(
+        'node_modules/tiny-dep/package.json',
+        '{"name":"tiny-dep","version":"1.0.0","main":"index.js"}\n',
+      )
+      .write('node_modules/tiny-dep/index.js', 'module.exports = () => 1\n')
+      .write('test/a.test.js', "const dep = require('tiny-dep')\ntest('a', () => expect(dep()).toBe(1))\n")
+      .write('test/b.test.js', "const dep = require('tiny-dep')\ntest('b', () => expect(dep()).toBe(1))\n")
+      .write('test/plain.test.js', PLAIN_TEST)
+    s.capture()
+    s.write('node_modules/tiny-dep/index.js', 'module.exports = () => 1 + 0\n')
+    expect(s.actions()).toEqual({
+      'test/a.test.js': 'run',
+      'test/b.test.js': 'run',
+      'test/plain.test.js': 'skip',
+    })
+  })
+
   test('a dependency change invalidates only the files that loaded it', () => {
     const s = jest('dependency')
       .write(

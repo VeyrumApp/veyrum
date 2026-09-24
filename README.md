@@ -55,12 +55,8 @@ starts are traced too (see `docs/design/soundness.md`).
 Evidence is stored in `.veyrum/store.sqlite`. It holds digests, repository paths, test names,
 outcomes and durations, never source code or environment variable values.
 
-Vitest 4 and later and Jest 29 and later are supported on Node 22.15 or later.
-
-Under Jest, `VEYRUM_JEST_COVERAGE=binary` lowers capture overhead for projects whose transformer
-type-checks inside the test workers (ts-jest without `isolatedModules`), and raises it for most
-others. Both modes record the same evidence. The runner is detected from the
-project's configuration; `--runner vitest|jest` overrides it.
+Vitest 4 and later and Jest 29 and later are supported on Node 22.15 or later. The runner is
+detected from the project's configuration; `--runner vitest|jest` overrides it.
 
 ## Repository layout
 
