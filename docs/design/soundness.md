@@ -118,8 +118,11 @@ and arm64. How depends on the program:
   itself, so the library cannot see them. It runs under `veyrum-exec`
   (`packages/capture/native/exec.c`), which attaches a ptrace tracer before the exec. A seccomp
   filter stops the program only at the system calls that reach files by path, execute programs or
-  connect. The tracer records them in the same log, for every thread and descendant, and writes
-  each event before the stopped thread continues. The program keeps the process it was started in
+  connect, and only at their entry. The tracer records them in the same log, for every thread and
+  descendant, and writes each event before the stopped thread continues. Whether a path existed
+  is resolved when the file's evidence is recorded, as for any read (a path absent when the
+  program looked and present by then reads as changed, which reruns), and a failed connection
+  counts as network use. The program keeps the process it was started in
   (pid, parent, streams, signals, exit status); the tracer is a detached grandchild. Tracing sets
   `no_new_privs`, so a set-user-ID program started this way does not gain privileges. Where
   ptrace is not allowed (Yama `ptrace_scope` 2 or 3, a container that forbids it, a debugger
