@@ -8,10 +8,10 @@ import type { CheckOutcomeSummary, Decision } from '@veyrum/core'
 const here = path.dirname(fileURLToPath(import.meta.url))
 const repoRoot = path.resolve(here, '../..')
 const cli = path.join(repoRoot, 'packages/cli/dist/main.js')
-/** Runner installs the sandboxes link to (dev dependencies of the adapter packages). */
-const runnerModules = {
-  vitest: path.join(repoRoot, 'node_modules', 'vitest'),
-  jest: path.join(repoRoot, 'packages', 'jest', 'node_modules', 'jest'),
+/** Where each runner's adapter package has its dependencies (the runner among them). */
+const adapterModules = {
+  vitest: path.join(repoRoot, 'node_modules'),
+  jest: path.join(repoRoot, 'packages', 'jest', 'node_modules'),
 }
 
 export interface SandboxOptions {
@@ -20,7 +20,11 @@ export interface SandboxOptions {
   readonly runner?: 'vitest' | 'jest'
   /** Worker count passed to the runner (Jest runs in the main process with one worker). */
   readonly workers?: number
-  /** Packages from the repository's own node_modules to link in, for example a DOM environment. */
+  /**
+   * Packages to link in, for example a DOM environment: from the runner adapter's dependencies,
+   * else the repository's. Scenarios never rely on resolution outside the sandbox, which only
+   * works when a package manager sets NODE_PATH.
+   */
   readonly modules?: readonly string[]
 }
 
@@ -47,11 +51,11 @@ export class Sandbox {
     const base = options.base ?? path.join(repoRoot, '.sandbox')
     this.dir = path.join(base, `${name}-${crypto.randomBytes(4).toString('hex')}`)
     fs.mkdirSync(path.join(this.dir, 'node_modules'), { recursive: true })
-    fs.symlinkSync(runnerModules[this.runner], path.join(this.dir, 'node_modules', this.runner))
-    for (const name of options.modules ?? []) {
+    for (const name of [this.runner, ...(options.modules ?? [])]) {
       const link = path.join(this.dir, 'node_modules', name)
+      const own = path.join(adapterModules[this.runner], name)
       fs.mkdirSync(path.dirname(link), { recursive: true })
-      fs.symlinkSync(path.join(repoRoot, 'node_modules', name), link)
+      fs.symlinkSync(fs.existsSync(own) ? own : path.join(repoRoot, 'node_modules', name), link)
     }
     if (this.runner === 'vitest') {
       this.write('package.json', JSON.stringify({ name, private: true, type: 'module' }, null, 2))

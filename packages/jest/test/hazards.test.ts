@@ -9,8 +9,8 @@ import { Sandbox } from '../../../test/support/sandbox.ts'
 let sandbox: Sandbox | undefined
 afterEach(() => sandbox?.dispose())
 
-const jest = (name: string, workers = 1): Sandbox => {
-  sandbox = new Sandbox(name, { runner: 'jest', workers })
+const jest = (name: string, workers = 1, modules: readonly string[] = []): Sandbox => {
+  sandbox = new Sandbox(name, { runner: 'jest', workers, modules })
   return sandbox
 }
 
@@ -112,7 +112,7 @@ describe('code', () => {
 
   for (const workers of [1, 2]) {
     test(`a file that picks its environment in a docblock is captured, and the environment is an input (${workers === 1 ? 'in band' : 'workers'})`, () => {
-      const s = jest(`docblock-environment-${workers}`, workers)
+      const s = jest(`docblock-environment-${workers}`, workers, ['jest-environment-node'])
         .write('src/math.js', MATH)
         .write(
           'env/custom.js',
@@ -134,7 +134,7 @@ describe('code', () => {
 
   for (const workers of [1, 2]) {
     test(`a configured custom environment is an input (${workers === 1 ? 'in band' : 'workers'})`, () => {
-      const s = jest(`configured-environment-${workers}`, workers)
+      const s = jest(`configured-environment-${workers}`, workers, ['jest-environment-node'])
         .write('jest.config.js', "module.exports = { testEnvironment: '<rootDir>/env/custom.js' }\n")
         .write(
           'env/custom.js',
