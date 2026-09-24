@@ -592,6 +592,9 @@ interface SpawnCall {
 const isOptions = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v)
 
+/** The shell Node runs commands with: cmd.exe (ComSpec) on Windows, /bin/sh elsewhere. */
+const DEFAULT_SHELL = process.platform === 'win32' ? (process.env.ComSpec ?? 'cmd.exe') : '/bin/sh'
+
 /** Reads a child_process call's arguments the way Node normalizes them. */
 function spawnCall(name: SpawnFunction, args: unknown[]): SpawnCall {
   const file = String(args[0])
@@ -600,7 +603,7 @@ function spawnCall(name: SpawnFunction, args: unknown[]): SpawnCall {
     const options = isOptions(second) ? second : undefined
     const callback = [args[1], args[2]].find((a) => typeof a === 'function')
     return {
-      shell: typeof options?.shell === 'string' ? options.shell : '/bin/sh',
+      shell: typeof options?.shell === 'string' ? options.shell : DEFAULT_SHELL,
       file,
       options,
       args: [],
@@ -627,7 +630,7 @@ function spawnCall(name: SpawnFunction, args: unknown[]): SpawnCall {
     name === 'fork'
       ? null
       : options?.shell === true
-        ? '/bin/sh'
+        ? DEFAULT_SHELL
         : typeof options?.shell === 'string'
           ? options.shell
           : null
@@ -683,7 +686,12 @@ function prepareSpawn(name: SpawnFunction, args: unknown[]): unknown[] | undefin
       }
     }
     recordLookup(executableCandidates(program, pathVariable, cwd))
-    if (!resolved) return undefined // Nothing runs: the start fails.
+    // Not found where Node would look: the start most likely fails, but a program found some way
+    // this lookup does not model would run unobserved.
+    if (!resolved) {
+      sink.spawn(label)
+      return undefined
+    }
     // The child's environment is an input where it comes from this process's: a value the call set
     // itself comes from the test's code, which is recorded already.
     const recordStart = (): void => {

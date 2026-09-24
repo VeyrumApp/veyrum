@@ -327,7 +327,8 @@ describe.skipIf(tracing)('child processes where they cannot be traced', () => {
     sandbox = new Sandbox('child-untraced')
       .write(
         'test/child.test.ts',
-        "import { execFileSync } from 'node:child_process'\nimport { expect, test } from 'vitest'\ntest('child', () => expect(execFileSync(process.execPath, ['-e', 'process.stdout.write(\"a\")']).toString()).toBe('a'))\n",
+        // Not a Node program: capture's own hooks trace those on every platform.
+        "import { execSync } from 'node:child_process'\nimport { expect, test } from 'vitest'\ntest('child', () => expect(execSync('echo a').toString().trim()).toBe('a'))\n",
       )
       .write('test/plain.test.ts', PLAIN_TEST)
     sandbox.capture()
