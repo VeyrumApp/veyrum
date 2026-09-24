@@ -80,7 +80,12 @@ function project(name, devDependencies, files) {
 function cycle(dir, source, testExt) {
   const veyrum = path.join(dir, 'node_modules', '.bin', 'veyrum')
   expectMatch(run(veyrum, ['run', '--quiet'], dir), /2 test files, ran 2, reused evidence for 0/, 'first run')
-  expectMatch(run(veyrum, ['run', '--quiet'], dir), /2 test files, ran 0, reused evidence for 2/, 'unchanged')
+  // --explain: a failure then shows why each file ran.
+  expectMatch(
+    run(veyrum, ['run', '--quiet', '--explain'], dir),
+    /2 test files, ran 0, reused evidence for 2/,
+    'unchanged',
+  )
   const file = path.join(dir, source)
   fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('a * b', 'b * a'))
   const edited = run(veyrum, ['run', '--quiet', '--explain'], dir)
