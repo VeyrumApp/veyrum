@@ -195,7 +195,7 @@ describe('coverage', () => {
       string,
       { statementMap: Record<string, { start: { line: number } }>; s: Record<string, number> }
     >
-    const entry = Object.entries(report).find(([f]) => f.endsWith(file))?.[1]
+    const entry = Object.entries(report).find(([f]) => f.replaceAll('\\', '/').endsWith(file))?.[1]
     if (!entry) throw new Error(`${file} is not in the coverage report`)
     const hits: Record<number, number> = {}
     for (const [id, loc] of Object.entries(entry.statementMap)) hits[loc.start.line] = entry.s[id] ?? 0

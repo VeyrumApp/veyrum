@@ -119,7 +119,15 @@ export class CurrentState {
     this.store = store
     this.env = env
     this.fs = fsImpl
+    // Windows variable names are case-insensitive (Vitest reads `comspec`, the environment holds
+    // `ComSpec`), but a copied environment is a plain object.
+    if (process.platform === 'win32') {
+      this.envByUpperName = new Map()
+      for (const [n, v] of Object.entries(env)) this.envByUpperName.set(n.toUpperCase(), v)
+    }
   }
+
+  private readonly envByUpperName: Map<string, string | undefined> | undefined
 
   /** Content digest of a file; null if it does not exist; a sentinel if it is not a regular file. */
   fileDigest(repoPath: string): Digest | null {
@@ -203,7 +211,7 @@ export class CurrentState {
 
   envDigest(name: string, injected: Readonly<Record<string, Digest | null>>): Digest | null {
     if (Object.hasOwn(injected, name)) return injected[name] ?? null
-    return hashEnvValue(this.env[name])
+    return hashEnvValue(this.envByUpperName ? this.envByUpperName.get(name.toUpperCase()) : this.env[name])
   }
 
   private computeFileDigest(absolute: string): Digest | null {
