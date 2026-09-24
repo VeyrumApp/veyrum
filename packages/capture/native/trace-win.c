@@ -51,7 +51,11 @@
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "advapi32.lib")
 
+/* detours.h uses nameless unions, a Microsoft extension. */
+#pragma warning(push)
+#pragma warning(disable : 4201)
 #include "detours.h"
+#pragma warning(pop)
 
 /* ---- NT definitions winternl.h leaves out ------------------------------------------------------ */
 
@@ -117,6 +121,7 @@ typedef NTSTATUS(NTAPI *NtDeleteFile_t)(POBJECT_ATTRIBUTES);
 typedef NTSTATUS(NTAPI *NtFsControlFile_t)(HANDLE, HANDLE, PIO_APC_ROUTINE, PVOID, PIO_STATUS_BLOCK, ULONG, PVOID, ULONG,
                                            PVOID, ULONG);
 typedef NTSTATUS(NTAPI *NtQueryObject_t)(HANDLE, ULONG, PVOID, ULONG, PULONG);
+typedef NTSTATUS(NTAPI *NtClose_t)(HANDLE);
 typedef NTSTATUS(NTAPI *NtCreateUserProcess_t)(PHANDLE, PHANDLE, ACCESS_MASK, ACCESS_MASK, POBJECT_ATTRIBUTES,
                                                POBJECT_ATTRIBUTES, ULONG, ULONG, PVOID, PVOID, PVOID);
 typedef NTSTATUS(NTAPI *NtCreateProcessEx_t)(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, HANDLE, ULONG, HANDLE, HANDLE,
@@ -151,6 +156,7 @@ static NtQueryInformationFile_t Real_NtQueryInformationFile;
 static NtDeleteFile_t Real_NtDeleteFile;
 static NtFsControlFile_t Real_NtFsControlFile;
 static NtQueryObject_t Real_NtQueryObject;
+static NtClose_t Real_NtClose;
 static NtCreateUserProcess_t Real_NtCreateUserProcess;
 static NtCreateProcessEx_t Real_NtCreateProcessEx;
 static NtCreateProcess_t Real_NtCreateProcess;
@@ -592,24 +598,94 @@ static int has_wildcard(const UNICODE_STRING *pattern) {
 }
 
 /*
+ * Directory handles already queried, and whether their first query named a single entry: a query
+ * without a name continues the first one (FindNextFile after FindFirstFile), so after a named one
+ * it lists nothing. Entries leave when their handle is closed; one pushed out by newer ones only
+ * makes a later continuation count as a listing.
+ */
+#define QUERIED_HANDLES 64
+typedef struct {
+  HANDLE handle;
+  uint64_t directory; /* a hash of the directory's path, against a handle value reused unseen */
+  int named;
+} QUERIED;
+static QUERIED queried_handles[QUERIED_HANDLES];
+static volatile LONG queried_count;
+static unsigned queried_next;
+static SRWLOCK queried_lock = SRWLOCK_INIT;
+
+static uint64_t path_hash(const WCHAR *p, size_t n) {
+  uint64_t h = 14695981039346656037ULL;
+  for (size_t i = 0; i < n; i++) h = (h ^ p[i]) * 1099511628211ULL;
+  return h;
+}
+
+/* Whether the handle's earlier query named one entry; records the handle as queried now. */
+static int continues_named(HANDLE h, uint64_t directory, int named, int first_only) {
+  int result = 0;
+  AcquireSRWLockExclusive(&queried_lock);
+  int found = -1;
+  for (int i = 0; i < QUERIED_HANDLES; i++)
+    if (queried_handles[i].handle == h && queried_handles[i].directory == directory) found = i;
+  if (found >= 0) {
+    result = queried_handles[found].named;
+    /* A later query with a pattern of its own may start over with it: never back to one name. */
+    if (!first_only) queried_handles[found].named = queried_handles[found].named && named;
+  } else {
+    unsigned slot = queried_next++ % QUERIED_HANDLES;
+    if (!queried_handles[slot].handle) InterlockedIncrement(&queried_count);
+    queried_handles[slot].handle = h;
+    queried_handles[slot].directory = directory;
+    queried_handles[slot].named = named;
+  }
+  ReleaseSRWLockExclusive(&queried_lock);
+  return found >= 0 ? result : -1;
+}
+
+static NTSTATUS NTAPI Hook_NtClose(HANDLE h) {
+  if (queried_count > 0) {
+    AcquireSRWLockExclusive(&queried_lock);
+    for (int i = 0; i < QUERIED_HANDLES; i++) {
+      if (queried_handles[i].handle == h) {
+        queried_handles[i].handle = NULL;
+        InterlockedDecrement(&queried_count);
+      }
+    }
+    ReleaseSRWLockExclusive(&queried_lock);
+  }
+  return Real_NtClose(h);
+}
+
+/*
  * A directory query lists the directory, unless it names one entry: then it checks that name
- * (FindFirstFile on a path without wildcards). A query that continues an earlier one on the same
- * handle is recorded as a listing.
+ * (FindFirstFile on a path without wildcards), and the queries continuing it list nothing.
  */
 static void queried(HANDLE h, const UNICODE_STRING *pattern, NTSTATUS st) {
-  if (pattern && pattern->Buffer && pattern->Length > 0 && !has_wildcard(pattern) && st != ST_PENDING) {
-    SCRATCH *s = get_scratch();
-    if (!s) return;
-    size_t len = 0;
-    int found = handle_path(h, s->path, MAX_NAME, &len);
-    if (found == PATH_FILE) found = join(s->path, MAX_NAME, &len, pattern->Buffer, pattern->Length / sizeof(WCHAR));
-    if (found == PATH_FILE)
-      emit_path(st >= 0 ? 's' : (absent(st) || st == ST_NO_MORE_FILES ? 'S' : 's'), s->path, len);
-    else if (found == PATH_UNKNOWN)
-      emit_unknown(NULL, 0);
+  SCRATCH *s = get_scratch();
+  if (!s) return;
+  size_t len = 0;
+  int found = handle_path(h, s->path, MAX_NAME, &len);
+  if (found == PATH_NONE) return;
+  if (found == PATH_UNKNOWN) {
+    emit_unknown(NULL, 0);
     return;
   }
-  emit_handle('d', h);
+  uint64_t directory = path_hash(s->path, len);
+  int has_pattern = pattern && pattern->Buffer && pattern->Length > 0;
+  int named = has_pattern && !has_wildcard(pattern) && st != ST_PENDING;
+  int earlier = continues_named(h, directory, named, !has_pattern);
+  if (named) {
+    if (join(s->path, MAX_NAME, &len, pattern->Buffer, pattern->Length / sizeof(WCHAR)) != PATH_FILE) {
+      emit_unknown(NULL, 0);
+      return;
+    }
+    emit_path(st >= 0 ? 's' : (absent(st) || st == ST_NO_MORE_FILES ? 'S' : 's'), s->path, len);
+    /* Continuing a listing with a name: the query may go on with the listing's pattern. */
+    if (earlier == 0) emit_handle('d', h);
+    return;
+  }
+  if (!has_pattern && earlier == 1) return;
+  emit_path('d', s->path, len);
 }
 
 static NTSTATUS NTAPI Hook_NtQueryDirectoryFile(HANDLE h, HANDLE event, PIO_APC_ROUTINE apc, PVOID context,
@@ -1028,6 +1104,7 @@ static void start(void) {
   HOOK(ntdll, NtSetInformationFile);
   HOOK(ntdll, NtDeleteFile);
   HOOK(ntdll, NtFsControlFile);
+  HOOK(ntdll, NtClose);
   HOOK(ntdll, NtCreateUserProcess);
   HOOK(ntdll, NtCreateProcessEx);
   HOOK(ntdll, NtCreateProcess);

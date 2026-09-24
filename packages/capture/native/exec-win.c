@@ -30,7 +30,11 @@
 #include <stdio.h>
 #include <string.h>
 
+/* detours.h uses nameless unions, a Microsoft extension. */
+#pragma warning(push)
+#pragma warning(disable : 4201)
 #include "detours.h"
+#pragma warning(pop)
 
 static void append_log(const char *line, DWORD len) {
   WCHAR log[32768];
@@ -113,7 +117,7 @@ int wmain(void) {
   WCHAR *slash = n > 0 && n < 32768 ? wcsrchr(dll, L'\\') : NULL;
   char dll_ansi[MAX_PATH * 2] = "";
   if (slash && (size_t)(slash - dll) + 18 < 32768) {
-    wcscpy(slash + 1, L"veyrum-trace.dll");
+    memcpy(slash + 1, L"veyrum-trace.dll", sizeof L"veyrum-trace.dll");
     WCHAR short_path[MAX_PATH * 2];
     UINT code_page = GetACP();
     for (int attempt = 0; attempt < 2 && !dll_ansi[0]; attempt++) {

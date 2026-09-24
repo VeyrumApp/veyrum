@@ -54,6 +54,9 @@ describe.runIf(windows)('child processes on Windows', () => {
     expect(sandbox.actions()).toEqual({ 'test/child.test.ts': 'skip', 'test/plain.test.ts': 'skip' })
     sandbox.write('fixtures/other.txt', 'p')
     expect(sandbox.actions()['test/child.test.ts']).toBe('skip')
+    // Reading a file looks it up by name (FindFirstFile): its directory's other entries are not inputs.
+    sandbox.write('fixtures/new.txt', 'n')
+    expect(sandbox.actions()['test/child.test.ts']).toBe('skip')
     sandbox.write('fixtures/x.txt', 'b')
     expect(sandbox.plan()['test/child.test.ts']?.details).toEqual(['fixtures/x.txt changed'])
     sandbox.capture()

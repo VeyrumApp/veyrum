@@ -113,7 +113,7 @@ export function buildWindows(root, nativeDir) {
     const common = ['/O2', '/MT', '/DWIN32_LEAN_AND_MEAN', '/D_WIN32_WINNT=0x0A00', `/I${detours}`]
     cl(['/c', '/W3', ...common, ...DETOURS_SOURCES.map((file) => path.join(detours, file))])
     const objects = DETOURS_SOURCES.map((file) => path.join(build, file.replace(/\.cpp$/, '.obj')))
-    const strict = ['/W4']
+    const strict = ['/W4', '/WX']
     cl([
       ...strict,
       ...common,
