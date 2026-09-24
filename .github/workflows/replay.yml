@@ -32,6 +32,10 @@ on:
       overhead-every:
         description: Measure capture overhead every Nth commit (empty for the preset's; quick measures every commit)
         default: ''
+      node-profile:
+        description: CPU-profile every Node process of the plain and Veyrum runs on the first two measured commits (diagnostics; changes the runtime key, so selection results after them are skewed)
+        type: boolean
+        default: false
       cpu-profile:
         description: Write a CPU profile of every capture window (diagnostics; use a short range)
         type: boolean
@@ -124,6 +128,7 @@ jobs:
           VEYRUM_JEST_COVERAGE: ${{ inputs.jest-coverage }}
           # Diagnostic reports of every Node process in a run that hits its time limit.
           RIG_REPORT_DIR: ${{ runner.temp }}/reports
+          RIG_NODE_PROFILE_DIR: ${{ inputs.node-profile && format('{0}/node-profiles', runner.temp) || '' }}
         run: |
           mkdir -p "$RIG_REPORT_DIR"
           args=(--bench "$RUNNER_TEMP/bench" --overhead-every "$OVERHEAD" --shard "$SHARD" --until "$UNTIL")
@@ -140,6 +145,7 @@ jobs:
             ${{ runner.temp }}/replay.log
             ${{ runner.temp }}/profiles
             ${{ runner.temp }}/reports
+            ${{ runner.temp }}/node-profiles
           if-no-files-found: warn
 
   merge:

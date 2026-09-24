@@ -182,5 +182,23 @@ export function childEnv(): NodeJS.ProcessEnv {
   }
   // Snapshots must never be written by benchmark runs.
   env.CI = 'true'
+  // Diagnostics: CPU profiles of every Node process of the runs being profiled (see replay.ts).
+  const profileDir = process.env.RIG_NODE_PROFILE_DIR
+  if (profileDir && profiling) {
+    env.NODE_OPTIONS = [env.NODE_OPTIONS, '--cpu-prof', `--cpu-prof-dir=${path.join(profileDir, profiling)}`]
+      .filter(Boolean)
+      .join(' ')
+  }
   return env
+}
+
+let profiling: string | null = null
+/** Profiles the runs made during fn under RIG_NODE_PROFILE_DIR/<name> (no-op when unset). */
+export function profiled<T>(name: string, fn: () => T): T {
+  profiling = name
+  try {
+    return fn()
+  } finally {
+    profiling = null
+  }
 }

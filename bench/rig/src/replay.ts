@@ -3,7 +3,7 @@ import path from 'node:path'
 import { type CheckRef, Store } from '@veyrum/core'
 import { type SelectionContext, selectFileClosure, selectFileCoverage, selectNaive } from './baselines.ts'
 import type { Corpus } from './corpus.ts'
-import { exec, git, KilledError } from './exec.ts'
+import { exec, git, KilledError, profiled } from './exec.ts'
 import { applyMutant, type Mutant, mutationSites, rng } from './mutate.ts'
 import { captureRun, type Outcomes, plainRun, runnerChanged, veyrumPlan } from './runners.ts'
 
@@ -230,6 +230,7 @@ export async function replay(corpus: Corpus, benchRoot: string, options: ReplayO
   const done = lines.filter((r): r is CommitResult => r.kind === 'commit')
   const doneShas = new Set([...done, ...lines.filter((r) => r.kind === 'broken')].map((r) => r.sha))
   let broken = 0
+  let profiledCommits = 0
   let prev: CommitResult | undefined = done[done.length - 1]
   const store = Store.open(paths.store)
   // Synchronous appends: everything else in the loop is synchronous, so a buffered stream would
@@ -305,8 +306,19 @@ export async function replay(corpus: Corpus, benchRoot: string, options: ReplayO
         if (measureOverhead) plainRun(corpus, paths.testRoot, paths.scratch)
 
         // 3. Ground truth and evidence for the next commit.
-        const capture = captureRun(corpus, paths.testRoot, paths.store, paths.scratch)
-        const plainWallMs = measureOverhead ? plainRun(corpus, paths.testRoot, paths.scratch).wallMs : null
+        // Diagnostics: with RIG_NODE_PROFILE_DIR, the first two measured commits are CPU-profiled.
+        const profile = measureOverhead && profiledCommits < 2 ? `${index}-${sha.slice(0, 8)}` : null
+        if (profile) profiledCommits++
+        const capture = profile
+          ? profiled(`${profile}/veyrum`, () =>
+              captureRun(corpus, paths.testRoot, paths.store, paths.scratch),
+            )
+          : captureRun(corpus, paths.testRoot, paths.store, paths.scratch)
+        const plainWallMs = !measureOverhead
+          ? null
+          : profile
+            ? profiled(`${profile}/plain`, () => plainRun(corpus, paths.testRoot, paths.scratch).wallMs)
+            : plainRun(corpus, paths.testRoot, paths.scratch).wallMs
         const outcomes = capture.outcomes
         const flaky = detectFlaky(corpus, paths.testRoot, paths.scratch, outcomes)
         const prevOutcomes = new Map(Object.entries(prev?.outcomes ?? {}))
