@@ -624,7 +624,9 @@ export async function beginWorkerCapture(options: WorkerCaptureOptions): Promise
       const modules: PayloadModule[] = []
       const natives = new Set<string>()
       let evalScripts = 0
+      let takeMs = 0
       try {
+        const takeStarted = performance.now()
         const coverage = (await session.post('Profiler.takePreciseCoverage')) as {
           result: {
             scriptId: string
@@ -632,6 +634,7 @@ export async function beginWorkerCapture(options: WorkerCaptureOptions): Promise
             functions: { ranges: { startOffset: number; endOffset: number; count: number }[] }[]
           }[]
         }
+        takeMs = performance.now() - takeStarted
         const blobDir = path.join(options.outDir, 'blobs')
         unobserved(() => fs.mkdirSync(blobDir, { recursive: true }))
         const byKey = new Map<
@@ -726,7 +729,7 @@ export async function beginWorkerCapture(options: WorkerCaptureOptions): Promise
         toolchain: [...state.toolchain],
         toolchainFiles: [...state.toolchainFiles],
         captureErrors: errors,
-        timings: { beginMs, finishMs: performance.now() - finishStarted },
+        timings: { beginMs, finishMs: performance.now() - finishStarted, takeMs },
       }
       if (CPU_PROFILE_DIR) {
         try {
