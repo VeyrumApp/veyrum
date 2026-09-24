@@ -18,9 +18,17 @@
  * preloaded tracer's reads. Events are written before the stopped thread continues, so they are in
  * the log before the program's exit can be seen by its parent.
  *
- * When tracing cannot start (ptrace forbidden, no seccomp, a debugger already attached), the
- * program runs untraced and the log records it as untraceable ("u"), which ends reuse. Tracing sets
- * no_new_privs: a set-user-ID program started this way does not gain privileges.
+ * When tracing cannot start (ptrace forbidden, no seccomp), the program runs untraced and the log
+ * records it as untraceable ("u"), which ends reuse. So does a program that already has a tracer (a
+ * debugger, strace): a process has one tracer, and trying to attach would only show that one the
+ * processes this launcher forks. Under a Veyrum launcher's tracer that follows launchers of every
+ * build (a nested capture's), nothing starts: that tracer records the program in this launcher's
+ * log. Tracing sets no_new_privs: a set-user-ID program started this way does not gain privileges.
+ *
+ * What a traced program cannot do as it would untraced is recorded as untraceable too: ask to
+ * trace one of its own processes (this tracer holds them all, and the kernel refuses), install a
+ * seccomp filter that stops calls for a tracer (this one lets them run, where they would fail
+ * untraced), or one whose supervisor handles calls (they then never reach this tracer).
  *
  * Built statically, so the preloaded library never runs in the launcher itself.
  */
@@ -65,6 +73,16 @@ extern char **environ;
 /* PTRACE_GET_SYSCALL_INFO (Linux 5.3), declared here: C library headers differ in whether they have it. */
 #define GET_SYSCALL_INFO 0x420e
 #define INFO_SECCOMP 3
+#ifndef SECCOMP_FILTER_FLAG_NEW_LISTENER
+#define SECCOMP_FILTER_FLAG_NEW_LISTENER (1UL << 3)
+#endif
+
+/*
+ * The data this launcher's filter returns with SECCOMP_RET_TRACE. A stop with other data comes
+ * from a filter of the program's own, which asks for a tracer the program does not have.
+ */
+#define FILTER_DATA 0x7679u
+
 struct syscall_info {
   uint8_t op;
   uint8_t pad[3];
@@ -108,6 +126,8 @@ enum op {
   OP_SYMLINK,    /* symlink(target, path) */
   OP_SYMLINKAT,  /* symlinkat(target, dirfd, path) */
   OP_OPAQUE,     /* reaches files without a path this tracer can follow */
+  OP_PTRACE,     /* ptrace(request, pid) */
+  OP_SECCOMP,    /* seccomp(operation, flags) */
 };
 
 static const struct {
@@ -174,6 +194,8 @@ static const struct {
     {__NR_symlinkat, OP_SYMLINKAT, "symlinkat"},
     {__NR_io_uring_setup, OP_OPAQUE, "io_uring_setup"},
     {__NR_open_by_handle_at, OP_OPAQUE, "open_by_handle_at"},
+    {__NR_ptrace, OP_PTRACE, "ptrace"},
+    {__NR_seccomp, OP_SECCOMP, "seccomp"},
 };
 #define TRACED_COUNT (sizeof traced / sizeof *traced)
 
@@ -486,9 +508,57 @@ static void emit_open(struct task *t, int flags, int dirfd, uint64_t addr) {
 static dev_t own_dev;
 static ino_t own_ino;
 
-static int is_launcher(const char *path) {
+/* This launcher's own file: Veyrum itself, not an input. */
+static int is_own_launcher(const char *path) {
   struct stat st;
   return stat(path, &st) == 0 && st.st_dev == own_dev && st.st_ino == own_ino;
+}
+
+/*
+ * How launchers recognize each other across builds: a nested capture's may come from another
+ * checkout of Veyrum (Veyrum testing itself, or its benchmark replaying Veyrum's history). Every
+ * build carries its usage line, so a file named veyrum-exec that has it is a launcher. A build
+ * that also carries follows_mark switches to the log of any launcher its tracees run (on_exec), so
+ * a launcher it traces can leave the program to it. Neither line may change.
+ */
+static const char usage[] = "usage: veyrum-exec <program> [argv0 [args...]]\n";
+static const char follows_mark[] = "veyrum-exec: follows the launchers of every build\n";
+#define MARK_LEN (sizeof follows_mark > sizeof usage ? sizeof follows_mark - 1 : sizeof usage - 1)
+
+enum { LAUNCHER = 1, FOLLOWS_LAUNCHERS = 2 };
+
+/* What a program is among Veyrum's launchers: LAUNCHER, with FOLLOWS_LAUNCHERS or not, or 0. */
+static int launcher_kind(const char *path) {
+  if (is_own_launcher(path)) return LAUNCHER | FOLLOWS_LAUNCHERS;
+  const char *slash = strrchr(path, '/');
+  if (strcmp(slash ? slash + 1 : path, "veyrum-exec") != 0) return 0;
+  int fd = open(path, O_RDONLY | O_CLOEXEC);
+  if (fd < 0) return 0;
+  /* Read in blocks, each after the end of the one before, where a line may have started. */
+  static char buf[MARK_LEN + (1 << 16)];
+  size_t kept = 0;
+  int kind = 0;
+  for (;;) {
+    ssize_t n = read(fd, buf + kept, 1 << 16);
+    if (n < 0 && errno == EINTR) continue;
+    if (n <= 0) break;
+    size_t len = kept + (size_t)n;
+    if (memmem(buf, len, usage, sizeof usage - 1)) kind |= LAUNCHER;
+    if (memmem(buf, len, follows_mark, sizeof follows_mark - 1)) kind |= FOLLOWS_LAUNCHERS;
+    if (kind == (LAUNCHER | FOLLOWS_LAUNCHERS)) break;
+    kept = len < MARK_LEN - 1 ? len : MARK_LEN - 1;
+    memmove(buf, buf + len - kept, kept);
+  }
+  close(fd);
+  return kind & LAUNCHER ? kind : 0;
+}
+
+/* The launcher kind of the program that traces `pid` (a thread id too), 0 for another tracer, -1 for none. */
+static int tracer_kind(pid_t pid) {
+  pid_t tracer = status_field(pid, "TracerPid");
+  if (tracer <= 0) return -1;
+  char exe[PATH_MAX];
+  return proc_link(tracer, "exe", exe, sizeof exe) == 0 ? launcher_kind(exe) : 0;
 }
 
 /* A system call entry the filter stopped. */
@@ -567,8 +637,8 @@ static void on_entry(struct task *t, const struct syscall_info *si) {
         r = resolve(t->tid, op == OP_EXECVEAT ? (int)a[0] : AT_FDCWD, op == OP_EXECVEAT ? a[1] : a[0], path,
                     sizeof path);
       }
-      /* The launcher itself is Veyrum, not an input. */
-      if (r == 0 && !is_launcher(path)) {
+      /* This launcher is Veyrum, not an input; another build's is a program the test ran. */
+      if (r == 0 && !is_own_launcher(path)) {
         int launcher = t->launcher;
         t->launcher = 0;
         emit(t, 'x', path);
@@ -637,15 +707,35 @@ static void on_entry(struct task *t, const struct syscall_info *si) {
     case OP_OPAQUE:
       if (!t->launcher) emit_untraceable(t, op_name);
       return;
+    case OP_PTRACE: {
+      /*
+       * A process has one tracer, and a Veyrum launcher's holds every process it traces: the kernel
+       * refuses to let the program trace one of them (or itself be traced by its parent), which
+       * it would have allowed untraced. Handing the process over cannot help: the filter stays, and
+       * without a tracer that asks for its stops, the calls it stops fail. Attaching to a process
+       * no launcher traces works as it would. A launcher reports its own tracer's failure.
+       */
+      if (t->launcher) return;
+      long request = (long)a[0];
+      if (request == PTRACE_TRACEME ||
+          ((request == PTRACE_ATTACH || request == PTRACE_SEIZE) && tracer_kind((pid_t)a[1]) > 0))
+        emit_untraceable(t, "ptrace");
+      return;
+    }
+    case OP_SECCOMP:
+      /* A filter with a listener: its supervisor handles the calls it stops, which never reach this tracer. */
+      if (!t->launcher && a[0] == SECCOMP_SET_MODE_FILTER && (a[1] & SECCOMP_FILTER_FLAG_NEW_LISTENER))
+        emit_untraceable(t, "seccomp listener");
+      return;
     case OP_NONE:
       return;
   }
 }
 
-/* After an exec: whether the task now runs the launcher, and the log a launcher points to. */
+/* After an exec: whether the task now runs a launcher (of any build), and the log it points to. */
 static void on_exec(struct task *t) {
   char exe[PATH_MAX];
-  t->launcher = proc_link(t->tid, "exe", exe, sizeof exe) == 0 && is_launcher(exe);
+  t->launcher = proc_link(t->tid, "exe", exe, sizeof exe) == 0 && launcher_kind(exe) != 0;
   if (!t->launcher) return;
   char name[64];
   snprintf(name, sizeof name, "/proc/%d/environ", t->tid);
@@ -683,8 +773,13 @@ static void trace_loop(void) {
       case PTRACE_EVENT_SECCOMP: {
         struct syscall_info si;
         long n = ptrace(GET_SYSCALL_INFO, tid, (void *)sizeof si, &si);
-        if (n <= 0 || si.op != INFO_SECCOMP) emit_untraceable(t, "ptrace");
-        else on_entry(t, &si);
+        if (n <= 0 || si.op != INFO_SECCOMP) {
+          emit_untraceable(t, "ptrace");
+        } else {
+          /* The program's own filter stopped the call for a tracer: untraced, it would fail. */
+          if ((si.seccomp.ret_data & 0xffff) != FILTER_DATA && !t->launcher) emit_untraceable(t, "seccomp filter");
+          on_entry(t, &si);
+        }
         break;
       }
       case PTRACE_EVENT_FORK:
@@ -842,7 +937,7 @@ static int install_filter(void) {
   size_t n = 0;
   filter[n++] = (struct sock_filter)BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, arch));
   filter[n++] = (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, NATIVE_ARCH, 1, 0);
-  filter[n++] = (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_TRACE);
+  filter[n++] = (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_TRACE | FILTER_DATA);
   filter[n++] = (struct sock_filter)BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, nr));
 #ifdef X32_BIT
   filter[n++] = (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JGE | BPF_K, X32_BIT, TRACED_COUNT + 1, 0);
@@ -851,22 +946,10 @@ static int install_filter(void) {
     filter[n++] = (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, (uint32_t)traced[i].nr,
                                                (uint8_t)(TRACED_COUNT - i), 0);
   filter[n++] = (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW);
-  filter[n++] = (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_TRACE);
+  filter[n++] = (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_TRACE | FILTER_DATA);
   struct sock_fprog program = {(unsigned short)n, filter};
   if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0) return -1;
   return prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &program, 0, 0);
-}
-
-/* Whether this process is traced by this program already: it then runs inside a traced tree. */
-static int traced_by_launcher(void) {
-  pid_t tracer = status_field(getpid(), "TracerPid");
-  if (tracer <= 0) return 0;
-  char exe[PATH_MAX], name[64];
-  snprintf(name, sizeof name, "/proc/%d/exe", tracer);
-  ssize_t n = readlink(name, exe, sizeof exe - 1);
-  if (n <= 0) return 0;
-  exe[n] = '\0';
-  return is_launcher(exe);
 }
 
 static void record_untraceable(const char *log, const char *program) {
@@ -937,7 +1020,6 @@ static char **program_env(void) {
 
 int main(int argc, char **argv) {
   if (argc < 2) {
-    static const char usage[] = "usage: veyrum-exec <program> [argv0 [args...]]\n";
     write_full(2, usage, sizeof usage - 1);
     return 127;
   }
@@ -948,8 +1030,17 @@ int main(int argc, char **argv) {
     own_ino = own.st_ino;
   }
   const char *log = getenv("VEYRUM_TRACE");
-  if (log && *log && !traced_by_launcher()) {
-    if (start_tracer(log) != 0 || install_filter() != 0) record_untraceable(log, program);
+  if (log && *log) {
+    int tracer = tracer_kind(getpid());
+    if (tracer < 0) {
+      if (start_tracer(log) != 0 || install_filter() != 0) record_untraceable(log, program);
+    } else if (!(tracer & FOLLOWS_LAUNCHERS)) {
+      /*
+       * Another tracer holds this process: a debugger, or a launcher of a build that would not
+       * switch to this log. The program runs as it would under it alone.
+       */
+      record_untraceable(log, program);
+    }
   }
   execve(program, argv + 2, program_env());
   int err = errno;
