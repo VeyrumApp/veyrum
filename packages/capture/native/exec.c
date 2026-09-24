@@ -13,8 +13,10 @@
  * at full speed. The tracer follows every thread and process the program starts, and outlives them
  * by nothing: it exits once the last one has.
  *
- * Events are written before the stopped thread continues, so they are in the log before the
- * program's exit can be seen by its parent.
+ * Only the entry of a system call stops: an event records what the program asked for, and the
+ * reader resolves whether each path exists when it records the file's evidence, as for the
+ * preloaded tracer's reads. Events are written before the stopped thread continues, so they are in
+ * the log before the program's exit can be seen by its parent.
  *
  * When tracing cannot start (ptrace forbidden, no seccomp, a debugger already attached), the
  * program runs untraced and the log records it as untraceable ("u"), which ends reuse. Tracing sets
@@ -62,7 +64,6 @@ extern char **environ;
 
 /* PTRACE_GET_SYSCALL_INFO (Linux 5.3), declared here: C library headers differ in whether they have it. */
 #define GET_SYSCALL_INFO 0x420e
-#define INFO_EXIT 2
 #define INFO_SECCOMP 3
 struct syscall_info {
   uint8_t op;
@@ -71,10 +72,6 @@ struct syscall_info {
   uint64_t instruction_pointer;
   uint64_t stack_pointer;
   union {
-    struct {
-      int64_t rval;
-      uint8_t is_error;
-    } exit;
     struct {
       uint64_t nr;
       uint64_t args[6];
@@ -237,13 +234,6 @@ struct task {
   /* Running the launcher (a nested capture's): its own system calls are Veyrum's, not the program's. */
   int launcher;
   int compat_reported;
-  /* The system call waiting for its exit stop, with what its entry recorded. */
-  enum op pending;
-  int flags;
-  int unresolved;
-  char path[LINE_CAP];
-  /* Hash of the last line written for this task: repeated lines (a directory read in chunks) are dropped. */
-  uint64_t last;
 };
 
 /* Open addressing on the thread id; deleted slots keep a tombstone. */
@@ -416,11 +406,34 @@ static int fd_path(pid_t tid, int fd, char *out, size_t cap) {
 
 /* ---- writing events ------------------------------------------------------------------------ */
 
+/*
+ * Lines already written, by hash and log: a program checks the same paths over and over (a
+ * toolchain stats every file it considers, from every thread), and one line per fact is enough.
+ */
+#define SEEN_CAP (1u << 16)
+static uint64_t seen[SEEN_CAP];
+static unsigned seen_count;
+
+static int seen_before(uint64_t h) {
+  if (h == 0) h = 1;
+  if (seen_count * 4 >= SEEN_CAP * 3) {
+    memset(seen, 0, sizeof seen);
+    seen_count = 0;
+  }
+  for (unsigned i = (unsigned)h & (SEEN_CAP - 1);; i = (i + 1) & (SEEN_CAP - 1)) {
+    if (seen[i] == h) return 1;
+    if (seen[i] == 0) {
+      seen[i] = h;
+      seen_count++;
+      return 0;
+    }
+  }
+}
+
 static void write_line(struct task *t, const char *line, size_t len) {
-  uint64_t h = 1469598103934665603u;
+  uint64_t h = 1469598103934665603u ^ (uint64_t)t->log;
   for (size_t i = 0; i < len; i++) h = (h ^ (unsigned char)line[i]) * 1099511628211u;
-  if (h == t->last) return;
-  t->last = h;
+  if (seen_before(h)) return;
   log_write(t->log, line, len);
 }
 
@@ -453,17 +466,20 @@ static void emit_arg(struct task *t, char kind, int dirfd, uint64_t addr) {
   else if (r < 0 && !t->launcher) emit_untraceable(t, "unrecordable path");
 }
 
-/* Keeps a path argument for the exit stop, which decides the event. Returns whether one is kept. */
-static int keep_arg(struct task *t, enum op op, int flags, int dirfd, uint64_t addr) {
-  int r = resolve(t->tid, dirfd, addr, t->path, sizeof t->path);
-  if (r > 0) return 0;
-  t->pending = op;
-  t->flags = flags;
-  t->unresolved = r < 0;
-  return 1;
-}
-
 static int wants_write(int flags) { return (flags & (O_WRONLY | O_RDWR | O_CREAT | O_TRUNC | O_APPEND)) != 0; }
+
+/*
+ * An open: a read unless write-only, a write if it may create or change the file. Opening a
+ * directory lists nothing (getdents does), and O_PATH only resolves the path: both are checks.
+ */
+static void emit_open(struct task *t, int flags, int dirfd, uint64_t addr) {
+  if (flags & (O_PATH | O_DIRECTORY)) {
+    emit_arg(t, 's', dirfd, addr);
+    return;
+  }
+  if (!(flags & O_WRONLY)) emit_arg(t, 'r', dirfd, addr);
+  if (wants_write(flags)) emit_arg(t, 'w', dirfd, addr);
+}
 
 /* ---- stops --------------------------------------------------------------------------------- */
 
@@ -475,8 +491,8 @@ static int is_launcher(const char *path) {
   return stat(path, &st) == 0 && st.st_dev == own_dev && st.st_ino == own_ino;
 }
 
-/* A system call entry the filter stopped. Returns whether its exit stop is needed. */
-static int on_entry(struct task *t, const struct syscall_info *si) {
+/* A system call entry the filter stopped. */
+static void on_entry(struct task *t, const struct syscall_info *si) {
   if (si->arch != NATIVE_ARCH
 #ifdef X32_BIT
       || (si->seccomp.nr & X32_BIT)
@@ -484,52 +500,61 @@ static int on_entry(struct task *t, const struct syscall_info *si) {
   ) {
     if (!t->compat_reported) emit_untraceable(t, "system call of another architecture");
     t->compat_reported = 1;
-    return 0;
+    return;
   }
   const uint64_t *a = si->seccomp.args;
   enum op op = op_of((long)si->seccomp.nr);
   switch (op) {
     case OP_OPEN:
-      return keep_arg(t, op, (int)a[1], AT_FDCWD, a[0]);
+      emit_open(t, (int)a[1], AT_FDCWD, a[0]);
+      return;
     case OP_OPENAT:
-      return keep_arg(t, op, (int)a[2], (int)a[0], a[1]);
+      emit_open(t, (int)a[2], (int)a[0], a[1]);
+      return;
     case OP_OPENAT2: {
       struct {
         uint64_t flags, mode, resolve;
       } how;
-      if (a[3] < sizeof how || read_bytes(t->tid, a[2], &how, sizeof how) != 0) return 0;
+      if (a[3] < sizeof how || read_bytes(t->tid, a[2], &how, sizeof how) != 0) return;
       /* RESOLVE_IN_ROOT reads the path relative to the dirfd as the root directory. */
       if (how.resolve & 0x10) {
         if (!t->launcher) emit_untraceable(t, "openat2");
-        return 0;
+        return;
       }
-      return keep_arg(t, op, (int)how.flags, (int)a[0], a[1]);
+      emit_open(t, (int)how.flags, (int)a[0], a[1]);
+      return;
     }
     case OP_CREAT:
-      return keep_arg(t, op, O_CREAT | O_WRONLY | O_TRUNC, AT_FDCWD, a[0]);
+      emit_arg(t, 'w', AT_FDCWD, a[0]);
+      return;
     case OP_STAT:
     case OP_ACCESS:
+      emit_arg(t, 's', AT_FDCWD, a[0]);
+      return;
     case OP_READLINK:
-      return keep_arg(t, op, 0, AT_FDCWD, a[0]);
+      emit_arg(t, 'r', AT_FDCWD, a[0]);
+      return;
     case OP_STATAT:
     case OP_STATX: {
       int flags = (int)(op == OP_STATAT ? a[3] : a[2]);
       char probe[2];
       /* An empty path with AT_EMPTY_PATH is fstat on the descriptor: no path is involved. */
-      if ((flags & AT_EMPTY_PATH) && read_string(t->tid, a[1], probe, sizeof probe) == 0) return 0;
-      return keep_arg(t, op, 0, (int)a[0], a[1]);
+      if ((flags & AT_EMPTY_PATH) && read_string(t->tid, a[1], probe, sizeof probe) == 0) return;
+      emit_arg(t, 's', (int)a[0], a[1]);
+      return;
     }
     case OP_ACCESSAT:
+      emit_arg(t, 's', (int)a[0], a[1]);
+      return;
     case OP_READLINKAT:
-      return keep_arg(t, op, 0, (int)a[0], a[1]);
-    case OP_GETDENTS:
-      if (fd_path(t->tid, (int)a[0], t->path, sizeof t->path) != 0) {
-        /* Not a path (a descriptor of another kind): the call fails or lists nothing on disk. */
-        return 0;
-      }
-      t->pending = op;
-      t->unresolved = 0;
-      return 1;
+      emit_arg(t, 'r', (int)a[0], a[1]);
+      return;
+    case OP_GETDENTS: {
+      char path[LINE_CAP];
+      /* A descriptor without a path (a socket, a pipe) lists nothing on disk. */
+      if (fd_path(t->tid, (int)a[0], path, sizeof path) == 0) emit(t, 'd', path);
+      return;
+    }
     case OP_EXECVE:
     case OP_EXECVEAT: {
       char path[LINE_CAP];
@@ -551,10 +576,11 @@ static int on_entry(struct task *t, const struct syscall_info *si) {
       } else if (r < 0) {
         emit_untraceable(t, "unrecordable path");
       }
-      return 0;
+      return;
     }
     case OP_CONNECT: {
-      if (t->launcher) return 0;
+      /* Recorded whether or not it succeeds: a failed connection is an observation too. */
+      if (t->launcher) return;
       union {
         struct sockaddr sa;
         struct sockaddr_in in;
@@ -563,120 +589,57 @@ static int on_entry(struct task *t, const struct syscall_info *si) {
       } addr;
       memset(&addr, 0, sizeof addr);
       size_t len = a[2] < sizeof addr ? (size_t)a[2] : sizeof addr;
-      if (len < sizeof(sa_family_t) || read_bytes(t->tid, a[1], &addr, len) != 0) return 0;
-      char host[INET6_ADDRSTRLEN];
+      if (len < sizeof(sa_family_t) || read_bytes(t->tid, a[1], &addr, len) != 0) return;
+      char host[INET6_ADDRSTRLEN], line[PATH_MAX];
       int n = -1;
       if (addr.sa.sa_family == AF_INET && len >= sizeof addr.in) {
         inet_ntop(AF_INET, &addr.in.sin_addr, host, sizeof host);
-        n = snprintf(t->path, sizeof t->path, "n %s %u\n", host, ntohs(addr.in.sin_port));
+        n = snprintf(line, sizeof line, "n %s %u\n", host, ntohs(addr.in.sin_port));
       } else if (addr.sa.sa_family == AF_INET6 && len >= sizeof addr.in6) {
         inet_ntop(AF_INET6, &addr.in6.sin6_addr, host, sizeof host);
-        n = snprintf(t->path, sizeof t->path, "n %s %u\n", host, ntohs(addr.in6.sin6_port));
+        n = snprintf(line, sizeof line, "n %s %u\n", host, ntohs(addr.in6.sin6_port));
       } else if (addr.sa.sa_family == AF_UNIX) {
         /* Treated like the test's own Unix socket connections: local. */
         const char *p = addr.un.sun_path;
-        n = snprintf(t->path, sizeof t->path, "n unix:%.*s 0\n", (int)sizeof addr.un.sun_path, p[0] ? p : "abstract");
+        n = snprintf(line, sizeof line, "n unix:%.*s 0\n", (int)sizeof addr.un.sun_path, p[0] ? p : "abstract");
       }
-      if (n <= 0 || (size_t)n >= sizeof t->path) return 0;
-      t->pending = op;
-      t->unresolved = 0;
-      return 1;
+      if (n > 0 && (size_t)n < sizeof line) write_line(t, line, (size_t)n);
+      return;
     }
     case OP_WRITE:
       emit_arg(t, 'w', AT_FDCWD, a[0]);
-      return 0;
+      return;
     case OP_WRITEAT:
       emit_arg(t, 'w', (int)a[0], a[1]);
-      return 0;
+      return;
     case OP_RENAME:
       emit_arg(t, 'w', AT_FDCWD, a[0]);
       emit_arg(t, 'w', AT_FDCWD, a[1]);
-      return 0;
+      return;
     case OP_RENAMEAT:
       emit_arg(t, 'w', (int)a[0], a[1]);
       emit_arg(t, 'w', (int)a[2], a[3]);
-      return 0;
+      return;
     case OP_LINK:
       emit_arg(t, 'r', AT_FDCWD, a[0]);
       emit_arg(t, 'w', AT_FDCWD, a[1]);
-      return 0;
+      return;
     case OP_LINKAT:
       emit_arg(t, 'r', (int)a[0], a[1]);
       emit_arg(t, 'w', (int)a[2], a[3]);
-      return 0;
+      return;
     case OP_SYMLINK:
       emit_arg(t, 'w', AT_FDCWD, a[1]);
-      return 0;
+      return;
     case OP_SYMLINKAT:
       emit_arg(t, 'w', (int)a[1], a[2]);
-      return 0;
+      return;
     case OP_OPAQUE:
       if (!t->launcher) emit_untraceable(t, op_name);
-      return 0;
+      return;
     case OP_NONE:
-      return 0;
-  }
-  return 0;
-}
-
-/* Kernel-internal codes of a system call that is restarted: it stops at its entry again. */
-static int restarting(long err) { return err >= 512 && err <= 516; }
-
-static void on_exit_stop(struct task *t, const struct syscall_info *si) {
-  enum op op = t->pending;
-  t->pending = OP_NONE;
-  if (op == OP_NONE || si->op != INFO_EXIT) return;
-  int ok = !si->exit.is_error;
-  long err = ok ? 0 : -si->exit.rval;
-  if (restarting(err)) return;
-  int absent = err == ENOENT || err == ENOTDIR;
-  char kind = 0, second = 0;
-  switch (op) {
-    case OP_OPEN:
-    case OP_OPENAT:
-    case OP_OPENAT2:
-    case OP_CREAT: {
-      int flags = t->flags;
-      if (ok && (flags & O_PATH)) {
-        kind = 's';
-      } else if (ok) {
-        /* O_RDWR reads too: record the read before the write. */
-        if (!(flags & O_WRONLY)) kind = (flags & O_DIRECTORY) ? 'd' : 'r';
-        if (wants_write(flags)) second = 'w';
-      } else if (absent) {
-        kind = wants_write(flags) ? 'w' : 'R';
-      }
-      break;
-    }
-    case OP_STAT:
-    case OP_STATAT:
-    case OP_STATX:
-      kind = ok ? 's' : absent ? 'S' : 0;
-      break;
-    case OP_ACCESS:
-    case OP_ACCESSAT:
-      kind = ok || err != ENOENT ? 's' : 'S';
-      break;
-    case OP_READLINK:
-    case OP_READLINKAT:
-      kind = ok ? 'r' : absent ? 'R' : 's';
-      break;
-    case OP_GETDENTS:
-      kind = ok ? 'd' : 0;
-      break;
-    case OP_CONNECT:
-      if ((ok || err == EINPROGRESS) && !t->launcher) write_line(t, t->path, strlen(t->path));
-      return;
-    default:
       return;
   }
-  if (!kind && !second) return;
-  if (t->unresolved) {
-    if (!t->launcher) emit_untraceable(t, "unrecordable path");
-    return;
-  }
-  if (kind) emit(t, kind, t->path);
-  if (second) emit(t, second, t->path);
 }
 
 /* After an exec: whether the task now runs the launcher, and the log a launcher points to. */
@@ -715,17 +678,13 @@ static void trace_loop(void) {
     struct task *t = task_get(tid);
     int sig = WSTOPSIG(status);
     int event = (int)((unsigned)status >> 16);
-    int request = PTRACE_CONT;
     long deliver = 0;
     switch (event) {
       case PTRACE_EVENT_SECCOMP: {
         struct syscall_info si;
         long n = ptrace(GET_SYSCALL_INFO, tid, (void *)sizeof si, &si);
-        if (n <= 0 || si.op != INFO_SECCOMP) {
-          emit_untraceable(t, "ptrace");
-        } else if (on_entry(t, &si)) {
-          request = PTRACE_SYSCALL;
-        }
+        if (n <= 0 || si.op != INFO_SECCOMP) emit_untraceable(t, "ptrace");
+        else on_entry(t, &si);
         break;
       }
       case PTRACE_EVENT_FORK:
@@ -761,18 +720,12 @@ static void trace_loop(void) {
         }
         break;
       case 0:
-        if (sig == (SIGTRAP | 0x80)) {
-          struct syscall_info si;
-          if (ptrace(GET_SYSCALL_INFO, tid, (void *)sizeof si, &si) > 0) on_exit_stop(t, &si);
-          else t->pending = OP_NONE;
-        } else {
-          deliver = sig;
-        }
+        deliver = sig;
         break;
       default:
         break;
     }
-    ptrace(request, tid, 0, (void *)deliver);
+    ptrace(PTRACE_CONT, tid, 0, (void *)deliver);
   }
 }
 
@@ -828,7 +781,7 @@ static void __attribute__((noreturn)) tracer_main(pid_t target, const char *log,
   signal(SIGQUIT, SIG_IGN);
   char go;
   if (read_full(3, &go, 1) != 0) _exit(0);
-  long options = PTRACE_O_TRACESECCOMP | PTRACE_O_TRACESYSGOOD | PTRACE_O_TRACECLONE | PTRACE_O_TRACEFORK |
+  long options = PTRACE_O_TRACESECCOMP | PTRACE_O_TRACECLONE | PTRACE_O_TRACEFORK |
                  PTRACE_O_TRACEVFORK | PTRACE_O_TRACEEXEC | PTRACE_O_EXITKILL;
   int result = ptrace(PTRACE_SEIZE, target, 0, (void *)options) == 0 ? 0 : -1;
   write_full(4, &result, sizeof result);
