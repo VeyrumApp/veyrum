@@ -36,7 +36,7 @@ Options:
   --max-workers <n>    Worker count
   --project <name>     Project filter (repeatable; Vitest allows wildcards, Jest matches
                        display names)
-  --json <file>        Write decisions, records and outcomes as JSON
+  --json <file>        Write decisions, records (without their inputs) and outcomes as JSON
   --record-all         With --full: record evidence for every file, including those whose
                        evidence is still valid (by default they run without capture)
   --summary <file>     Append a Markdown report (for example to $GITHUB_STEP_SUMMARY)
@@ -429,7 +429,9 @@ async function main(argv: string[]): Promise<number> {
       writeJson(args.json, {
         runtimeKey: result.runtimeKey,
         decisions: result.decisions,
-        records: result.records,
+        // Closures can hold hundreds of thousands of entries (a test that globs node_modules): the
+        // store keeps them, and the output says how many.
+        records: result.records.map(({ closure, ...record }) => ({ ...record, closureSize: closure.length })),
         outcomes: result.outcomes,
         timings: result.timings,
       })
