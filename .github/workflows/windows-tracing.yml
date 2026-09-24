@@ -7,8 +7,12 @@ on:
     branches: [windows-native-tracing]
 
 jobs:
-  windows:
-    runs-on: windows-latest
+  check:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -18,8 +22,10 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
       - run: pnpm build
       - name: Raw trace of a few programs
+        if: runner.os == 'Windows'
         shell: node {0}
         run: |
           const { spawnSync } = require('node:child_process')
@@ -47,4 +53,6 @@ jobs:
           run('node', process.execPath, `node -e "require('fs').readFileSync('x.txt'); console.log(require('child_process').execSync('type x.txt').toString())"`)
           run('cmd32', path.join(process.env.SystemRoot, 'SysWOW64', 'cmd.exe'), 'cmd /d /c exit 3')
       - name: Test
-        run: pnpm exec vitest run packages/vitest/test/hazards-windows.test.ts packages/capture/test/trace.test.ts packages/jest/test/hazards.test.ts packages/vitest/test/hazards-runner.test.ts --maxWorkers=2
+        run: pnpm exec vitest run --maxWorkers=2
+      - name: Package smoke test
+        run: node scripts/pack-smoke.mjs
