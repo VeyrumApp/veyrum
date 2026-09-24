@@ -2,6 +2,8 @@
   "name": "@veyrum/capture",
   "version": "0.1.0",
   "description": "Runner-agnostic input capture: fs, env, network, process and V8 coverage hooks",
+  "license": "Apache-2.0",
+  "homepage": "https://github.com/VeyrumApp/veyrum#readme",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/VeyrumApp/veyrum.git",
@@ -10,7 +12,6 @@
   "engines": {
     "node": ">=22.15"
   },
-  "private": true,
   "type": "module",
   "exports": {
     ".": {
@@ -31,9 +32,14 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "LICENSE"
   ],
   "dependencies": {
     "@veyrum/core": "workspace:*"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
   }
 }

@@ -1,0 +1,87 @@
+name: Release
+
+# Publishes every package to npm for a version tag (v0.1.0): the tracer is built on each platform
+# it supports (on the oldest Ubuntu runners, so it loads with older C libraries), then the packages
+# are tested once more and published with provenance.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: Pack and check without publishing
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    strategy:
+      matrix:
+        runner: [ubuntu-22.04, ubuntu-22.04-arm]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - run: node scripts/build-native.mjs
+      - name: Check both binaries were built
+        run: |
+          dir="packages/capture/dist/native/linux-$(node -p process.arch)"
+          test -f "$dir/libveyrum-trace.so" && test -x "$dir/veyrum-exec"
+          echo "dir=$dir" >> "$GITHUB_ENV"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: native-${{ matrix.runner }}
+          path: ${{ env.dir }}
+          if-no-files-found: error
+
+  publish:
+    needs: native
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm build
+      - name: The tag names the packages' version
+        if: github.event_name == 'push'
+        run: |
+          for p in packages/*/package.json; do
+            v=$(node -p "require('./$p').version")
+            test "v$v" = "$GITHUB_REF_NAME" || { echo "$p is $v, tag is $GITHUB_REF_NAME"; exit 1; }
+          done
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: native-ubuntu-22.04
+          path: packages/capture/dist/native/linux-x64
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: native-ubuntu-22.04-arm
+          path: packages/capture/dist/native/linux-arm64
+      - name: License and readme in every package
+        run: |
+          for d in packages/*/; do cp LICENSE "$d"; done
+          cp README.md packages/cli/README.md
+      - run: pnpm test
+      - run: node scripts/pack-smoke.mjs
+      - name: Publish
+        if: github.event_name == 'push' || !inputs.dry-run
+        run: pnpm -r publish --access public --no-git-checks
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_CONFIG_PROVENANCE: 'true'
+      - name: Dry run
+        if: github.event_name == 'workflow_dispatch' && inputs.dry-run
+        run: pnpm -r publish --access public --no-git-checks --dry-run

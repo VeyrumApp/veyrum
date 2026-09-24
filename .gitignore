@@ -6,3 +6,5 @@ coverage/
 .bench/
 .sandbox/
 .claude/
+packages/*/LICENSE
+packages/cli/README.md
