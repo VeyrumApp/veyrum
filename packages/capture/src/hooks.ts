@@ -128,6 +128,15 @@ export function getSink(): HookSink | null {
   return state.sink === noop ? null : state.sink
 }
 
+/**
+ * Whether hooks should record now: outside the capture layer's own I/O, with a sink attached.
+ * Hooks stay installed in a worker once any file installed them; between captures (a file whose
+ * evidence is valid runs without capture) they return at once instead of classifying callers.
+ */
+function recording(): boolean {
+  return state.depth === 0 && state.sink !== noop
+}
+
 /** Runs fn without recording anything (for the capture layer's own I/O). */
 export function unobserved<T>(fn: () => T): T {
   state.depth++
@@ -239,7 +248,7 @@ function classifyReader(isManifest: boolean): Reader {
 }
 
 function observePath(p: unknown, kind: PathKind): void {
-  if (state.depth > 0) return
+  if (!recording()) return
   const absolute = toAbsolute(p)
   if (!absolute || ignored(absolute) || state.sink.seen?.(absolute, kind)) return
   state.depth++
@@ -254,7 +263,7 @@ function observePath(p: unknown, kind: PathKind): void {
 }
 
 function observeWrite(p: unknown): void {
-  if (state.depth > 0) return
+  if (!recording()) return
   const absolute = toAbsolute(p)
   if (!absolute || ignored(absolute)) return
   state.sink.write(absolute)
@@ -408,34 +417,34 @@ export function observeEnv<T extends Record<string, string | undefined>>(
     get(target, key, receiver) {
       if (key === STATE_KEY) return true
       const value = Reflect.get(target, key, receiver)
-      if (typeof key === 'string' && state.depth === 0)
+      if (typeof key === 'string' && recording())
         state.sink.env(key, typeof value === 'string' ? value : undefined, copying, scope)
       return value
     },
     has(target, key) {
       const present = Reflect.has(target, key)
-      if (typeof key === 'string' && state.depth === 0)
+      if (typeof key === 'string' && recording())
         state.sink.env(key, present ? (target as any)[key] : undefined, copying, scope)
       return present
     },
     getOwnPropertyDescriptor(target, key) {
       const desc = Reflect.getOwnPropertyDescriptor(target, key)
-      if (typeof key === 'string' && state.depth === 0)
+      if (typeof key === 'string' && recording())
         state.sink.env(key, desc ? String(desc.value) : undefined, copying, scope)
       return desc
     },
     ownKeys(target) {
-      if (state.depth === 0) state.sink.envEnumerated(scope)
+      if (recording()) state.sink.envEnumerated(scope)
       noteEnumeration()
       return Reflect.ownKeys(target)
     },
     set(target, key, value) {
-      if (typeof key === 'string' && state.depth === 0) state.sink.envWrite(key)
+      if (typeof key === 'string' && recording()) state.sink.envWrite(key)
       ;(target as any)[key] = value
       return true
     },
     deleteProperty(target, key) {
-      if (typeof key === 'string' && state.depth === 0) state.sink.envWrite(key)
+      if (typeof key === 'string' && recording()) state.sink.envWrite(key)
       return Reflect.deleteProperty(target, key)
     },
   })
@@ -568,7 +577,7 @@ const traceFs: TraceFs = {
  * environment). Otherwise the start is reported as an unobserved spawn.
  */
 function prepareSpawn(name: SpawnFunction, args: unknown[]): unknown[] | undefined {
-  if (state.depth > 0) return undefined
+  if (!recording()) return undefined
   const label = String(args[0]).split(/\s+/)[0] ?? ''
   const sink = state.sink
   state.depth++
@@ -685,7 +694,7 @@ export function observeSourceIn(realmFunction: FunctionConstructor): void {
   const proxy = new Proxy(original, {
     apply(target, thisArg, args) {
       const text = Reflect.apply(target, thisArg, args) as string
-      if (state.depth === 0 && !text.endsWith('[native code] }') && !sourceReaderIsBenign())
+      if (recording() && !text.endsWith('[native code] }') && !sourceReaderIsBenign())
         state.sink.sourceObserved()
       return text
     },
