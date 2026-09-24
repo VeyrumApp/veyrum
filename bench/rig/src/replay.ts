@@ -307,7 +307,11 @@ export async function replay(corpus: Corpus, benchRoot: string, options: ReplayO
 
         // 3. Ground truth and evidence for the next commit.
         // Diagnostics: with RIG_NODE_PROFILE_DIR, the first two measured commits are CPU-profiled.
-        const profile = measureOverhead && profiledCommits < 2 ? `${index}-${sha.slice(0, 8)}` : null
+        // The shard's first commit records everything; profiles are of the commits after it.
+        const profile =
+          measureOverhead && index !== firstIndex && profiledCommits < 2
+            ? `${index}-${sha.slice(0, 8)}`
+            : null
         if (profile) profiledCommits++
         const capture = profile
           ? profiled(`${profile}/veyrum`, () =>

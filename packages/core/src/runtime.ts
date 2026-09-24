@@ -23,12 +23,22 @@ export function runtimeFacts(extra: Readonly<Record<string, string>> = {}): Reco
     locale: intl.locale,
     lang: process.env.LANG ?? '',
     lcAll: process.env.LC_ALL ?? '',
-    execArgv: process.execArgv.join(' '),
-    nodeOptions: process.env.NODE_OPTIONS ?? '',
+    execArgv: withoutDiagnostics(process.execArgv).join(' '),
+    nodeOptions: withoutDiagnostics((process.env.NODE_OPTIONS ?? '').split(/\s+/).filter(Boolean)).join(' '),
     endianness: os.endianness(),
     ...extra,
   }
   return facts
+}
+
+/**
+ * Node flags that only produce diagnostics (profiles, reports, a debugger port) and cannot change
+ * what a test does. Profiling a run must not make its evidence unusable by runs without it.
+ */
+const DIAGNOSTIC_FLAG = /^--(cpu-prof|heap-prof|report-|diagnostic-dir|inspect|debug-port)/
+
+function withoutDiagnostics(flags: readonly string[]): string[] {
+  return flags.filter((flag) => !DIAGNOSTIC_FLAG.test(flag))
 }
 
 export function runtimeKeyOf(facts: Readonly<Record<string, string>>): Digest {
