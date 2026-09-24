@@ -18,6 +18,40 @@ export function normalizeAbsolute(p: string): string {
     : resolved
 }
 
+/** A directory's other spelling and its canonical one, both ending in a separator. */
+export type PathAlias = readonly [from: string, to: string]
+
+/**
+ * The spellings of `dirs` that differ from their canonical form (symbolic links resolved, and on
+ * Windows short 8.3 names expanded, as `realpath` gives them), as prefixes to rewrite. A process
+ * started in a short-named directory resolves relative paths under that spelling, while runners
+ * report the files they run under the canonical one.
+ */
+export function pathAliases(dirs: readonly string[], realpath: (p: string) => string): PathAlias[] {
+  const out: PathAlias[] = []
+  for (const dir of dirs) {
+    let real: string
+    try {
+      real = realpath(dir)
+    } catch {
+      continue
+    }
+    const from = normalizeAbsolute(dir)
+    const to = normalizeAbsolute(real)
+    if (from !== to && !out.some(([f]) => f === from + path.sep)) out.push([from + path.sep, to + path.sep])
+  }
+  return out
+}
+
+/** An absolute path with an aliased prefix rewritten to its canonical spelling. */
+export function unalias(absolute: string, aliases: readonly PathAlias[]): string {
+  for (const [from, to] of aliases) {
+    if (absolute.startsWith(from)) return to + absolute.slice(from.length)
+    if (absolute === from.slice(0, -1)) return to.slice(0, -1)
+  }
+  return absolute
+}
+
 export function fromRepoPath(root: string, repoPath: string): string {
   return path.isAbsolute(repoPath) ? repoPath : path.join(root, repoPath)
 }

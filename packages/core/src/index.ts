@@ -12,7 +12,16 @@ export {
   type UnitInfo,
 } from './fingerprint.ts'
 export { type Digest, digest, digestParts } from './hash.ts'
-export { fromRepoPath, isInside, normalizeAbsolute, stem, toRepoPath } from './paths.ts'
+export {
+  fromRepoPath,
+  isInside,
+  normalizeAbsolute,
+  type PathAlias,
+  pathAliases,
+  stem,
+  toRepoPath,
+  unalias,
+} from './paths.ts'
 export { describeUnit, type ModuleTransformer, type PlanOptions, plan } from './planner.ts'
 export { DEFAULT_POLICY, makePolicy, type Policy, STRICT_SOURCE_FLAGS } from './policy.ts'
 export { CAPTURE_VERSION, runtimeFacts, runtimeKeyOf } from './runtime.ts'

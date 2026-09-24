@@ -7,6 +7,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import workerThreads from 'node:worker_threads'
+import { type PathAlias, pathAliases, unalias } from '@veyrum/core/paths'
 import {
   classifyExecutable,
   nativeTools,
@@ -87,6 +88,8 @@ interface HookState {
   ignoredPrefixes: string[]
   /** Temporary-directory prefixes: ignored unless inside the repository root. */
   tempPrefixes: string[]
+  /** Other spellings of directories paths are observed under (see pathAliases). */
+  aliases: PathAlias[]
   /** Repository root prefix; paths inside it are always observed unless explicitly ignored. */
   rootPrefix: string | null
   /** Callers whose reads are the runner loading modules (see InstallOptions.runnerReaders). */
@@ -107,6 +110,7 @@ function sharedState(): HookState {
     installed: false,
     ignoredPrefixes: [],
     tempPrefixes: [],
+    aliases: [],
     rootPrefix: null,
     runnerReaders: [],
     manifestReaders: [],
@@ -164,6 +168,11 @@ function typeOf(absolute: string): PathType {
 const NOT_NORMAL = /\/\.\.?(\/|$)|\/\/|.\/$/
 
 function toAbsolute(p: unknown): string | null {
+  const absolute = resolvedPath(p)
+  return absolute !== null && state.aliases.length > 0 ? unalias(absolute, state.aliases) : absolute
+}
+
+function resolvedPath(p: unknown): string | null {
   // Most paths the runner and its toolchain pass are already absolute and normal (POSIX only).
   if (typeof p === 'string')
     return path.sep === '/' && p.startsWith('/') && !NOT_NORMAL.test(p) ? p : path.resolve(p)
@@ -655,7 +664,9 @@ function prepareSpawn(name: SpawnFunction, args: unknown[]): unknown[] | undefin
 export function replayTrace(events: readonly TraceEvent[], sink: HookSink): void {
   state.depth++
   try {
-    for (const e of events) {
+    for (const raw of events) {
+      const e =
+        'path' in raw && state.aliases.length > 0 ? { ...raw, path: unalias(raw.path, state.aliases) } : raw
       if (e.kind === 'untraceable') {
         sink.spawn(e.what)
       } else if (e.kind === 'net') {
@@ -759,8 +770,11 @@ export interface InstallOptions {
 
 /** Installs every hook once per isolate. Subsequent calls only update ignored prefixes. */
 export function installHooks(options: InstallOptions = {}): void {
-  const tmp = [os.tmpdir(), safeRealpath(os.tmpdir())]
-  state.tempPrefixes = [...new Set(tmp.map((t) => t + path.sep))]
+  // Paths are recorded in one spelling: the working directory and the temporary directory can be
+  // reached by another (a short 8.3 name on Windows, a symbolic link), which runners resolve.
+  state.aliases = unobserved(() => pathAliases([process.cwd(), os.tmpdir()], fs.realpathSync.native))
+  const tmp = [os.tmpdir(), safeRealpath(os.tmpdir())].map((t) => unalias(t + path.sep, state.aliases))
+  state.tempPrefixes = [...new Set(tmp)]
   state.rootPrefix = options.root ? path.resolve(options.root) + path.sep : null
   state.ignoredPrefixes = [...new Set(['/proc/', '/dev/', '/sys/', ...(options.ignoredPrefixes ?? [])])]
   if (options.runnerReaders) state.runnerReaders = [...options.runnerReaders]
