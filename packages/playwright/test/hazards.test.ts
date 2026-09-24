@@ -154,6 +154,55 @@ async function project(name: string): Promise<Sandbox> {
     .write('e2e/mul.spec.js', spec('multiplies', 'mul', '6'))
 }
 
+/**
+ * The app with two specs that import one module of the test process, src/math, each calling its
+ * own function of it: as an ES module, in TypeScript, or as CommonJS in a package that is not a
+ * module.
+ */
+async function mathProject(name: string, kind: 'esm' | 'ts' | 'cjs'): Promise<Sandbox> {
+  const s = await project(name)
+  const ext = kind === 'ts' ? 'ts' : 'js'
+  const typed = kind === 'ts' ? ': number' : ''
+  const functions = [
+    ['add', 'a + b'],
+    ['mul', 'a * b'],
+  ].map(([fn, body]) => `function ${fn}(a${typed}, b${typed})${typed} {\n  return ${body}\n}\n`)
+  if (kind === 'cjs') {
+    // The package is no longer a module: the configuration becomes CommonJS, and the app server,
+    // an ES module, an .mjs file.
+    const commonjsConfig = s
+      .read('playwright.config.js')
+      .replace(
+        "import { defineConfig } from '@playwright/test'",
+        "const { defineConfig } = require('@playwright/test')",
+      )
+      .replace('export default', 'module.exports =')
+      .replace('node server.js', 'node server.mjs')
+    s.write('package.json', JSON.stringify({ name, private: true }, null, 2))
+      .write('playwright.config.js', commonjsConfig)
+      .remove('server.js')
+      .write('server.mjs', SERVER)
+      .write('src/math.js', `${functions.join('')}module.exports = { add, mul }\n`)
+  } else {
+    s.write(`src/math.${ext}`, functions.map((f) => `export ${f}`).join(''))
+  }
+  s.remove('e2e/add.spec.js').remove('e2e/mul.spec.js')
+  for (const [fn, title, expected] of [
+    ['add', 'adds', 5],
+    ['mul', 'multiplies', 6],
+  ] as const) {
+    const imports =
+      kind === 'cjs'
+        ? `const { expect, test } = require('@playwright/test')\nconst { ${fn} } = require('../src/math.js')\n`
+        : `import { expect, test } from '@playwright/test'\nimport { ${fn} } from '../src/math${kind === 'ts' ? '' : '.js'}'\n`
+    s.write(
+      `e2e/${fn}.spec.${ext}`,
+      `${imports}\ntest('${title}', async ({ baseURL }) => {\n  expect(baseURL).toBeTruthy()\n  expect(${fn}(2, 3)).toBe(${expected})\n})\n`,
+    )
+  }
+  return s
+}
+
 describe.skipIf(!available)('playwright', () => {
   test('nothing changed reuses every file; a comment in client code changes nothing', async () => {
     const s = await project('pw-unchanged')
@@ -291,6 +340,69 @@ test('talks to its own server', async ({ page }) => {
       'e2e/mock.spec.js': 'run',
       'e2e/mul.spec.js': 'skip',
     })
+  })
+
+  test('editing a function a spec imports reruns only the spec that ran it', async () => {
+    const mathSpec = (name: string, fn: string, expected: number): string =>
+      `import { expect, test } from '@playwright/test'
+import { ${fn} } from '../src/math.js'
+
+test('${name}', async ({ baseURL }) => {
+  expect(baseURL).toBeTruthy()
+  expect(${fn}(2, 3)).toBe(${expected})
+})
+`
+    const s = (await project('pw-module'))
+      .write(
+        'src/math.js',
+        'export function add(a, b) {\n  return a + b\n}\nexport function mul(a, b) {\n  return a * b\n}\n',
+      )
+      .write('e2e/add.spec.js', mathSpec('adds', 'add', 5))
+      .write('e2e/mul.spec.js', mathSpec('multiplies', 'mul', 6))
+    expect(s.capture().code).toBe(0)
+    s.edit('src/math.js', 'return a * b', 'return b * a')
+    expect(s.actions()).toEqual({ 'e2e/add.spec.js': 'skip', 'e2e/mul.spec.js': 'run' })
+  })
+
+  test('a TypeScript module specs import: a comment or formatting changes nothing, a function only its spec', async () => {
+    const s = await mathProject('pw-module-ts', 'ts')
+    s.capture()
+    s.edit('src/math.ts', 'export function mul', '// Multiplies.\nexport   function   mul')
+    s.edit('src/math.ts', 'return a + b', 'return (a + b);')
+    expect(s.actions()).toEqual({ 'e2e/add.spec.ts': 'skip', 'e2e/mul.spec.ts': 'skip' })
+    // Playwright reads a test callback's source only for its parameter list (the fixtures it uses),
+    // so a comment in a spec changes nothing either.
+    s.edit('e2e/add.spec.ts', "test('adds'", "// Adds two numbers.\ntest('adds'")
+    expect(s.actions()).toEqual({ 'e2e/add.spec.ts': 'skip', 'e2e/mul.spec.ts': 'skip' })
+    // Types are erased: the code that runs is the same.
+    s.edit('src/math.ts', 'mul(a: number, b: number): number', 'mul(a: number, b: number): unknown')
+    expect(s.actions()).toEqual({ 'e2e/add.spec.ts': 'skip', 'e2e/mul.spec.ts': 'skip' })
+    s.edit('src/math.ts', 'return a * b', 'return b * a')
+    expect(s.actions()).toEqual({ 'e2e/add.spec.ts': 'skip', 'e2e/mul.spec.ts': 'run' })
+    expect(s.plan()['e2e/mul.spec.ts']?.details).toEqual(['src/math.ts: mul changed'])
+  })
+
+  test('a CommonJS module specs require: editing a function reruns only the spec that ran it', async () => {
+    const s = await mathProject('pw-module-cjs', 'cjs')
+    s.capture()
+    s.edit('src/math.js', 'return a * b', 'return b * a')
+    expect(s.actions()).toEqual({ 'e2e/add.spec.js': 'skip', 'e2e/mul.spec.js': 'run' })
+    expect(s.plan()['e2e/mul.spec.js']?.details).toEqual(['src/math.js: mul changed'])
+  })
+
+  test('a module whose compiled code Veyrum cannot reproduce is compared whole', async () => {
+    // Playwright leaves files the configuration marks as external uncompiled: what ran is not what
+    // its transform produces, so the module is compared by its source.
+    const s = (await mathProject('pw-module-external', 'esm')).edit(
+      'playwright.config.js',
+      "testDir: 'e2e',",
+      "testDir: 'e2e',\n  build: { external: ['**/src/math.js'] },",
+    )
+    s.capture()
+    expect(s.actions()).toEqual({ 'e2e/add.spec.js': 'skip', 'e2e/mul.spec.js': 'skip' })
+    s.edit('src/math.js', 'return a * b', 'return b * a')
+    expect(s.actions()).toEqual({ 'e2e/add.spec.js': 'run', 'e2e/mul.spec.js': 'run' })
+    expect(s.plan()['e2e/add.spec.js']?.details).toEqual([expect.stringMatching(/^src\/math\.js changed/)])
   })
 
   test('when Veyrum fails before the run, Playwright runs every file on its own', async () => {

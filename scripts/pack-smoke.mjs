@@ -217,10 +217,11 @@ try {
       { '@playwright/test': playwrightVersion },
       {
         'playwright.config.ts': "export default { testDir: 'tests' }\n",
-        // Playwright compiles the modules a spec imports itself; they are compared whole.
-        'src/math.ts': 'export const mul = (a: number, b: number) => a * b\n',
+        // Both specs import one module Playwright compiles: editing mul reruns only the spec that ran it.
+        'src/math.ts':
+          'export const add = (a: number, b: number) => a + b\nexport const mul = (a: number, b: number) => a * b\n',
         'tests/add.spec.ts':
-          "import { expect, test } from '@playwright/test'\ntest('add', () => expect(1 + 2).toBe(3))\n",
+          "import { expect, test } from '@playwright/test'\nimport { add } from '../src/math'\ntest('add', () => expect(add(1, 2)).toBe(3))\n",
         'tests/mul.spec.ts':
           "import { expect, test } from '@playwright/test'\nimport { mul } from '../src/math'\ntest('mul', () => expect(mul(2, 3)).toBe(6))\n",
       },

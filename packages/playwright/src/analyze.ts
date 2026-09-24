@@ -12,6 +12,7 @@ import {
 } from '@veyrum/capture'
 import { readPayloads } from '@veyrum/capture/assemble'
 import { digest, isInside, normalizeAbsolute } from '@veyrum/core'
+import { type PlaywrightCompiler, SOURCE_TRANSFORM_ENV, TEST_PROCESS_ENV } from './compile.ts'
 import type {
   BrowserExchange,
   BrowserReport,
@@ -304,14 +305,17 @@ export interface AnalyzeInput {
   readonly ignored: readonly string[]
   /** Test files of the run (absolute). */
   readonly testFiles: ReadonlySet<string>
+  /** Playwright's own transform (see compile.ts), to check what the test process compiled. */
+  readonly compiler: () => PlaywrightCompiler | null
 }
 
 /**
  * Combines what the processes of a Playwright run observed into one payload per test file and
  * project (see docs/design/soundness.md, Playwright):
  *
- * - the worker's own capture (the test process, node layout), with repository modules compared by
- *   their source, since Playwright compiles them with its own transform;
+ * - the worker's own capture (the test process, node layout): a repository module whose compiled
+ *   code Playwright's transform reproduces is recorded by the functions that ran, any other by its
+ *   source;
  * - the browser: remote requests, requests to local servers nobody observed, browsers that cannot
  *   be observed, and the client files its pages received or ran;
  * - the app server, for files that talked to it: everything it read, except client files, which
@@ -363,6 +367,7 @@ export function analyze(input: AnalyzeInput): Analysis {
   const mainExchanges = mainBrowser.flatMap((b) => b.exchanges)
   const mainTalked = mainExchanges.some(isServerPort)
 
+  const reproduces = reproducedModules(captureDir, input.compiler)
   const childPorts = portsOfChildren(scratch)
   const reportsByPid = new Map(reports.map((r) => [r.pid, r]))
   const grouped = new Map<GroupKey, { payloads: WorkerPayload[]; reports: BrowserReport[] }>()
@@ -394,12 +399,28 @@ export function analyze(input: AnalyzeInput): Analysis {
     const spawns = [...merged.spawns]
     const captureErrors = [...merged.captureErrors, ...group.reports.flatMap((r) => r.errors)]
 
-    // The test process compiled repository modules with Playwright's transform: they are compared by
-    // their source (their code stays, to locate function source the test read).
+    // The test process compiled repository modules with Playwright's transform. A module whose code
+    // the transform reproduces from its source is recorded by the functions that ran, and compiled
+    // again at plan time; any other is compared by its source (its code stays, to locate function
+    // source the test read). Component testing adds a plugin of its own to the transform.
     const wholeModules = new Set(merged.wholeModules ?? [])
+    const sourceTransform = group.payloads.some(
+      (p) =>
+        p.envBaseline[SOURCE_TRANSFORM_ENV] !== undefined ||
+        p.envWritten.includes(SOURCE_TRANSFORM_ENV) ||
+        p.env.some((e) => e.n === SOURCE_TRANSFORM_ENV && e.h !== null),
+    )
+    const testModules: PayloadModule[] = []
     for (const m of merged.modules) {
       allModules.add(m.path)
-      if (isInside(root, m.path) && !m.path.includes(NODE_MODULES)) wholeModules.add(m.path)
+      if (!isInside(root, m.path) || m.path.includes(NODE_MODULES)) {
+        testModules.push(m)
+      } else if (!sourceTransform && reproduces(m)) {
+        testModules.push({ ...m, env: TEST_PROCESS_ENV })
+      } else {
+        testModules.push(m)
+        wholeModules.add(m.path)
+      }
     }
 
     let talked = mainTalked
@@ -440,7 +461,7 @@ export function analyze(input: AnalyzeInput): Analysis {
       include({ ...server, untraced: new Set() }, new Set(clients.map((c) => c.path)))
       for (const file of attribution.whole) paths.push({ p: file, kind: 'read', type: 'file' })
     }
-    const modules = [...merged.modules, ...[...attribution.precise.values()].flat()]
+    const modules = [...testModules, ...[...attribution.precise.values()].flat()]
 
     for (const report of group.reports)
       for (const name of report.unobservedBrowsers) reasons.browser.add(name)
@@ -465,6 +486,37 @@ export function analyze(input: AnalyzeInput): Analysis {
   }
 
   return { payloads: out, flags, main: mainObservations(mains, allModules, input.testFiles) }
+}
+
+/**
+ * Whether Playwright's transform, run now on a module's source, produces exactly the code the test
+ * process ran (the code capture recorded, which V8 compiled). Only then do the fingerprints of that
+ * code match what plan time computes from the source. It may not: Playwright serves compiled code
+ * from a cache whose key leaves out the JSX import source and Node's version, a module can be
+ * loaded in a format other than its file's (required although its package is a module), a file the
+ * configuration marks as external is not compiled at all, and the file may have changed since.
+ */
+function reproducedModules(
+  captureDir: string,
+  compiler: () => PlaywrightCompiler | null,
+): (m: PayloadModule) => boolean {
+  const verdicts = new Map<string, boolean>()
+  return (m) => {
+    const key = `${m.path}\u0000${m.code}`
+    let verdict = verdicts.get(key)
+    if (verdict === undefined) {
+      verdict = false
+      try {
+        const ran = fs.readFileSync(path.join(captureDir, 'blobs', `${m.code}.js`), 'utf8')
+        const compiled = compiler()?.compile(m.path, fs.readFileSync(m.path, 'utf8'))
+        verdict = compiled === ran
+      } catch {
+        // The code or the source cannot be read: the module is compared by its source.
+      }
+      verdicts.set(key, verdict)
+    }
+    return verdict
+  }
 }
 
 /**

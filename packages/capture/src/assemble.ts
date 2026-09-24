@@ -277,6 +277,7 @@ export function assemble(input: AssembleInput): Assembled {
           executed: (readonly [number, number])[]
           units?: Readonly<Record<string, Digest>>
           src?: Digest
+          env: string
         }[]
       >()
       for (const mod of payload.modules) {
@@ -286,6 +287,7 @@ export function assemble(input: AssembleInput): Assembled {
           executed: [...mod.executed],
           ...(mod.units ? { units: mod.units } : {}),
           ...(mod.src ? { src: mod.src } : {}),
+          env: mod.env ?? outcome.env,
         }
         if (list) list.push(item)
         else modulesByPath.set(mod.path, [item])
@@ -340,14 +342,18 @@ export function assemble(input: AssembleInput): Assembled {
             units[unit] = m.units.get(unit)!.fp
           }
         }
+        // Code of one file from environments that compile it differently (a Playwright module the
+        // test process loaded that a browser also ran) cannot be compiled again as one: it is
+        // compared by its source.
+        const envs = new Set(versions.map((v) => v.env))
         add(`mod:${repoPath}`, {
           k: 'mod',
           p: repoPath,
           src,
           units,
-          env: outcome.env,
+          env: envs.size === 1 ? versions[0]!.env : outcome.env,
           ...(isDynamic(absolute) ? { dyn: true as const } : {}),
-          ...(rawModules.has(absolute) || payload.wholeModules?.includes(absolute)
+          ...(rawModules.has(absolute) || payload.wholeModules?.includes(absolute) || envs.size > 1
             ? { raw: true as const }
             : {}),
         })

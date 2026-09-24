@@ -46,6 +46,12 @@ export interface WorkerCaptureOptions {
    */
   readonly layout?: 'vitest' | 'jest' | 'node'
   /**
+   * Node layout: further callers (matched against stack frames) that read files to load them as
+   * modules, besides Node's own loader: a runner's module load hook (Playwright's) reads the file
+   * it compiles. Their reads of files that were then compiled are recorded as modules.
+   */
+  readonly runnerReaders?: readonly RegExp[]
+  /**
    * The project collects its own V8 coverage in this run. Capture then starts in the mode that
    * coverage uses (block counts): V8 stops reporting functions compiled before a switch from binary
    * to count coverage, so the mode must not change once code has run (see coverage.ts).
@@ -446,7 +452,7 @@ export function prepareWorkerHooks(options: WorkerCaptureOptions): void {
     ...(options.layout === 'jest'
       ? { runnerReaders: [JEST_RUNTIME_FRAME] }
       : options.layout === 'node'
-        ? { runnerReaders: [NODE_LOADER_FRAME] }
+        ? { runnerReaders: [NODE_LOADER_FRAME, ...(options.runnerReaders ?? [])] }
         : {}),
   })
   const isolate: IsolateState = {
