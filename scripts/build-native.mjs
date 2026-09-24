@@ -3,9 +3,11 @@
 // native/<platform>-<arch>/ (NATIVE_DIR in packages/capture/src/trace.ts). On Linux x64 and arm64:
 // packages/capture/native/trace.c, and exec.c for programs it cannot follow. On macOS:
 // trace-darwin.c, a universal library (arm64e included, for Apple's own programs), and its
-// launcher, launch-darwin.c. These are TRACED_PLATFORMS in trace.ts; elsewhere, or without a C
-// compiler, nothing is built and child processes stay unobserved (a test that starts one always
-// runs, unless it is a Node program capture's own hooks follow).
+// launcher, launch-darwin.c. On Windows x64: a DLL loaded into every traced process and its
+// launcher (trace-win.c, exec-win.c; see build-native-windows.mjs). These are TRACED_PLATFORMS in
+// trace.ts; elsewhere, or without a C compiler, nothing is built and child processes stay
+// unobserved (a test that starts one always runs, unless it is a Node program capture's own hooks
+// follow).
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -15,6 +17,11 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const nativeDir = path.join(root, 'packages/capture/dist/native', `${process.platform}-${process.arch}`)
 const traced = ['linux-x64', 'linux-arm64', 'darwin-x64', 'darwin-arm64']
 
+if (process.platform === 'win32') {
+  const { buildWindows } = await import('./build-native-windows.mjs')
+  buildWindows(root, nativeDir)
+  process.exit(0)
+}
 if (!traced.includes(`${process.platform}-${process.arch}`)) {
   console.log(`build-native: child-process tracing is not built on ${process.platform}-${process.arch}`)
   process.exit(0)

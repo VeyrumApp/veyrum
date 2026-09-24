@@ -20,7 +20,9 @@ const launcher = path.resolve(
   fileURLToPath(import.meta.url),
   `../../../capture/dist/native/${process.platform}-${process.arch}/veyrum-exec`,
 )
-const tracing = TRACED_PLATFORMS.includes(`${process.platform}-${process.arch}`)
+// Windows programs are covered by hazards-windows.test.ts.
+const tracing =
+  process.platform !== 'win32' && TRACED_PLATFORMS.includes(`${process.platform}-${process.arch}`)
 /** macOS has no statically linked programs. */
 const staticPrograms = tracing && process.platform === 'linux'
 const tool = staticPrograms ? staticTool() : null

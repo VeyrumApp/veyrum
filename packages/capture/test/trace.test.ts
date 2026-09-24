@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, expect, test } from 'vitest'
-import { nativeTools } from '../src/trace.ts'
+import { launchArguments, nativeTools, quoteWindowsArgument, windowsCommandLine } from '../src/trace.ts'
 
 const dirs: string[] = []
 afterEach(() => {
@@ -52,4 +52,33 @@ test('without a launcher, there is none', () => {
     library: built.library,
     launcher: null,
   })
+})
+
+// Node's own quoting (libuv's quote_cmd_arg), which the Windows launcher must receive unchanged.
+test('Windows arguments are quoted as Node quotes them', () => {
+  const cases: [string, string][] = [
+    ['', '""'],
+    ['plain', 'plain'],
+    ['a b', '"a b"'],
+    ['C:\\dir\\file', 'C:\\dir\\file'],
+    ['C:\\Program Files\\x.exe', '"C:\\Program Files\\x.exe"'],
+    ['hello"world', '"hello\\"world"'],
+    ['hello""world', '"hello\\"\\"world"'],
+    ['hello\\"world', '"hello\\\\\\"world"'],
+    ['hello\\\\"world', '"hello\\\\\\\\\\"world"'],
+    ['hello world\\', '"hello world\\\\"'],
+  ]
+  for (const [arg, quoted] of cases) expect(quoteWindowsArgument(arg), arg).toBe(quoted)
+  expect(windowsCommandLine(['node', '-e', 'a b'], false)).toBe('node -e "a b"')
+  expect(windowsCommandLine(['cmd.exe', '/d', '/s', '/c', '"echo a b"'], true)).toBe(
+    'cmd.exe /d /s /c "echo a b"',
+  )
+})
+
+test('the launcher gets the program, quoted when it has spaces, and the command line as is', () => {
+  expect(launchArguments('C:\\Program Files\\x.exe', 'x "a b"')).toEqual([
+    '"C:\\Program Files\\x.exe"',
+    'x "a b"',
+  ])
+  expect(launchArguments('C:\\bin\\x.exe', 'x')).toEqual(['C:\\bin\\x.exe', 'x'])
 })

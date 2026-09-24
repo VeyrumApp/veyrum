@@ -11,9 +11,11 @@ import { threadId } from 'node:worker_threads'
  * and where they connect. On Linux, programs it cannot follow, statically linked and Go ones, run
  * under a ptrace tracer (native/exec.c) that writes the same log. On macOS every program starts
  * through a launcher (native/launch-darwin.c) whose exec the library handles, so a protected
- * program runs as a shadow copy the library can be loaded into. This module decides how a program
- * runs and parses the log. Everything here runs with the capture layer's hooks suspended, on the
- * unpatched fs functions it is given.
+ * program runs as a shadow copy the library can be loaded into. On Windows every program starts
+ * through a launcher (native/exec-win.c) that loads a DLL (native/trace-win.c) into it, which
+ * writes the same log for it and everything it starts. This module decides how a program runs and
+ * parses the log. Everything here runs with the capture layer's hooks suspended, on the unpatched
+ * fs functions it is given.
  */
 
 /**
@@ -25,9 +27,15 @@ export const NATIVE_DIR = path.join(
   'native',
   `${process.platform}-${process.arch}`,
 )
+const WINDOWS = process.platform === 'win32'
+/** The preloaded library, or on Windows the DLL the launcher loads into every traced process. */
 export const TRACE_LIBRARY = path.join(
   NATIVE_DIR,
-  process.platform === 'darwin' ? 'libveyrum-trace.dylib' : 'libveyrum-trace.so',
+  WINDOWS
+    ? 'veyrum-trace.dll'
+    : process.platform === 'darwin'
+      ? 'libveyrum-trace.dylib'
+      : 'libveyrum-trace.so',
 )
 
 /** Preloaded into Node programs and worker threads no native tracer follows (see child.ts). */
@@ -35,9 +43,10 @@ export const CHILD_PRELOAD = path.join(path.dirname(fileURLToPath(import.meta.ur
 
 /**
  * The launcher, built with the library: on Linux it traces statically linked and Go programs with
- * ptrace; on macOS every program starts through it (see launch-darwin.c).
+ * ptrace; on macOS every program starts through it (see launch-darwin.c); on Windows every program
+ * starts through it with the DLL (see exec-win.c).
  */
-export const EXEC_LAUNCHER = path.join(NATIVE_DIR, 'veyrum-exec')
+export const EXEC_LAUNCHER = path.join(NATIVE_DIR, WINDOWS ? 'veyrum-exec.exe' : 'veyrum-exec')
 
 export interface TraceFs {
   readonly statSync: typeof fs.statSync
@@ -47,7 +56,13 @@ export interface TraceFs {
 }
 
 /** Where the tracer is built (scripts/build-native.mjs keeps the same list). */
-export const TRACED_PLATFORMS: readonly string[] = ['linux-x64', 'linux-arm64', 'darwin-x64', 'darwin-arm64']
+export const TRACED_PLATFORMS: readonly string[] = [
+  'linux-x64',
+  'linux-arm64',
+  'darwin-x64',
+  'darwin-arm64',
+  'win32-x64',
+]
 
 let libraryPresent: boolean | undefined
 /**
@@ -61,6 +76,7 @@ export function tracingAvailable(raw: TraceFs): boolean {
     libraryPresent =
       TRACED_PLATFORMS.includes(`${process.platform}-${process.arch}`) &&
       raw.statSync(TRACE_LIBRARY, { throwIfNoEntry: false })?.isFile() === true &&
+      (!WINDOWS || raw.statSync(EXEC_LAUNCHER, { throwIfNoEntry: false })?.isFile() === true) &&
       libraryLoads()
   }
   return libraryPresent
@@ -70,11 +86,24 @@ export function tracingAvailable(raw: TraceFs): boolean {
  * Whether the dynamic loader here loads the library: one built against a newer C library than the
  * system's is skipped with a warning, and its children would then run unobserved. Its constructor
  * creates the log, so a trivial traced program shows whether it loaded. On macOS that program is
- * this Node: dyld ignores DYLD_* variables for /bin/sh, a system binary.
+ * this Node: dyld ignores DYLD_* variables for /bin/sh, a system binary. On Windows the launcher
+ * starts the program and records it as untraceable when the DLL cannot be loaded into it.
  */
 function libraryLoads(): boolean {
   const log = path.join(os.tmpdir(), `veyrum-probe-${process.pid}-${threadId}-${Date.now()}.log`)
   try {
+    if (WINDOWS) {
+      const cmd = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'cmd.exe')
+      childProcess.spawnSync(EXEC_LAUNCHER, launchArguments(cmd, 'cmd /d /c exit 0'), {
+        argv0: LAUNCHER_ARGV0,
+        windowsVerbatimArguments: true,
+        windowsHide: true,
+        env: { SystemRoot: process.env.SystemRoot ?? 'C:\\Windows', VEYRUM_TRACE: log },
+        stdio: 'ignore',
+        timeout: 10_000,
+      })
+      return fs.existsSync(log) && !/^u /m.test(fs.readFileSync(log, 'utf8'))
+    }
     const darwin = process.platform === 'darwin'
     const shell = !darwin && fs.existsSync('/bin/sh') ? '/bin/sh' : process.execPath
     const preload = darwin ? 'DYLD_INSERT_LIBRARIES' : 'LD_PRELOAD'
@@ -111,7 +140,8 @@ export function nativeTools(dir: string, library = TRACE_LIBRARY, launcher = EXE
   if (cached) return cached
   let tools: NativeTools = { library, launcher: null }
   const st = fs.statSync(launcher, { throwIfNoEntry: false })
-  if (st?.isFile() && (st.mode & 0o111) !== 0) {
+  // Windows has no executable bit.
+  if (st?.isFile() && (WINDOWS || (st.mode & 0o111) !== 0)) {
     tools = { library, launcher }
   } else if (st?.isFile()) {
     try {
@@ -139,7 +169,7 @@ export function nativeTools(dir: string, library = TRACE_LIBRARY, launcher = EXE
 
 /**
  * How a program runs under capture: traced by the preloaded library, launched under the ptrace
- * tracer, or not followed at all.
+ * tracer (on Windows, launched with the DLL), or not followed at all.
  */
 export type ExecutableKind = 'traced' | 'launched' | 'untraceable'
 
@@ -154,6 +184,8 @@ const kindCache = new Map<string, { key: string; value: ExecutableKind }>()
  * the preloaded library; a statically linked or Go program for this machine (Go makes system calls
  * directly) runs under the ptrace tracer; a script runs as its interpreter would. Must match
  * `classify` in native/trace.c, which applies the same rule to everything a traced process runs.
+ * On Windows every program (a PE image) is launched: the launcher records one the DLL cannot be
+ * loaded into (a 32-bit program) as untraceable itself.
  */
 export function classifyExecutable(file: string, raw: TraceFs, depth = 0): ExecutableKind {
   if (depth > MAX_SHEBANG_DEPTH) return 'untraceable'
@@ -172,7 +204,9 @@ export function classifyExecutable(file: string, raw: TraceFs, depth = 0): Execu
       return buf.subarray(0, n)
     }
     const head = readAt(256, 0)
-    if (head[0] === 0x23 && head[1] === 0x21) {
+    if (WINDOWS) {
+      value = head[0] === 0x4d && head[1] === 0x5a ? 'launched' : 'untraceable'
+    } else if (head[0] === 0x23 && head[1] === 0x21) {
       const line = head.subarray(2).toString('latin1').split('\n')[0]!.trim()
       const interpreter = line.split(/[ \t]/)[0] ?? ''
       value = interpreter.startsWith('/') ? classifyExecutable(interpreter, raw, depth + 1) : 'untraceable'
@@ -213,6 +247,46 @@ export function classifyExecutable(file: string, raw: TraceFs, depth = 0): Execu
   }
   kindCache.set(file, { key, value })
   return value
+}
+
+/** argv[0] of the Windows launcher: a plain word, so its command line starts predictably. */
+export const LAUNCHER_ARGV0 = 'veyrum-exec'
+
+/**
+ * How Node (libuv's quote_cmd_arg) writes one argument into a Windows command line: as it is when
+ * it has no space, tab or quote; otherwise quoted, with quotes and the backslashes before them
+ * escaped.
+ */
+export function quoteWindowsArgument(arg: string): string {
+  if (arg === '') return '""'
+  if (!/[ \t"]/.test(arg)) return arg
+  if (!/["\\]/.test(arg)) return `"${arg}"`
+  // Built backwards, as libuv does: a backslash is doubled when a quote or the end follows it.
+  let reversed = ''
+  let quoteHit = true
+  for (let i = arg.length; i > 0; i--) {
+    const c = arg[i - 1]!
+    reversed += c
+    if (quoteHit && c === '\\') reversed += '\\'
+    else if (c === '"') {
+      quoteHit = true
+      reversed += '\\'
+    } else quoteHit = false
+  }
+  return `"${reversed.split('').reverse().join('')}"`
+}
+
+/** The command line Node gives a program: its arguments (argv[0] first) quoted, or verbatim. */
+export function windowsCommandLine(argv: readonly string[], verbatim: boolean): string {
+  return argv.map((arg) => (verbatim ? arg : quoteWindowsArgument(arg))).join(' ')
+}
+
+/**
+ * The arguments that run `program` with `commandLine` through the Windows launcher, which a spawn
+ * passes verbatim after LAUNCHER_ARGV0 (see native/exec-win.c).
+ */
+export function launchArguments(program: string, commandLine: string): string[] {
+  return [/[ \t]/.test(program) ? `"${program}"` : program, commandLine]
 }
 
 /** A variable of a child's environment; Windows names them case-insensitively. */

@@ -336,7 +336,7 @@ export function analyze(input: AnalyzeInput): Analysis {
   const serverReasons = new Set(logs.reasons)
   for (const command of server.untraced)
     serverReasons.add(
-      `the app server "${command}" could not be traced: following the programs a server runs needs Veyrum's native tracer, built for Linux`,
+      `the app server "${command}" could not be traced: Veyrum's native tracer, which follows the programs a server runs, is not available here`,
     )
   const isServerPort = (e: { local: boolean; port: number | null }): boolean =>
     e.local && e.port !== null && logs.ports.has(e.port)

@@ -32,9 +32,10 @@ function writeForeignProgram(dir: string, rel: string): void {
   fs.writeFileSync(file, elf, { mode: 0o755 })
 }
 
-/** An ELF program is foreign on macOS too, where the kernel refuses to run it at all. */
+// ELF programs and POSIX shell commands: Linux only; an ELF program is foreign on macOS too, where
+// the kernel refuses to run it at all (Windows: hazards-windows.test.ts).
 const tracing =
-  TRACED_PLATFORMS.includes(`${process.platform}-${process.arch}`) && process.platform === 'linux'
+  process.platform === 'linux' && TRACED_PLATFORMS.includes(`${process.platform}-${process.arch}`)
 
 describe.runIf(tracing)('programs that cannot be traced', () => {
   const spawnTest = (body: string): string =>

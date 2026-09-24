@@ -151,7 +151,23 @@ it creates, is traced. How depends on the program and the platform:
   reuse, as below. Every library loaded from outside the dyld shared cache is an input too, so a
   program's own dependencies are.
 
-- **Through capture's own hooks.** Where no native tracer follows it (Windows, or with
+- **Through a DLL (Windows x64).** Every program runs through `veyrum-exec.exe`
+  (`packages/capture/native/exec-win.c`), which creates it suspended, adds `veyrum-trace.dll`
+  (`packages/capture/native/trace-win.c`, built with Microsoft Detours at a pinned commit) to its
+  import table, and passes on the exact command line Node built, so the program sees the
+  arguments, `argv[0]`, environment, working directory, streams and window settings it would
+  have. The DLL hooks the ntdll functions every Win32 and C runtime file function ends up in
+  (`NtCreateFile` and `NtOpenFile`, read or write by the access and disposition asked for; the
+  attribute queries; directory queries, a listing or a check of the one name queried; renames,
+  links, deletions and reparse points), process creation in `CreateProcessInternalW`, where every
+  `CreateProcess` variant meets (a new process starts suspended, gets the DLL, and keeps
+  `VEYRUM_TRACE`), and Winsock connections, and writes the same log. A relative path is recorded
+  against the working directory as the program set it. The test sees the launcher's pid and the
+  program's exit code; terminating the launcher ends the program (a job object), not what the
+  program started, as when Node starts a program directly. A shell (`shell` option, `exec`) is
+  started the same way, with the command line Node would have given it.
+
+- **Through capture's own hooks.** Where no native tracer follows it (another platform, or with
   `VEYRUM_NATIVE_TRACING=off`), a program that is the test's own Node binary, or a script whose
   `#!` line runs it, starts with a preload (`packages/capture/src/child.ts`) that installs the same
   hooks as the test's worker and logs what the program reads, lists, writes, starts and connects
@@ -171,7 +187,8 @@ The test file's closure gets what its children did like its own reads. On top of
   from the test's code, which is recorded already.
 - **Descendants stay traced.** Every exec restores the preloaded tracer's variables, even when a
   program clears its environment for its own children; under ptrace, every descendant is followed
-  by the tracer itself.
+  by the tracer itself; on Windows, every process a traced one creates gets the DLL before its
+  first instruction runs.
 - **Anything else blocks reuse.** A program for another machine or a 32-bit one, a raw `execve`
   system call or `fexecve` from a dynamically linked program, `glob`, `ftw` and `nftw` (which read
   directories internally), system calls of another architecture, `io_uring`, `open_by_handle_at`,
@@ -181,8 +198,10 @@ The test file's closure gets what its children did like its own reads. On top of
   `@loader_path`) or is an application's executable (a copy would not run as the original does),
   a protected program whose shadow copy cannot be made or run, a file opened by its
   file-system identifiers (`openbyid_np`) and an exec through `syscall()`; system calls made
-  without libSystem are not seen, which macOS does not support as an interface. On Windows, so
-  does any program other than the test's own Node, including a shell.
+  without libSystem are not seen, which macOS does not support as an interface.
+  On Windows, so are a program the DLL cannot be loaded into (a 32-bit one), a process created
+  below `CreateProcessInternalW` (`NtCreateUserProcess` called directly), a file opened by its ID,
+  and a path with no Win32 name (a volume without a drive letter).
 
 Temporary files are ignored for children as for tests. Unix socket connections count as local
 network use, as they do for the test itself.
@@ -376,7 +395,8 @@ server. Each is observed separately, and a check is one test file under one Play
 - **Traffic Veyrum cannot attribute blocks reuse.** A request or connection, from a page or the
   test process, to a local port that no observed program listened on (a server that is not a Node program, such as Python, Go or a container;
   one already running; one started some other way) sets `server-unobserved`, and so does a
-  server that could not be traced (no native tracer: macOS and Windows). Remote requests set
+  server that could not be traced (no native tracer on this platform, or
+  `VEYRUM_NATIVE_TRACING=off`). Remote requests set
   `net-remote` (`--allow net` allows them). Firefox and WebKit set `browser-unobserved`: their
   pages cannot be covered.
 - **The main process.** Configuration files are shared inputs, and so is everything Playwright's
@@ -452,7 +472,11 @@ variable, here) is in its closure like any input.
    process reads nothing through a descriptor another process opened, except what the test
    itself opened, and a file the test writes after a child read it was not read by the child
    again. The traced child sees the tracer's variables (`LD_PRELOAD`, `VEYRUM_TRACE`,
-   `UV_USE_IO_URING=0`) in its environment.
+   `UV_USE_IO_URING=0`) in its environment. On Windows, a traced program reaches files through
+   ntdll (Windows system call numbers change between releases, so programs do not make system
+   calls themselves), the DLLs it links against, loaded before the tracer starts like the
+   libraries the dynamic loader maps on Linux, are system files or change with the program, and
+   it sees `VEYRUM_TRACE` in its environment.
 9. **Manifest readers.** Code in the runner's main process, and the known manifest readers in
    workers, use neither the package's own version, dependency version ranges nor scripts from a
    repository manifest. A plugin that did would change what it emits, which the transform-output

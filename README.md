@@ -30,8 +30,8 @@ sharded jobs.
 Vitest 4 and later, Jest 29 and later, Mocha 10 and later, Node's built-in test runner
 (`node --test`), pytest (on Python 3.12 or later, `--python` picks the interpreter) and
 Playwright Test (Chromium; end-to-end tests with their app server) are supported, on Node 22.15
-or later, on Linux, macOS and Windows. Child processes a test starts are traced natively on Linux
-and macOS; Node child processes and worker threads, and Python child processes of pytest tests,
+or later, on Linux, macOS and Windows. Child processes a test starts are traced natively on Linux,
+macOS and Windows (x64); Node child processes and worker threads, and Python child processes of pytest tests,
 are traced on every platform.
 
 ## How it works
