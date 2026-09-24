@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url'
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const work = fs.mkdtempSync(path.join(os.tmpdir(), 'veyrum-pack-'))
 const packDir = path.join(work, 'pack')
-const PACKAGES = ['core', 'capture', 'vitest', 'jest', 'cli']
+const PACKAGES = ['core', 'capture', 'vitest', 'jest', 'node-test', 'cli']
 
 /**
  * Runner versions to check: the versions this repository develops against, or the ones given as
@@ -56,11 +56,16 @@ function project(name, devDependencies, files) {
     fs.mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true })
     fs.writeFileSync(path.join(dir, rel), content)
   }
-  const pkg = { name, private: true, ...(name === 'vitest' ? { type: 'module' } : {}) }
+  const pkg = {
+    name,
+    private: true,
+    ...(name !== 'jest' ? { type: 'module' } : {}),
+    ...(name === 'node-test' ? { scripts: { test: 'node --test' } } : {}),
+  }
   pkg.devDependencies = { ...devDependencies, veyrum: tarball('veyrum') }
   fs.writeFileSync(path.join(dir, 'package.json'), `${JSON.stringify(pkg, null, 2)}\n`)
   // Unpublished internal packages resolve to the tarballs too.
-  const overrides = ['core', 'capture', 'vitest', 'jest'].map(
+  const overrides = ['core', 'capture', 'vitest', 'jest', 'node-test'].map(
     (p) => `  '@veyrum/${p}': '${tarball(`veyrum-${p}`)}'`,
   )
   // Optional native helpers (Jest's, and esbuild for Vite 7) need no install scripts.
@@ -155,6 +160,23 @@ try {
       next('static program input', 'test/show.test.ts')
     }
     process.stdout.write(`vitest ${vitestVersion}: ok${program ? ' (with a static program)' : ''}\n`)
+  }
+
+  // Node's own runner needs nothing installed but Veyrum; checked with the full run only.
+  if (!pinned) {
+    const nodeDir = project(
+      'node-test',
+      {},
+      {
+        'src/math.js': 'export const add = (a, b) => a + b\nexport const mul = (a, b) => a * b\n',
+        'test/add.test.js':
+          "import test from 'node:test'\nimport assert from 'node:assert'\nimport { add } from '../src/math.js'\ntest('add', () => assert.equal(add(1, 2), 3))\n",
+        'test/mul.test.js':
+          "import test from 'node:test'\nimport assert from 'node:assert'\nimport { mul } from '../src/math.js'\ntest('mul', () => assert.equal(mul(2, 3), 6))\n",
+      },
+    )
+    cycle(nodeDir, 'src/math.js', 'js')
+    process.stdout.write('node:test: ok\n')
   }
 
   if (jestVersion) {
