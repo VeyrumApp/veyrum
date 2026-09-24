@@ -143,6 +143,8 @@ export function plainRun(
           runnerBin(repo, 'jest'),
           ...jestArgs(corpus),
           `--maxWorkers=${corpus.maxWorkers}`,
+          // Veyrum's runs collect no project coverage; neither may the run they are compared with.
+          '--coverage=false',
           '--ci',
           '--silent',
           '--json',
@@ -157,6 +159,8 @@ export function plainRun(
           ...corpus.runnerArgs,
           ...(corpus.config ? ['--config', corpus.config] : []),
           `--maxWorkers=${corpus.maxWorkers}`,
+          // Veyrum's runs collect no project coverage; neither may the run they are compared with.
+          '--coverage.enabled=false',
           '--reporter=json',
           `--outputFile=${json}`,
           '--passWithNoTests',
