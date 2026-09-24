@@ -8,7 +8,8 @@
       "!**/.veyrum",
       "!**/.bench",
       "!**/test/fixtures/**/*.snap",
-      "!**/.sandbox"
+      "!**/.sandbox",
+      "!**/.claude"
     ]
   },
   "formatter": {

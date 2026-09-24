@@ -53,6 +53,9 @@ importers:
       '@veyrum/jest':
         specifier: workspace:*
         version: link:../jest
+      '@veyrum/node-test':
+        specifier: workspace:*
+        version: link:../node-test
       '@veyrum/vitest':
         specifier: workspace:*
         version: link:../vitest
@@ -96,6 +99,15 @@ importers:
       jest-environment-node:
         specifier: 30.5.2
         version: 30.5.2
+
+  packages/node-test:
+    dependencies:
+      '@veyrum/capture':
+        specifier: workspace:*
+        version: link:../capture
+      '@veyrum/core':
+        specifier: workspace:*
+        version: link:../core
 
   packages/vitest:
     dependencies:

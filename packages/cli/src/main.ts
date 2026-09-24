@@ -30,7 +30,7 @@ Usage:
 
 Options:
   --root <dir>         Project root (default: current directory)
-  --runner <name>      vitest or jest (default: detected from the project)
+  --runner <name>      vitest, jest or node-test (default: detected from the project)
   --config <file>      Runner config file
   --store <file>       Evidence store (default: <root>/.veyrum/store.sqlite)
   --max-workers <n>    Worker count
@@ -66,7 +66,7 @@ interface Args {
   command: string
   positionals: string[]
   root: string
-  runner: 'vitest' | 'jest' | undefined
+  runner: Runner | undefined
   config: string | undefined
   store: string
   maxWorkers: number | undefined
@@ -134,14 +134,14 @@ function parse(argv: string[]): Args | null {
   if (values.help || !command) return null
   const root = canonicalPath(values.root ?? process.cwd())
   const maxWorkers = values['max-workers'] ? Number(values['max-workers']) : undefined
-  if (values.runner !== undefined && values.runner !== 'vitest' && values.runner !== 'jest') {
-    throw new Error(`Unknown runner "${values.runner}" (expected vitest or jest)`)
+  if (values.runner !== undefined && !RUNNERS.includes(values.runner as Runner)) {
+    throw new Error(`Unknown runner "${values.runner}" (expected ${RUNNERS.join(', ')})`)
   }
   return {
     command,
     positionals: rest,
     root,
-    runner: values.runner,
+    runner: values.runner as Runner | undefined,
     config: values.config,
     store: path.resolve(values.store ?? path.join(root, '.veyrum', 'store.sqlite')),
     maxWorkers: maxWorkers && Number.isFinite(maxWorkers) ? maxWorkers : undefined,
@@ -167,8 +167,14 @@ function parse(argv: string[]): Args | null {
 const VITEST_CONFIG = /^vitest\.(config|workspace)\.[cm]?[jt]s$/
 const JEST_CONFIG = /^jest\.config\.([cm]?[jt]s|json)$/
 
-/** Picks the runner from configuration files, then from declared dependencies. */
-function detectRunner(root: string): 'vitest' | 'jest' {
+const RUNNERS = ['vitest', 'jest', 'node-test'] as const
+type Runner = (typeof RUNNERS)[number]
+
+/**
+ * Picks the runner from configuration files, then from declared dependencies, then from a test
+ * script that runs Node's own runner.
+ */
+function detectRunner(root: string): Runner {
   let names: string[] = []
   try {
     names = fs.readdirSync(root)
@@ -177,7 +183,12 @@ function detectRunner(root: string): 'vitest' | 'jest' {
   }
   if (names.some((n) => VITEST_CONFIG.test(n))) return 'vitest'
   if (names.some((n) => JEST_CONFIG.test(n))) return 'jest'
-  let pkg: { jest?: unknown; dependencies?: object; devDependencies?: object } = {}
+  let pkg: {
+    jest?: unknown
+    dependencies?: object
+    devDependencies?: object
+    scripts?: Record<string, unknown>
+  } = {}
   try {
     pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'))
   } catch {
@@ -186,13 +197,18 @@ function detectRunner(root: string): 'vitest' | 'jest' {
   const deps = { ...pkg.dependencies, ...pkg.devDependencies }
   if ('vitest' in deps) return 'vitest'
   if (pkg.jest !== undefined || 'jest' in deps) return 'jest'
+  if (/\bnode\b[^&|;]*\s--test\b/.test(String(pkg.scripts?.test ?? ''))) return 'node-test'
   return 'vitest'
 }
 
 /** Runs through the adapter for the project's runner. */
-async function runWith(runner: 'vitest' | 'jest', args: Args, common: RunOptions): Promise<RunResult> {
+async function runWith(runner: Runner, args: Args, common: RunOptions): Promise<RunResult> {
   // Fault injection for the fail-open tests.
   if (process.env.VEYRUM_FAULT === 'before-run') throw new Error('injected fault before the run')
+  if (runner === 'node-test') {
+    const { runNodeTest } = await import('@veyrum/node-test')
+    return runNodeTest({ ...common, ...(args.maxWorkers ? { maxWorkers: args.maxWorkers } : {}) })
+  }
   if (runner === 'jest') {
     const { runJest } = await import('@veyrum/jest')
     return runJest({

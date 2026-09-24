@@ -17,7 +17,7 @@ const adapterModules = {
 export interface SandboxOptions {
   /** Parent directory (default: the repository's .sandbox directory). */
   readonly base?: string
-  readonly runner?: 'vitest' | 'jest'
+  readonly runner?: 'vitest' | 'jest' | 'node-test'
   /** Worker count passed to the runner (Jest runs in the main process with one worker). */
   readonly workers?: number
   /**
@@ -42,7 +42,7 @@ export interface CliResult {
  */
 export class Sandbox {
   readonly dir: string
-  readonly runner: 'vitest' | 'jest'
+  readonly runner: 'vitest' | 'jest' | 'node-test'
   private readonly workers: number
 
   constructor(name: string, options: SandboxOptions = {}) {
@@ -51,14 +51,19 @@ export class Sandbox {
     const base = options.base ?? path.join(repoRoot, '.sandbox')
     this.dir = path.join(base, `${name}-${crypto.randomBytes(4).toString('hex')}`)
     fs.mkdirSync(path.join(this.dir, 'node_modules'), { recursive: true })
-    for (const name of [this.runner, ...(options.modules ?? [])]) {
+    for (const name of [...(this.runner === 'node-test' ? [] : [this.runner]), ...(options.modules ?? [])]) {
       const link = path.join(this.dir, 'node_modules', name)
-      const own = path.join(adapterModules[this.runner], name)
+      const own = path.join(adapterModules[this.runner === 'jest' ? 'jest' : 'vitest'], name)
       fs.mkdirSync(path.dirname(link), { recursive: true })
       // Junctions: plain symbolic links need administrator rights on Windows.
       fs.symlinkSync(fs.existsSync(own) ? own : path.join(repoRoot, 'node_modules', name), link, 'junction')
     }
-    if (this.runner === 'vitest') {
+    if (this.runner === 'node-test') {
+      this.write(
+        'package.json',
+        JSON.stringify({ name, private: true, type: 'module', scripts: { test: 'node --test' } }, null, 2),
+      )
+    } else if (this.runner === 'vitest') {
       this.write('package.json', JSON.stringify({ name, private: true, type: 'module' }, null, 2))
       this.write(
         'vitest.config.ts',

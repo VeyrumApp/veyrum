@@ -7,7 +7,7 @@ import { Store } from '@veyrum/core'
 /** What the fallback needs to run the project's tests the way Veyrum would have. */
 export interface PlainRunOptions {
   readonly root: string
-  readonly runner: 'vitest' | 'jest'
+  readonly runner: 'vitest' | 'jest' | 'node-test'
   readonly config?: string
   readonly projects: readonly string[]
   readonly maxWorkers?: number
@@ -25,6 +25,18 @@ function packageDir(root: string, name: string): string {
 /** The runner's own command line for the same selection of tests, projects and workers. */
 export function plainRunnerCommand(options: PlainRunOptions): { command: string; args: string[] } {
   const files = options.only ?? []
+  if (options.runner === 'node-test') {
+    return {
+      command: process.execPath,
+      args: [
+        ...process.execArgv,
+        '--test',
+        ...(options.maxWorkers ? [`--test-concurrency=${options.maxWorkers}`] : []),
+        ...(options.quiet ? ['--test-reporter=dot'] : []),
+        ...files,
+      ],
+    }
+  }
   if (options.runner === 'jest') {
     const bin = path.join(packageDir(options.root, 'jest'), 'bin', 'jest.js')
     return {

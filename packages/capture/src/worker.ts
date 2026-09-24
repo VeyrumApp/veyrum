@@ -40,9 +40,11 @@ export interface WorkerCaptureOptions {
    * How the runner evaluates modules:
    * - 'vitest': a fresh isolate per file; every repository module is wrapped by Vite's evaluator;
    * - 'jest': an isolate is reused across files but modules are re-evaluated per file with
-   *   vm.compileFunction (no wrapper), so a file's modules are the scripts executed during it.
+   *   vm.compileFunction (no wrapper), so a file's modules are the scripts executed during it;
+   * - 'node': a process runs one file (node:test), and Node's own loader compiles every module
+   *   unwrapped, from the source its load hooks return.
    */
-  readonly layout?: 'vitest' | 'jest'
+  readonly layout?: 'vitest' | 'jest' | 'node'
   /**
    * The project collects its own V8 coverage in this run. Capture then starts in the mode that
    * coverage uses (block counts): V8 stops reporting functions compiled before a switch from binary
@@ -67,6 +69,8 @@ interface IsolateState {
   files: number
   /** Jest layout: sources compiled through node:vm during the current file, by filename. */
   compiled: Map<string, string[]> | null
+  /** Node layout: sources Node's loader returned for repository modules, by filename. */
+  loaded: Map<string, string[]> | null
   /** Jest layout: manifests of packages loaded natively by this process (the toolchain). */
   toolchain: Set<string>
   /** Jest layout: files outside node_modules loaded natively (local transformers and plugins). */
@@ -434,6 +438,7 @@ export function prepareWorkerHooks(options: WorkerCaptureOptions): void {
     session: null,
     files: 0,
     compiled: null,
+    loaded: null,
     toolchain: new Set(),
     toolchainFiles: new Set(),
     toolchainObserved: true,
@@ -444,6 +449,63 @@ export function prepareWorkerHooks(options: WorkerCaptureOptions): void {
     installCompileHooks(isolate, options)
     isolate.toolchainObserved = recordToolchain(isolate.toolchain, isolate.toolchainFiles)
   }
+  if (options.layout === 'node') isolate.toolchainObserved = recordLoadedSources(isolate, options)
+}
+
+const scopes = new Map<string, string | null>()
+
+/** The package.json that governs a module (the nearest one above it), or null. */
+function packageScope(file: string): string | null {
+  const dir = path.dirname(file)
+  let found = scopes.get(dir)
+  if (found === undefined) {
+    const candidate = path.join(dir, 'package.json')
+    const exists = unobserved(() => fs.statSync(candidate, { throwIfNoEntry: false })?.isFile() === true)
+    const parent = path.dirname(dir)
+    found = exists ? candidate : parent === dir ? null : packageScope(path.join(parent, 'x'))
+    scopes.set(dir, found)
+  }
+  return found
+}
+
+const JAVASCRIPT_FORMATS = new Set(['commonjs', 'module', 'commonjs-typescript', 'module-typescript'])
+
+/** Node layout: keeps the source Node's loader compiles for each repository module. */
+function recordLoadedSources(isolate: IsolateState, options: WorkerCaptureOptions): boolean {
+  const register = (module as unknown as { registerHooks?: (hooks: object) => unknown }).registerHooks
+  if (!register) return false
+  const loaded = new Map<string, string[]>()
+  isolate.loaded = loaded
+  register({
+    load: (
+      url: string,
+      context: unknown,
+      nextLoad: (url: string, context: unknown) => { source?: unknown },
+    ) => {
+      const result = nextLoad(url, context) as { source?: unknown; format?: string }
+      if (url.startsWith('file:')) {
+        const where = scriptLocation(url, options)
+        const source = result.source
+        // Node reads the package scope's manifest itself (module format, exports, imports).
+        const manifest = where.ignored ? null : packageScope(where.absolute)
+        if (manifest) getSink()?.path(manifest, 'manifest', 'file', 'manifest')
+        // JSON, WebAssembly and the like run no JavaScript coverage sees: their file is the input.
+        if (!where.ignored && !JAVASCRIPT_FORMATS.has(result.format ?? '')) {
+          getSink()?.path(where.absolute, 'read', 'file', 'other')
+          return result
+        }
+        if (!where.ignored && where.repositoryModule && source != null) {
+          const text =
+            typeof source === 'string' ? source : Buffer.from(source as Uint8Array).toString('utf8')
+          const list = loaded.get(where.absolute)
+          if (list) list.push(text)
+          else loaded.set(where.absolute, [text])
+        }
+      }
+      return result
+    },
+  })
+  return true
 }
 
 /** Records what this process loads through Node's own loader: package manifests and local files. */
@@ -649,6 +711,23 @@ export async function beginWorkerCapture(options: WorkerCaptureOptions): Promise
         const offset = open + WRAPPER_OPEN.length
         return { code: source.slice(offset, source.length - WRAPPER_CLOSE.length), offset }
       }
+      /** The module code of a script Node's loader compiled: as loaded, else from the Debugger. */
+      const nodeCode = async (
+        absolute: string,
+        scriptId: string,
+        scriptLength: number,
+      ): Promise<{ code: string; offset: number }> => {
+        for (const source of state.loaded?.get(absolute) ?? [])
+          if (source.length === scriptLength) return { code: source, offset: 0 }
+        if (!debuggerEnabled) {
+          await active.post('Debugger.enable')
+          debuggerEnabled = true
+        }
+        const source = (
+          (await active.post('Debugger.getScriptSource', { scriptId })) as { scriptSource: string }
+        ).scriptSource
+        return { code: source, offset: 0 }
+      }
       /** The module code of a script Jest compiled: recorded at compile time, else from the Debugger. */
       const jestCode = async (
         absolute: string,
@@ -716,7 +795,9 @@ export async function beginWorkerCapture(options: WorkerCaptureOptions): Promise
           const found =
             layout === 'jest'
               ? await jestCode(absolute, script.scriptId, scriptLength)
-              : await moduleCode(absolute, script.scriptId, scriptLength)
+              : layout === 'node'
+                ? await nodeCode(absolute, script.scriptId, scriptLength)
+                : await moduleCode(absolute, script.scriptId, scriptLength)
           if (!found) {
             natives.add(absolute)
             continue
@@ -775,7 +856,11 @@ export async function beginWorkerCapture(options: WorkerCaptureOptions): Promise
         natives: [...natives],
         ...(wholeModules.length > 0 ? { wholeModules } : {}),
         paths: [
-          ...recorder.paths.values(),
+          // Node layout: the loader's own reads of a module it compiled are that module, recorded by
+          // what executed.
+          ...[...recorder.paths.values()].filter(
+            (e) => !(layout === 'node' && e.kind !== 'dir' && state.loaded?.has(e.p)),
+          ),
           // Module files the runner read and compiled are recorded as modules, by what executed.
           ...[...recorder.runnerReads]
             .filter(([p]) => !compiled?.has(p) && !recorder.paths.has(`read\u0000${p}`))
