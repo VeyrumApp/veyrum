@@ -28,6 +28,7 @@ describe('manifest digests', () => {
         private: true,
         description: 'changed',
         license: 'MIT',
+        version: '9.9.9',
       }),
     ).toBe(hash(base))
   })

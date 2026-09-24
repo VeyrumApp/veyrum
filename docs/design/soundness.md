@@ -41,8 +41,8 @@ If the latest record for a file is a failure, the file always runs.
 Reads, checks and listings made by traced child processes are recorded as the entries above,
 as if the test file had made them (see Child processes).
 
-A manifest digest covers every field of a `package.json` except the version ranges of
-dependencies (their names are kept), `scripts`, install and publish settings (`engines`,
+A manifest digest covers every field of a `package.json` except the package's own `version`,
+the version ranges of dependencies (their names are kept), `scripts`, install and publish settings (`engines`,
 `packageManager`, `publishConfig`, `files`, `private`) and descriptive metadata. The toolchain reads repository manifests for module
 format, resolution, dependency names and its own configuration fields (`jest`, `babel`,
 `browserslist`), and what is actually installed is recorded by each loaded package's own
@@ -245,7 +245,8 @@ These produce no capture, so they always run. Both are safe and cost little:
    again. The traced child sees the tracer's variables (`LD_PRELOAD`, `VEYRUM_TRACE`,
    `UV_USE_IO_URING=0`) in its environment.
 9. **Manifest readers.** Code in the runner's main process, and the known manifest readers in
-   workers, use neither dependency version ranges nor scripts from a repository manifest. A
+   workers, use neither the package's own version, dependency version ranges nor scripts from a repository
+   manifest. A
    plugin that did would change what it emits, which the transform-output fingerprints observe.
 
 The audit (full runs on the main branch, plus sampled re-execution of reused files) is the

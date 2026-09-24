@@ -15,6 +15,8 @@ const DEPENDENCY_FIELDS = ['dependencies', 'devDependencies', 'peerDependencies'
  * runs reads them to load or transform code.
  */
 const INERT_FIELDS = [
+  // A release bumps it; code that reads it reads the manifest itself, a `file` or `mod` input.
+  'version',
   'scripts',
   'engines',
   'devEngines',
