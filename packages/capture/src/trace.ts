@@ -4,8 +4,9 @@ import { fileURLToPath } from 'node:url'
 
 /**
  * Child processes a test starts are traced by a preloaded library (native/trace.c) that logs the
- * files they open, check and list, what they execute and where they connect. This module decides
- * whether a program can be traced and parses the log. Everything here runs with the capture
+ * files they open, check and list, what they execute and where they connect. Programs it cannot
+ * follow, statically linked and Go ones, run under a ptrace tracer (native/exec.c) that writes the
+ * same log. This module decides how a program runs and parses the log. Everything here runs with the capture
  * layer's hooks suspended, on the unpatched fs functions it is given.
  */
 
@@ -23,6 +24,9 @@ export interface TraceFs {
   readonly closeSync: typeof fs.closeSync
 }
 
+/** The launcher that traces statically linked and Go programs with ptrace; built with the library. */
+export const EXEC_LAUNCHER = path.join(path.dirname(TRACE_LIBRARY), 'veyrum-exec')
+
 /** Where the tracer is built (scripts/build-native.mjs keeps the same list). */
 export const TRACED_PLATFORMS: readonly string[] = ['linux-x64', 'linux-arm64']
 
@@ -36,23 +40,41 @@ export function tracingAvailable(raw: TraceFs): boolean {
   return libraryPresent
 }
 
-const PT_INTERP = 3
-const MAX_SHEBANG_DEPTH = 4
-const traceableCache = new Map<string, { key: string; value: boolean }>()
+let launcherPresent: boolean | undefined
+export function launcherAvailable(raw: TraceFs): boolean {
+  if (launcherPresent === undefined) {
+    launcherPresent =
+      tracingAvailable(raw) && raw.statSync(EXEC_LAUNCHER, { throwIfNoEntry: false })?.isFile() === true
+  }
+  return launcherPresent
+}
 
 /**
- * Whether a program can be traced: a dynamically linked 64-bit ELF file that is not a Go program
- * (Go makes system calls directly), or a script whose interpreter can be. Must match `traceable`
- * in native/trace.c, which applies the same rule to everything a traced process executes.
+ * How a program runs under capture: traced by the preloaded library, launched under the ptrace
+ * tracer, or not followed at all.
  */
-export function executableTraceable(file: string, raw: TraceFs, depth = 0): boolean {
-  if (depth > MAX_SHEBANG_DEPTH) return false
+export type ExecutableKind = 'traced' | 'launched' | 'untraceable'
+
+const PT_INTERP = 3
+const MAX_SHEBANG_DEPTH = 4
+/** ELF machine numbers of the platforms tracing is built for. */
+const NATIVE_MACHINE: Readonly<Record<string, number>> = { x64: 0x3e, arm64: 0xb7 }
+const kindCache = new Map<string, { key: string; value: ExecutableKind }>()
+
+/**
+ * How a program runs: a dynamically linked 64-bit ELF file that is not a Go program is traced by
+ * the preloaded library; a statically linked or Go program for this machine (Go makes system calls
+ * directly) runs under the ptrace tracer; a script runs as its interpreter would. Must match
+ * `classify` in native/trace.c, which applies the same rule to everything a traced process runs.
+ */
+export function classifyExecutable(file: string, raw: TraceFs, depth = 0): ExecutableKind {
+  if (depth > MAX_SHEBANG_DEPTH) return 'untraceable'
   const st = raw.statSync(file, { throwIfNoEntry: false })
-  if (!st?.isFile()) return false
+  if (!st?.isFile()) return 'untraceable'
   const key = `${st.size}:${st.mtimeMs}:${st.ino}`
-  const cached = traceableCache.get(file)
+  const cached = kindCache.get(file)
   if (cached?.key === key) return cached.value
-  let value = false
+  let value: ExecutableKind = 'untraceable'
   let fd: number | undefined
   try {
     fd = raw.openSync(file, 'r')
@@ -65,7 +87,7 @@ export function executableTraceable(file: string, raw: TraceFs, depth = 0): bool
     if (head[0] === 0x23 && head[1] === 0x21) {
       const line = head.subarray(2).toString('latin1').split('\n')[0]!.trim()
       const interpreter = line.split(/[ \t]/)[0] ?? ''
-      value = interpreter.startsWith('/') && executableTraceable(interpreter, raw, depth + 1)
+      value = interpreter.startsWith('/') ? classifyExecutable(interpreter, raw, depth + 1) : 'untraceable'
     } else if (
       head.length >= 64 &&
       head.readUInt32BE(0) === 0x7f454c46 &&
@@ -93,14 +115,15 @@ export function executableTraceable(file: string, raw: TraceFs, depth = 0): bool
           go = names.includes('.go.buildinfo') || names.includes('.note.go.buildid')
         }
       }
-      value = dynamic && !go
+      if (dynamic && !go) value = 'traced'
+      else if (head.readUInt16LE(18) === NATIVE_MACHINE[process.arch]) value = 'launched'
     }
   } catch {
-    value = false
+    value = 'untraceable'
   } finally {
     if (fd !== undefined) raw.closeSync(fd)
   }
-  traceableCache.set(file, { key, value })
+  kindCache.set(file, { key, value })
   return value
 }
 

@@ -50,7 +50,7 @@ evidence reports coverage of the files that ran; a full run reports everything.
 Recording is what costs time, so a full run records only where it is needed: a file whose
 evidence is still valid runs at full speed, and its existing record already describes that
 execution (`--record-all` records every file). On Linux (x64 and arm64), child processes a test
-starts are traced too (see `docs/design/soundness.md`).
+starts are traced too, statically linked and Go programs included (see `docs/design/soundness.md`).
 
 Evidence is stored in `.veyrum/store.sqlite`. It holds digests, repository paths, test names,
 outcomes and durations, never source code or environment variable values.

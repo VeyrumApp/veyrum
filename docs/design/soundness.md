@@ -107,12 +107,25 @@ Flags record channels the closure cannot fully observe.
 
 ## Child processes
 
-A child process a test starts (`child_process`, including through a shell) is traced when it
-runs a program that makes its system calls through the C library: a dynamically linked, 64-bit
-ELF program that is not written in Go, or a script whose interpreter is one. Tracing is built on
-Linux x64 and arm64. A preloaded library (`packages/capture/native/trace.c`) records the files the process
-and its descendants open, check and list, the programs they execute, and where they connect,
-and the test file's closure gets them like its own reads. On top of that:
+A child process a test starts (`child_process`, including through a shell) is traced on Linux x64
+and arm64. How depends on the program:
+
+- **Through the C library.** A dynamically linked, 64-bit ELF program that is not written in Go,
+  or a script whose interpreter is one, gets a preloaded library (`packages/capture/native/trace.c`)
+  that records the files the process and its descendants open, check and list, the programs they
+  execute, and where they connect.
+- **Through ptrace.** A statically linked or Go program for the machine makes its system calls
+  itself, so the library cannot see them. It runs under `veyrum-exec`
+  (`packages/capture/native/exec.c`), which attaches a ptrace tracer before the exec. A seccomp
+  filter stops the program only at the system calls that reach files by path, execute programs or
+  connect. The tracer records them in the same log, for every thread and descendant, and writes
+  each event before the stopped thread continues. The program keeps the process it was started in
+  (pid, parent, streams, signals, exit status); the tracer is a detached grandchild. Tracing sets
+  `no_new_privs`, so a set-user-ID program started this way does not gain privileges. Where
+  ptrace is not allowed (Yama `ptrace_scope` 2 or 3, a container that forbids it, a debugger
+  already attached), the program runs untraced and blocks reuse, as below.
+
+The test file's closure gets what its children did like its own reads. On top of that:
 
 - **The program and its lookup are inputs.** The executed file's content, and the absence of the
   program in PATH directories searched before it.
@@ -120,12 +133,15 @@ and the test file's closure gets them like its own reads. On top of that:
   so each variable the child receives from the test's environment is recorded, not just those it
   reads. A value the call sets itself (`spawn(cmd, { env: { ...process.env, TZ: 'UTC' } })`) comes
   from the test's code, which is recorded already.
-- **Descendants stay traced.** Every exec restores the tracer's variables, even when a program
-  clears its environment for its own children.
-- **Anything else blocks reuse.** Executing a statically linked or Go program, a raw `execve`
-  system call, `fexecve`, `glob`, `ftw` and `nftw` (which read directories internally) are
-  reported as untraceable, and the check gets the `spawn` flag. So does a worker thread, and a
-  child process on any other platform.
+- **Descendants stay traced.** Every exec restores the preloaded tracer's variables, even when a
+  program clears its environment for its own children; under ptrace, every descendant is followed
+  by the tracer itself.
+- **Anything else blocks reuse.** A program for another machine or a 32-bit one, a raw `execve`
+  system call or `fexecve` from a dynamically linked program, `glob`, `ftw` and `nftw` (which read
+  directories internally), system calls of another architecture, `io_uring`, `open_by_handle_at`,
+  and a statically linked shell started through a `shell` option are reported as untraceable, and
+  the check gets the `spawn` flag. So does a worker thread, and a child process on any other
+  platform.
 
 Temporary files are ignored for children as for tests. Unix socket connections count as local
 network use, as they do for the test itself.

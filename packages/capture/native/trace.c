@@ -15,9 +15,10 @@
  * Soundness notes. Only calls that go through the dynamic symbol table are seen: glibc's internal
  * calls (for example the files setlocale or NSS read) are not, which is why those live outside
  * the repository and are covered by the runtime key. Statically linked programs and Go programs
- * make system calls directly, so executing one is reported as untraceable ("u"), which ends reuse.
- * Every exec restores LD_PRELOAD and VEYRUM_TRACE when they are missing, so a program that clears
- * its environment cannot drop the tracer for its children.
+ * make system calls directly: they are executed through veyrum-exec (exec.c), which traces them
+ * with ptrace into the same log. Anything else that cannot be followed is reported as untraceable
+ * ("u"), which ends reuse. Every exec restores LD_PRELOAD and VEYRUM_TRACE when they are missing,
+ * so a program that clears its environment cannot drop the tracer for its children.
  */
 #define _GNU_SOURCE
 #include <dirent.h>
@@ -802,17 +803,29 @@ static int has_go_section(int fd, const Elf64_Ehdr *eh) {
   return 0;
 }
 
+/* How a program runs under capture. */
+enum run { RUN_TRACED, RUN_LAUNCHED, RUN_UNTRACEABLE };
+
+#if defined(__x86_64__)
+#define NATIVE_MACHINE EM_X86_64
+#elif defined(__aarch64__)
+#define NATIVE_MACHINE EM_AARCH64
+#else
+#define NATIVE_MACHINE EM_NONE
+#endif
+
 /*
- * Whether a program can be traced: a dynamically linked, non-Go ELF file, or a script whose
- * interpreter can be (followed a few levels).
+ * A dynamically linked, non-Go ELF file is traced by this library; a statically linked or Go one
+ * for this machine runs under veyrum-exec; a script runs as its interpreter would (followed a few
+ * levels). Anything else cannot be followed. Must match classifyExecutable in src/trace.ts.
  */
-static int traceable(const char *path, int depth) {
-  if (depth > 4) return 0;
+static enum run classify(const char *path, int depth) {
+  if (depth > 4) return RUN_UNTRACEABLE;
   int fd = (int)sys(SYS_openat, AT_FDCWD, path, O_RDONLY | O_CLOEXEC);
-  if (fd < 0) return 1; /* The exec will fail; nothing runs. */
+  if (fd < 0) return RUN_TRACED; /* The exec will fail; nothing runs. */
   unsigned char head[256];
   long n = sys(SYS_read, fd, head, sizeof head - 1);
-  int ok = 0;
+  enum run kind = RUN_UNTRACEABLE;
   if (n >= 2 && head[0] == '#' && head[1] == '!') {
     head[n] = '\0';
     char *p = (char *)head + 2;
@@ -820,7 +833,7 @@ static int traceable(const char *path, int depth) {
     char *end = p;
     while (*end && *end != ' ' && *end != '\t' && *end != '\n') end++;
     *end = '\0';
-    ok = *p ? traceable(p, depth + 1) : 0;
+    if (*p) kind = classify(p, depth + 1);
   } else if (n >= (long)sizeof(Elf64_Ehdr) && memcmp(head, ELFMAG, SELFMAG) == 0 && head[EI_CLASS] == ELFCLASS64) {
     Elf64_Ehdr eh;
     memcpy(&eh, head, sizeof eh);
@@ -830,10 +843,11 @@ static int traceable(const char *path, int depth) {
       if (pread_all(fd, &ph, sizeof ph, (off_t)(eh.e_phoff + (Elf64_Off)i * eh.e_phentsize))) break;
       if (ph.p_type == PT_INTERP) dynamic = 1;
     }
-    ok = dynamic && !has_go_section(fd, &eh);
+    if (dynamic && !has_go_section(fd, &eh)) kind = RUN_TRACED;
+    else if (eh.e_machine == NATIVE_MACHINE) kind = RUN_LAUNCHED;
   }
   sys(SYS_close, fd);
-  return ok;
+  return kind;
 }
 
 /* The file execvp would run: the name itself when it has a slash, else the first match on PATH. */
@@ -870,11 +884,28 @@ static const char *env_lookup(char *const envp[], const char *name) {
   return NULL;
 }
 
-static void record_exec(const char *resolved) {
-  if (log_fd < 0 || busy) return;
+static const char *launcher_path(void);
+
+/*
+ * Records an exec. Returns whether it must go through veyrum-exec, which then records the program
+ * itself (or that it could not trace it).
+ */
+static int is_launcher(const char *path);
+
+static int record_exec(const char *resolved) {
+  if (log_fd < 0 || busy) return 0;
   busy = 1;
-  emit(traceable(resolved, 0) ? 'x' : 'u', resolved);
+  /* The launcher itself (a nested capture's) is Veyrum, not an input, and traces what it runs. */
+  if (is_launcher(resolved)) {
+    busy = 0;
+    return 0;
+  }
+  enum run kind = classify(resolved, 0);
+  int launch = kind == RUN_LAUNCHED && launcher_path() != NULL;
+  if (kind == RUN_TRACED) emit('x', resolved);
+  else if (!launch) emit('u', resolved);
   busy = 0;
+  return launch;
 }
 
 /* This library's own file name, from the dynamic loader. */
@@ -886,6 +917,46 @@ static const char *own_path(void) {
       strcpy(path, info.dli_fname);
   }
   return path;
+}
+
+/* veyrum-exec, built next to this library, or NULL when it was not. */
+static const char *launcher_path(void) {
+  static char path[PATH_MAX];
+  static int state; /* 0 unknown, 1 present, -1 absent */
+  if (!state) {
+    state = -1;
+    const char *own = own_path();
+    const char *slash = strrchr(own, '/');
+    size_t dir = slash ? (size_t)(slash - own) : 0;
+    if (slash && dir + sizeof "/veyrum-exec" <= sizeof path) {
+      memcpy(path, own, dir);
+      strcpy(path + dir, "/veyrum-exec");
+      if (sys(SYS_faccessat, AT_FDCWD, path, X_OK) == 0) state = 1;
+    }
+  }
+  return state > 0 ? path : NULL;
+}
+
+static int is_launcher(const char *path) {
+  const char *launcher = launcher_path();
+  struct stat a, b;
+  return launcher && sys(SYS_newfstatat, AT_FDCWD, path, &a, 0) == 0 &&
+         sys(SYS_newfstatat, AT_FDCWD, launcher, &b, 0) == 0 && a.st_dev == b.st_dev && a.st_ino == b.st_ino;
+}
+
+static size_t argv_count(char *const argv[]) {
+  size_t n = 0;
+  while (argv && argv[n]) n++;
+  return n;
+}
+
+/* The arguments that run `program` through veyrum-exec. `out` has room for argv plus three. */
+static void launch_argv(const char *program, char *const argv[], char **out) {
+  out[0] = (char *)launcher_path();
+  out[1] = (char *)program;
+  size_t i = 0;
+  for (; argv && argv[i]; i++) out[i + 2] = argv[i];
+  out[i + 2] = NULL;
 }
 
 /* Whether a colon-separated LD_PRELOAD value lists this library. */
@@ -942,9 +1013,14 @@ static size_t env_count(char *const envp[]) {
 EXPORT int execve(const char *path, char *const argv[], char *const envp[]) {
   REAL(int, execve, const char *, char *const[], char *const[]);
   if (log_fd < 0) return real_execve(path, argv, envp);
-  record_exec(path);
+  int launch = record_exec(path);
   char *env[env_count(envp) + 3];
   traced_env(envp, env);
+  if (launch) {
+    char *args[argv_count(argv) + 3];
+    launch_argv(path, argv, args);
+    return real_execve(args[0], args, env);
+  }
   return real_execve(path, argv, env);
 }
 
@@ -954,9 +1030,15 @@ EXPORT int execvpe(const char *file, char *const argv[], char *const envp[]) {
   REAL(int, execvpe, const char *, char *const[], char *const[]);
   if (log_fd < 0) return real_execvpe(file, argv, envp);
   char resolved[PATH_MAX];
-  if (search_path(file, env_lookup(envp, "PATH"), resolved, sizeof resolved) == 0) record_exec(resolved);
+  int launch = search_path(file, env_lookup(envp, "PATH"), resolved, sizeof resolved) == 0 && record_exec(resolved);
   char *env[env_count(envp) + 3];
   traced_env(envp, env);
+  if (launch) {
+    REAL(int, execve, const char *, char *const[], char *const[]);
+    char *args[argv_count(argv) + 3];
+    launch_argv(resolved, argv, args);
+    return real_execve(args[0], args, env);
+  }
   return real_execvpe(file, argv, env);
 }
 
@@ -1008,10 +1090,17 @@ EXPORT int fexecve(int fd, char *const argv[], char *const envp[]) {
 EXPORT int execveat(int dirfd, const char *path, char *const argv[], char *const envp[], int flags) {
   REAL(int, execveat, int, const char *, char *const[], char *const[], int);
   if (log_fd < 0) return real_execveat(dirfd, path, argv, envp, flags);
-  if (path[0] == '/' && !(flags & AT_EMPTY_PATH)) record_exec(path);
+  int launch = 0;
+  if (path[0] == '/' && !(flags & AT_EMPTY_PATH)) launch = record_exec(path);
   else emit('u', "execveat");
   char *env[env_count(envp) + 3];
   traced_env(envp, env);
+  if (launch) {
+    REAL(int, execve, const char *, char *const[], char *const[]);
+    char *args[argv_count(argv) + 3];
+    launch_argv(path, argv, args);
+    return real_execve(args[0], args, env);
+  }
   return real_execveat(dirfd, path, argv, env, flags);
 }
 
@@ -1020,9 +1109,14 @@ EXPORT int posix_spawn(pid_t *pid, const char *path, const posix_spawn_file_acti
   REAL(int, posix_spawn, pid_t *, const char *, const posix_spawn_file_actions_t *, const posix_spawnattr_t *,
        char *const[], char *const[]);
   if (log_fd < 0) return real_posix_spawn(pid, path, actions, attr, argv, envp);
-  record_exec(path);
+  int launch = record_exec(path);
   char *env[env_count(envp) + 3];
   traced_env(envp, env);
+  if (launch) {
+    char *args[argv_count(argv) + 3];
+    launch_argv(path, argv, args);
+    return real_posix_spawn(pid, args[0], actions, attr, args, env);
+  }
   return real_posix_spawn(pid, path, actions, attr, argv, env);
 }
 
@@ -1032,8 +1126,15 @@ EXPORT int posix_spawnp(pid_t *pid, const char *file, const posix_spawn_file_act
        char *const[], char *const[]);
   if (log_fd < 0) return real_posix_spawnp(pid, file, actions, attr, argv, envp);
   char resolved[PATH_MAX];
-  if (search_path(file, env_lookup(envp, "PATH"), resolved, sizeof resolved) == 0) record_exec(resolved);
+  int launch = search_path(file, env_lookup(envp, "PATH"), resolved, sizeof resolved) == 0 && record_exec(resolved);
   char *env[env_count(envp) + 3];
   traced_env(envp, env);
+  if (launch) {
+    REAL(int, posix_spawn, pid_t *, const char *, const posix_spawn_file_actions_t *, const posix_spawnattr_t *,
+         char *const[], char *const[]);
+    char *args[argv_count(argv) + 3];
+    launch_argv(resolved, argv, args);
+    return real_posix_spawn(pid, args[0], actions, attr, args, env);
+  }
   return real_posix_spawnp(pid, file, actions, attr, argv, env);
 }

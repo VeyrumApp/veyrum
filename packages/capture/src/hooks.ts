@@ -8,7 +8,9 @@ import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import workerThreads from 'node:worker_threads'
 import {
-  executableTraceable,
+  classifyExecutable,
+  EXEC_LAUNCHER,
+  launcherAvailable,
   resolveExecutable,
   TRACE_LIBRARY,
   type TraceEvent,
@@ -517,8 +519,12 @@ interface SpawnCall {
   readonly shell: string | null
   readonly file: string
   readonly options: Record<string, unknown> | undefined
+  /** The program's arguments (without argv[0]). */
+  readonly args: readonly unknown[]
   /** The same call with other options. */
   rebuild(options: Record<string, unknown>): unknown[]
+  /** The same call running another program, with other arguments and options. */
+  relaunch(file: string, args: readonly unknown[], options: Record<string, unknown>): unknown[]
 }
 
 const isOptions = (v: unknown): v is Record<string, unknown> =>
@@ -535,7 +541,12 @@ function spawnCall(name: SpawnFunction, args: unknown[]): SpawnCall {
       shell: typeof options?.shell === 'string' ? options.shell : '/bin/sh',
       file,
       options,
+      args: [],
       rebuild: (o) => (callback ? [file, o, callback] : [file, o]),
+      // A shell command runs through its shell, which spawnCall's callers launch instead.
+      relaunch: () => {
+        throw new Error('a shell command cannot be relaunched')
+      },
     }
   }
   let i = 1
@@ -562,7 +573,9 @@ function spawnCall(name: SpawnFunction, args: unknown[]): SpawnCall {
     shell,
     file: name === 'fork' ? String(options?.execPath ?? process.execPath) : file,
     options,
+    args: list,
     rebuild: (o) => [args[0], list, o, ...rest],
+    relaunch: (f, l, o) => [f, l, o, ...rest],
   }
 }
 
@@ -608,7 +621,11 @@ function prepareSpawn(name: SpawnFunction, args: unknown[]): unknown[] | undefin
       }
     }
     if (!resolved) return undefined // Nothing runs: the start fails.
-    if (!executableTraceable(resolved, traceFs)) {
+    const kind = classifyExecutable(resolved, traceFs)
+    // A program run through a shell option would need the shell command rebuilt: only a program
+    // run directly is launched.
+    const launch = kind === 'launched' && call.shell === null && name !== 'fork' && launcherAvailable(traceFs)
+    if (kind === 'untraceable' || (kind === 'launched' && !launch)) {
       sink.spawn(label)
       return undefined
     }
@@ -618,6 +635,13 @@ function prepareSpawn(name: SpawnFunction, args: unknown[]): unknown[] | undefin
     for (const [n, v] of Object.entries(env)) {
       if (given !== undefined && unobserved(() => process.env[n]) !== v) continue
       sink.env(n, v, false, 'test')
+    }
+    if (launch) {
+      // veyrum-exec traces the program with ptrace, which replaces the preloaded library, and runs
+      // it with the arguments and argv[0] it would have had.
+      const { argv0, ...options } = call.options ?? {}
+      const argv = [resolved, String(argv0 ?? call.file), ...call.args]
+      return call.relaunch(EXEC_LAUNCHER, argv, { ...options, env: { ...env, VEYRUM_TRACE: log } })
     }
     const preload = env.LD_PRELOAD ? `${TRACE_LIBRARY}:${env.LD_PRELOAD}` : TRACE_LIBRARY
     // libuv can read files through io_uring, which the tracer cannot see.

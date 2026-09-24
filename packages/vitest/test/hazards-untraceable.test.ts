@@ -5,23 +5,24 @@ import { Sandbox } from '../../../test/support/sandbox.ts'
 import { TRACED_PLATFORMS } from '../../capture/src/trace.ts'
 
 /**
- * Programs child-process tracing cannot follow. Kept apart from the other runner scenarios: the
- * program this starts cannot be traced when Veyrum runs its own suite either, which would keep the
- * file holding it from ever being reused.
+ * Programs child-process tracing cannot follow: statically linked and Go programs run under ptrace
+ * (hazards-launched.test.ts), but not a program for another machine. Kept apart from the other
+ * runner scenarios: the program this starts cannot be traced when Veyrum runs its own suite
+ * either, which would keep the file holding it from ever being reused.
  */
 
 let sandbox: Sandbox | undefined
 afterEach(() => sandbox?.dispose())
 
-/** A minimal statically linked ELF executable (it crashes if run; only its kind matters). */
-function writeStaticProgram(dir: string, rel: string): void {
+/** A minimal ELF executable for another machine (32-bit Arm): nothing here can trace it. */
+function writeForeignProgram(dir: string, rel: string): void {
   const elf = Buffer.alloc(64)
   elf.write('\x7fELF', 0, 'latin1')
   elf[4] = 2 // 64-bit
   elf[5] = 1 // little endian
   elf[6] = 1
   elf.writeUInt16LE(2, 16) // executable
-  elf.writeUInt16LE(0x3e, 18) // x86-64
+  elf.writeUInt16LE(0x28, 18) // 32-bit Arm
   elf.writeUInt32LE(1, 20)
   elf.writeBigUInt64LE(64n, 32) // program headers (none)
   elf.writeUInt16LE(64, 52)
@@ -38,20 +39,20 @@ describe.runIf(tracing)('programs that cannot be traced', () => {
     `import { execFileSync, execSync } from 'node:child_process'\nimport { expect, test } from 'vitest'\ntest('child', () => {\n${body}\n})\n`
 
   test('a program that cannot be traced blocks reuse, started directly or by a traced one', () => {
-    sandbox = new Sandbox('child-static')
+    sandbox = new Sandbox('child-foreign')
       .write(
         'test/direct.test.ts',
-        spawnTest("  try { execFileSync('./fixtures/static') } catch {}\n  expect(1).toBe(1)"),
+        spawnTest("  try { execFileSync('./fixtures/foreign') } catch {}\n  expect(1).toBe(1)"),
       )
       .write(
         'test/nested.test.ts',
-        spawnTest("  execSync('./fixtures/static 2>/dev/null || true')\n  expect(1).toBe(1)"),
+        spawnTest("  execSync('./fixtures/foreign 2>/dev/null || true')\n  expect(1).toBe(1)"),
       )
-    writeStaticProgram(sandbox.dir, 'fixtures/static')
+    writeForeignProgram(sandbox.dir, 'fixtures/foreign')
     sandbox.capture()
     const plan = sandbox.plan()
     expect(plan['test/direct.test.ts']?.reason).toBe('blocked-flag')
     expect(plan['test/nested.test.ts']?.reason).toBe('blocked-flag')
-    expect(plan['test/nested.test.ts']?.details[0]).toMatch(/spawn \(.*fixtures\/static\)$/)
+    expect(plan['test/nested.test.ts']?.details[0]).toMatch(/spawn \(.*fixtures\/foreign\)$/)
   })
 })

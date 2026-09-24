@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Builds the child-process tracer (packages/capture/native/trace.c) next to the capture package's
-// compiled code. Tracing is built on Linux x64 and arm64 (TRACED_PLATFORMS in
+// Builds the child-process tracer (packages/capture/native/trace.c, and exec.c for programs it
+// cannot follow) next to the capture package's compiled code. Tracing is built on Linux x64 and arm64 (TRACED_PLATFORMS in
 // packages/capture/src/trace.ts); elsewhere, or without a C compiler, nothing is built and child
 // processes stay unobserved (a test that starts one always runs).
 import { execFileSync } from 'node:child_process'
@@ -46,3 +46,35 @@ execFileSync(
   { stdio: 'inherit' },
 )
 fs.renameSync(temporary, output)
+
+// The launcher for programs the library cannot follow (packages/capture/native/exec.c). Linked
+// statically, so the library is never preloaded into it; without a static C library it is not
+// built, and those programs stay untraceable.
+const launcher = path.join(root, 'packages/capture/dist/native/veyrum-exec')
+const launcherTemporary = `${launcher}.${process.pid}`
+try {
+  execFileSync(
+    cc,
+    [
+      '-static',
+      '-O2',
+      '-Wall',
+      '-Wextra',
+      '-Werror',
+      '-o',
+      launcherTemporary,
+      path.join(root, 'packages/capture/native/exec.c'),
+    ],
+    { stdio: ['ignore', 'ignore', 'pipe'] },
+  )
+  fs.renameSync(launcherTemporary, launcher)
+} catch (error) {
+  fs.rmSync(launcherTemporary, { force: true })
+  fs.rmSync(launcher, { force: true })
+  const detail = String(error.stderr ?? error.message)
+    .trim()
+    .split('\n')
+    .slice(0, 5)
+    .join('\n')
+  console.log(`build-native: veyrum-exec was not built; static and Go programs stay untraceable\n${detail}`)
+}
