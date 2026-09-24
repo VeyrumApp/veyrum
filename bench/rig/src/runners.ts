@@ -61,6 +61,75 @@ function projectArgs(corpus: Corpus): string[] {
   return out
 }
 
+/**
+ * Reads the CLI's --json output, which writes one array item per line. A run's output can exceed
+ * the longest string Node creates (a record with enormous fields), so large outputs are parsed line
+ * by line, skipping records (which the rig does not use) and reporting the biggest of their fields.
+ */
+export function readOutput<T>(file: string, lineByLineAbove = 256 * 1024 * 1024): T {
+  const buf = fs.readFileSync(file)
+  if (buf.length < lineByLineAbove) return JSON.parse(buf.toString('utf8')) as T
+  const out: Record<string, unknown> = {}
+  let key: string | null = null
+  let items: unknown[] = []
+  const oversized: { key: string; bytes: number; fields: string }[] = []
+  let start = 0
+  while (start < buf.length) {
+    let end = buf.indexOf(10, start)
+    if (end === -1) end = buf.length
+    const length = end - start
+    if (key === 'records' && length > 1024 && buf[start] === 0x7b) {
+      if (length > 1024 * 1024) oversized.push({ key, bytes: length, fields: fieldSizes(buf, start, end) })
+    } else {
+      const line = buf.toString('utf8', start, end).replace(/,$/, '')
+      const header = /^"(\w+)": (.*)$/.exec(line)
+      if (key === null && header) {
+        const [, name, rest] = header as unknown as [string, string, string]
+        if (rest === '[') {
+          key = name
+          items = []
+        } else out[name] = JSON.parse(rest)
+      } else if (key !== null && line === ']') {
+        out[key] = items
+        key = null
+      } else if (key !== null && line !== '') items.push(JSON.parse(line))
+    }
+    start = end + 1
+  }
+  for (const o of oversized.sort((a, b) => b.bytes - a.bytes).slice(0, 5))
+    process.stderr.write(`[rig] oversized ${o.key} item: ${o.bytes} bytes; ${o.fields}\n`)
+  return out as T
+}
+
+/** The byte size of each top-level field of the JSON object in buf[start, end). */
+function fieldSizes(buf: Buffer, start: number, end: number): string {
+  const keys: { name: string; at: number }[] = []
+  let depth = 0
+  let inString = false
+  let stringStart = 0
+  for (let i = start; i < end; i++) {
+    const c = buf[i]
+    if (inString) {
+      if (c === 0x5c) i++
+      else if (c === 0x22) {
+        inString = false
+        if (depth === 1 && buf[i + 1] === 0x3a)
+          keys.push({ name: buf.toString('utf8', stringStart + 1, Math.min(i, stringStart + 81)), at: i })
+      }
+    } else if (c === 0x22) {
+      inString = true
+      stringStart = i
+    } else if (c === 0x7b || c === 0x5b) depth++
+    else if (c === 0x7d || c === 0x5d) depth--
+  }
+  return keys
+    .map((k, n) => ({ name: k.name, bytes: (keys[n + 1]?.at ?? end) - k.at }))
+    .sort((a, b) => b.bytes - a.bytes)
+    .slice(0, 6)
+    .map((k) => `${k.name}=${k.bytes}`)
+    .join(' ')
+}
+
 /** Full run with capture: ground truth for this commit and evidence for the next. */
 export function captureRun(corpus: Corpus, repo: string, store: string, scratch: string): CaptureResult {
   const json = path.join(scratch, 'capture.json')
@@ -70,10 +139,10 @@ export function captureRun(corpus: Corpus, repo: string, store: string, scratch:
     throw new Error(
       `veyrum run --full produced no output (exit ${r.code}, signal ${r.signal ?? 'none'}):\n${r.stdout}\n${r.stderr}`,
     )
-  const data = JSON.parse(fs.readFileSync(json, 'utf8')) as {
+  const data = readOutput<{
     outcomes: CheckOutcomeSummary[]
     timings: { runMs: number; recordMs: number }
-  }
+  }>(json)
   // Files whose evidence was still valid ran without capture; every file that ran has an outcome.
   const outcomes: Outcomes = new Map()
   for (const o of data.outcomes) outcomes.set(o.check.path, { verdict: o.verdict, durationMs: o.durationMs })
@@ -98,7 +167,7 @@ export function captureRerun(
     throw new Error(
       `veyrum run --full produced no output (exit ${r.code}, signal ${r.signal ?? 'none'}):\n${r.stdout}\n${r.stderr}`,
     )
-  const data = JSON.parse(fs.readFileSync(json, 'utf8')) as { outcomes: CheckOutcomeSummary[] }
+  const data = readOutput<{ outcomes: CheckOutcomeSummary[] }>(json)
   const outcomes: Outcomes = new Map()
   for (const o of data.outcomes) outcomes.set(o.check.path, { verdict: o.verdict, durationMs: o.durationMs })
   return outcomes
