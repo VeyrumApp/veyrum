@@ -3,6 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, test } from 'vitest'
 import { Sandbox } from '../../../test/support/sandbox.ts'
+import { TRACED_PLATFORMS } from '../../capture/src/trace.ts'
 
 /** Runner behavior and unobservable channels: when a pass must not be treated as evidence. */
 
@@ -215,7 +216,7 @@ function writeStaticProgram(dir: string, rel: string): void {
   fs.writeFileSync(file, elf, { mode: 0o755 })
 }
 
-const tracing = process.platform === 'linux' && process.arch === 'x64'
+const tracing = TRACED_PLATFORMS.includes(`${process.platform}-${process.arch}`)
 
 describe.runIf(tracing)('child processes', () => {
   const spawnTest = (body: string): string =>

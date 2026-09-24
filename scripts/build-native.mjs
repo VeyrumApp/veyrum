@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Builds the child-process tracer (packages/capture/native/trace.c) next to the capture package's
-// compiled code. Tracing is Linux x64 only; elsewhere, or without a C compiler, nothing is built
-// and child processes stay unobserved (a test that starts one always runs).
+// compiled code. Tracing is built on Linux x64 and arm64 (TRACED_PLATFORMS in
+// packages/capture/src/trace.ts); elsewhere, or without a C compiler, nothing is built and child
+// processes stay unobserved (a test that starts one always runs).
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -11,7 +12,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const source = path.join(root, 'packages/capture/native/trace.c')
 const output = path.join(root, 'packages/capture/dist/native/libveyrum-trace.so')
 
-if (process.platform !== 'linux' || process.arch !== 'x64') {
+if (!['linux-x64', 'linux-arm64'].includes(`${process.platform}-${process.arch}`)) {
   console.log(`build-native: child-process tracing is not built on ${process.platform}-${process.arch}`)
   process.exit(0)
 }

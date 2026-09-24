@@ -23,12 +23,14 @@ export interface TraceFs {
   readonly closeSync: typeof fs.closeSync
 }
 
+/** Where the tracer is built (scripts/build-native.mjs keeps the same list). */
+export const TRACED_PLATFORMS: readonly string[] = ['linux-x64', 'linux-arm64']
+
 let libraryPresent: boolean | undefined
 export function tracingAvailable(raw: TraceFs): boolean {
   if (libraryPresent === undefined) {
     libraryPresent =
-      process.platform === 'linux' &&
-      process.arch === 'x64' &&
+      TRACED_PLATFORMS.includes(`${process.platform}-${process.arch}`) &&
       raw.statSync(TRACE_LIBRARY, { throwIfNoEntry: false })?.isFile() === true
   }
   return libraryPresent

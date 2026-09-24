@@ -109,8 +109,8 @@ Flags record channels the closure cannot fully observe.
 
 A child process a test starts (`child_process`, including through a shell) is traced when it
 runs a program that makes its system calls through the C library: a dynamically linked, 64-bit
-ELF program that is not written in Go, or a script whose interpreter is one. Tracing is Linux
-x64 only. A preloaded library (`packages/capture/native/trace.c`) records the files the process
+ELF program that is not written in Go, or a script whose interpreter is one. Tracing is built on
+Linux x64 and arm64. A preloaded library (`packages/capture/native/trace.c`) records the files the process
 and its descendants open, check and list, the programs they execute, and where they connect,
 and the test file's closure gets them like its own reads. On top of that:
 
