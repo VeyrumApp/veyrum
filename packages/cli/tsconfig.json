@@ -8,6 +8,7 @@
     { "path": "../jest" },
     { "path": "../mocha" },
     { "path": "../node-test" },
+    { "path": "../playwright" },
     { "path": "../pytest" }
   ]
 }

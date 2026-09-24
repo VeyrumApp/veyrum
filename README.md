@@ -28,10 +28,11 @@ are skipped. See `docs/github-actions.md` for the cache keys, inputs and a manua
 sharded jobs.
 
 Vitest 4 and later, Jest 29 and later, Mocha 10 and later, Node's built-in test runner
-(`node --test`) and pytest (on Python 3.12 or later, `--python` picks the interpreter) are
-supported, on Node 22.15 or later, on Linux, macOS and Windows. Child processes a test starts are
-traced natively on Linux and macOS; Node child processes and worker threads, and Python child
-processes of pytest tests, are traced on every platform.
+(`node --test`), pytest (on Python 3.12 or later, `--python` picks the interpreter) and
+Playwright Test (Chromium; end-to-end tests with their app server) are supported, on Node 22.15
+or later, on Linux, macOS and Windows. Child processes a test starts are traced natively on Linux
+and macOS; Node child processes and worker threads, and Python child processes of pytest tests,
+are traced on every platform.
 
 ## How it works
 
@@ -85,8 +86,16 @@ outcomes and durations, never source code or environment variable values.
 
 The runner is detected from the project's configuration (a test script running `node --test`
 selects Node's runner, a `.mocharc.*` file or a `mocha` dependency selects Mocha);
-`--runner vitest|jest|mocha|node-test` overrides it. Under Mocha, each test file runs in a process
+a `playwright.config.*` without a Vitest or Jest configuration selects Playwright;
+`--runner vitest|jest|mocha|node-test|pytest|playwright` overrides it. Under Mocha, each test file runs in a process
 of its own, so root hooks and global fixtures run once per file.
+
+With Playwright, a test file's inputs span three processes: the test process, the browser (the
+functions each page ran, through Chromium's coverage) and the app server (`webServer`), which
+counts for every file that talked to it. A client-only edit reruns only the files whose pages ran
+the changed code; a server edit reruns every file that used the server. Firefox and WebKit
+projects, servers that are not Node programs, and remote requests block reuse (`--allow net`
+allows the latter). See `docs/design/soundness.md` for exactly what is observed.
 
 ## Repository layout
 
@@ -98,6 +107,8 @@ of its own, so root hooks and global fixtures run once per file.
 | `packages/jest` | Jest adapter: environment wrapper, reporter, plan-time transforms through Jest |
 | `packages/mocha` | Mocha adapter: one process per test file through the project's Mocha, reporter |
 | `packages/node-test` | Adapter for Node's test runner: capture preload and reporter |
+| `packages/node-test` | Adapter for Node's test runner: per-process capture preload and reporter |
+| `packages/playwright` | Playwright Test adapter: test process, browser coverage and app server capture |
 | `packages/cli` | The `veyrum` command |
 | `bench/rig` | Replay benchmark against baseline selectors, with a mutation oracle |
 | `bench/corpora` | Repositories to replay |
@@ -110,6 +121,9 @@ of its own, so root hooks and global fixtures run once per file.
 pnpm install
 pnpm build
 pnpm test        # unit tests and the end-to-end hazard suite
+# the Playwright suite needs Chromium in .sandbox/ms-playwright (skipped without it):
+PLAYWRIGHT_BROWSERS_PATH=.sandbox/ms-playwright \
+  node packages/playwright/node_modules/@playwright/test/cli.js install --only-shell chromium
 pnpm lint
 pnpm smoke:pack  # installs the packed packages into fresh Vitest, Jest and Mocha projects
 ```

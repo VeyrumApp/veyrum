@@ -8,6 +8,7 @@
     { "path": "packages/node-test" },
     { "path": "packages/mocha" },
     { "path": "packages/pytest" },
+    { "path": "packages/playwright" },
     { "path": "packages/cli" },
     { "path": "bench/rig" }
   ]

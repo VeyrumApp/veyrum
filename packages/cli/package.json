@@ -31,6 +31,7 @@
     "@veyrum/jest": "workspace:*",
     "@veyrum/mocha": "workspace:*",
     "@veyrum/node-test": "workspace:*",
+    "@veyrum/playwright": "workspace:*",
     "@veyrum/pytest": "workspace:*",
     "@veyrum/vitest": "workspace:*"
   },

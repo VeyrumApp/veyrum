@@ -4,7 +4,8 @@ Veyrum reuses a passing result for a test file only when every input the file co
 unchanged. This document defines what counts as an input, how each one is observed, and what
 Veyrum assumes. Every channel listed here has at least one end-to-end scenario in
 `packages/vitest/test/hazards-*.test.ts`, `packages/jest/test/hazards.test.ts`,
-`packages/mocha/test/hazards.test.ts` or, for pytest, `packages/pytest/test/hazards.test.ts`.
+`packages/mocha/test/hazards.test.ts`, `packages/node-test/test/hazards.test.ts`,
+`packages/playwright/test/hazards.test.ts` or, for pytest, `packages/pytest/test/hazards.test.ts`.
 
 ## The skip rule
 
@@ -98,6 +99,8 @@ Flags record channels the closure cannot fully observe.
 | `snapshot-written` | the pass wrote a snapshot | not evidence |
 | `flaky-suspect` | the pass needed a retry | not evidence |
 | `capture-incomplete` | capture failed for the file | not evidence |
+| `browser-unobserved` | Playwright ran a browser other than Chromium | blocks reuse |
+| `server-unobserved` | Playwright traffic reached a local server Veyrum did not observe | blocks reuse |
 | `source-observed` | code read function source text that could not be located | compare raw source |
 | `positions-observed` | a snapshot embeds source positions | compare raw source |
 | `net-local` | loopback connection | allowed |
@@ -332,6 +335,62 @@ addons, the binary is recorded, not what it reads), existence checks Python make
 open by path, and line numbers, which a test can observe through tracebacks or `inspect` without
 reading its source. Reading a source file does record it, in full.
 
+## Playwright
+
+An end-to-end test file runs in three places: its own Node process, the browser, and the app
+server. Each is observed separately, and a check is one test file under one Playwright project.
+
+- **One worker process per test group.** Playwright reuses a worker for the next file of the same
+  project; a worker that already ran a group answers the next one as done without running it, and
+  Playwright runs it in a fresh worker, as it does after a failure. The worker is captured like a
+  `node --test` process, from the moment its group arrives until it exits (worker fixtures torn
+  down). Repository modules it loads are compared by raw source, since Playwright compiles them
+  with its own transform. Browsers it launches are inputs by their executable; their own reads
+  are not traced.
+- **The browser, through Chromium's coverage.** Every page gets its own DevTools session, and
+  `context.newPage()` returns only once that page's precise coverage has started. Every request
+  is recorded where it went (the URL, or the loopback address a name resolved to), and the body of
+  every local response is digested, except images, media and fonts, which stay server inputs;
+  requests a route handler answered or aborted never reached the network.
+- **Client files.** A repository file the app server read and some browser received byte for
+  byte (and no other file the server read has the same content) is a client file: an input only
+  of the test files whose browsers received it, not of every file that talked to the server. A client file the pages ran as a script, with every run of it covered, is a `mod`
+  entry with the functions the pages ran; anything else (a document, data, a script that ran
+  before coverage started, or any page with a worker, a cross-site frame, a lost renderer or a
+  page closed before its coverage was taken) makes it a whole-file input. A server that loaded
+  the file as code, or wrote it, keeps it a server input. Scripts the server generated or
+  transformed (a bundler's output, a dev server's modules) derive from what the server read, which
+  counts whole for every file that talked to it; source maps are not used, since attributing a
+  bundle's sources to single test files would miss sources the server also rendered or bundled.
+- **The app server.** The programs Playwright's `webServer` starts run under the native tracer
+  (Linux), and every Node process among them logs the ports it listens on and the files it loads
+  as code. Everything they read during the whole run, with their environment, is an input of every
+  test file that talked to one of those ports, from a page or from the test process. A test
+  process that talked to the server may read anything it sends, so every client file is a
+  whole-file input of that test file.
+- **Programs global setup starts** (any program the project's own code starts in the main
+  process) run traced the same way, and what they read is an input of every test file; one that
+  cannot be traced sets `spawn` for every file. A server one of them starts logs its ports too.
+- **A server a test starts** is the test's child process, traced with it; the ports it listens
+  on count as the test's own.
+- **Traffic Veyrum cannot attribute blocks reuse.** A request or connection, from a page or the
+  test process, to a local port that no observed program listened on (a server that is not a Node program, such as Python, Go or a container;
+  one already running; one started some other way) sets `server-unobserved`, and so does a
+  server that could not be traced (no native tracer: macOS and Windows). Remote requests set
+  `net-remote` (`--allow net` allows them). Firefox and WebKit set `browser-unobserved`: their
+  pages cannot be covered.
+- **The main process.** Configuration files are shared inputs, and so is everything Playwright's
+  main process reads outside the loading of test files (global setup and its imports, environment
+  files); what loading test files reads, each file's worker reads again for itself. Browsers
+  global setup drives are followed for where they connect: remote requests block every file, and
+  talking to the app server makes every file a talker with all client files whole.
+- **Runtime.** The runtime key includes the Playwright version and the browser builds it drives;
+  each file's closure includes the browser executables it launched.
+
+Not observed: what a browser does beyond running its pages' JavaScript (layout, rendering), the
+state of services the server talks to over loopback (a database), and what a server does with a
+client file besides sending it (assumption 11).
+
 ## Function source and generated files
 
 - **Reading a function's source pins its module.** When a test reads the source text of a
@@ -403,6 +462,10 @@ variable, here) is in its closure like any input.
    own files there, other processes add and remove entries all the time, and a glob crawling
    toward a test's own temporary directory lists it on the way. A repository checked out under
    the temporary directory is still recorded like any other.
+11. **Client files are content.** A file a Playwright app server sends byte for byte, and neither
+   loads as code nor writes, affects a test only through what the browser does with it. A server
+   that also derives other responses from such a file (a count of the records in a JSON file it
+   also serves as is) could change a test whose browser never received the file.
 
 The audit (full runs on the main branch, plus sampled re-execution of reused files) is the
 backstop for every assumption. Its escape rate is the real safety number.

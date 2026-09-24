@@ -35,7 +35,7 @@ export function listRepoFiles(root: string): string[] {
  * the JavaScript toolchains, and pytest's configuration and conftest.py files.
  */
 const CONFIG_LIKE =
-  /^(package\.json|tsconfig(\..*)?\.json|jsconfig(\..*)?\.json|\.env(\..*)?|vite(st)?\.config\..*|vitest\.(workspace|projects)\..*|jest\.config\..*|jest-preset\..*|\.babelrc(\..*)?|\.babelignore|babel\.config\..*|\.npmrc|pnpm-workspace\.yaml|\.swcrc|\.browserslistrc|browserslist|pytest\.ini|\.pytest\.ini|pyproject\.toml|tox\.ini|setup\.cfg|conftest\.py)$/
+  /^(package\.json|tsconfig(\..*)?\.json|jsconfig(\..*)?\.json|\.env(\..*)?|vite(st)?\.config\..*|vitest\.(workspace|projects)\..*|jest\.config\..*|jest-preset\..*|playwright(-ct)?\.config\..*|\.babelrc(\..*)?|\.babelignore|babel\.config\..*|\.npmrc|pnpm-workspace\.yaml|\.swcrc|\.browserslistrc|browserslist|pytest\.ini|\.pytest\.ini|pyproject\.toml|tox\.ini|setup\.cfg|conftest\.py)$/
 
 /**
  * Manual mocks apply by location: Jest uses a root `__mocks__` file for a node module without any

@@ -7,7 +7,7 @@ import { Store } from '@veyrum/core'
 /** What the fallback needs to run the project's tests the way Veyrum would have. */
 export interface PlainRunOptions {
   readonly root: string
-  readonly runner: 'vitest' | 'jest' | 'mocha' | 'node-test' | 'pytest'
+  readonly runner: 'vitest' | 'jest' | 'mocha' | 'node-test' | 'playwright' | 'pytest'
   readonly config?: string
   /** pytest: the Python interpreter (default python3). */
   readonly python?: string
@@ -38,6 +38,29 @@ export function plainRunnerCommand(options: PlainRunOptions): { command: string;
         ...files,
       ],
     }
+  }
+  if (options.runner === 'playwright') {
+    const args = [
+      'test',
+      ...(options.config ? [`--config=${options.config}`] : []),
+      // --project takes several values: the = form keeps it from taking the file filters.
+      ...options.projects.map((p) => `--project=${p}`),
+      ...(options.maxWorkers ? [`--workers=${options.maxWorkers}`] : []),
+      ...(options.quiet ? ['--reporter=dot'] : []),
+      ...files,
+    ]
+    let cli: string | null = null
+    for (const name of ['@playwright/test', 'playwright']) {
+      try {
+        cli = path.join(packageDir(options.root, name), 'cli.js')
+        break
+      } catch {
+        // Try the next package.
+      }
+    }
+    // Not installed where Veyrum can find it: npx finds it the way the project runs it.
+    if (cli === null) return { command: 'npx', args: ['playwright', ...args] }
+    return { command: process.execPath, args: [...process.execArgv, cli, ...args] }
   }
   if (options.runner === 'node-test') {
     return {
@@ -105,7 +128,9 @@ export function plainRunnerCommand(options: PlainRunOptions): { command: string;
  */
 export function runPlain(options: PlainRunOptions): number {
   const { command, args } = plainRunnerCommand(options)
-  const result = spawnSync(command, args, { cwd: options.root, stdio: 'inherit', env: process.env })
+  // npx is a .cmd shim on Windows, which only a shell runs.
+  const shell = command === 'npx' && process.platform === 'win32'
+  const result = spawnSync(command, args, { cwd: options.root, stdio: 'inherit', env: process.env, shell })
   if (result.error) throw result.error
   return result.status ?? 1
 }

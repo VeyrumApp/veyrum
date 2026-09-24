@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url'
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const work = fs.mkdtempSync(path.join(os.tmpdir(), 'veyrum-pack-'))
 const packDir = path.join(work, 'pack')
-const PACKAGES = ['core', 'capture', 'vitest', 'jest', 'mocha', 'node-test', 'pytest', 'cli']
+const PACKAGES = ['core', 'capture', 'vitest', 'jest', 'mocha', 'node-test', 'pytest', 'playwright', 'cli']
 
 /**
  * Runner versions to check: the versions this repository develops against, or the ones given as

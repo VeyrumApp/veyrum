@@ -12,9 +12,10 @@ const cli = path.join(repoRoot, 'packages/cli/dist/main.js')
 const adapterModules = {
   vitest: path.join(repoRoot, 'node_modules'),
   jest: path.join(repoRoot, 'packages', 'jest', 'node_modules'),
+  playwright: path.join(repoRoot, 'packages', 'playwright', 'node_modules'),
   mocha: path.join(repoRoot, 'packages', 'mocha', 'node_modules'),
 }
-export type SandboxRunner = 'vitest' | 'jest' | 'mocha' | 'node-test' | 'pytest'
+export type SandboxRunner = 'vitest' | 'jest' | 'mocha' | 'node-test' | 'pytest' | 'playwright'
 
 /**
  * A Python interpreter that can run the pytest adapter (3.12 or later, with pytest), or null: the
@@ -39,6 +40,9 @@ export function testPython(): string | null {
   }
   return null
 }
+
+/** Where scenarios find Playwright's browsers (only Chromium is installed there). */
+export const PLAYWRIGHT_BROWSERS = path.join(repoRoot, '.sandbox', 'ms-playwright')
 
 export interface SandboxOptions {
   /** Parent directory (default: the repository's .sandbox directory). */
@@ -65,7 +69,7 @@ export interface CliResult {
 }
 
 /**
- * A throwaway Vitest, Jest, Mocha, node:test or pytest project driven through the real Veyrum CLI.
+ * A throwaway Vitest, Jest, Mocha, node:test, pytest or Playwright project driven through the real Veyrum CLI.
  * Lives under the repository's .sandbox directory (not the OS temp directory) unless a base is given.
  */
 export class Sandbox {
@@ -82,7 +86,12 @@ export class Sandbox {
     const base = options.base ?? path.join(repoRoot, '.sandbox')
     this.dir = path.join(base, `${name}-${crypto.randomBytes(4).toString('hex')}`)
     fs.mkdirSync(path.join(this.dir, 'node_modules'), { recursive: true })
-    const ownModules = this.runner === 'node-test' || this.runner === 'pytest' ? [] : [this.runner]
+    const ownModules =
+      this.runner === 'node-test' || this.runner === 'pytest'
+        ? []
+        : this.runner === 'playwright'
+          ? ['@playwright/test']
+          : [this.runner]
     for (const name of [...ownModules, ...(options.modules ?? [])]) {
       const link = path.join(this.dir, 'node_modules', name)
       const own = path.join(adapterModules[this.runner === 'node-test' ? 'vitest' : this.runner], name)
@@ -93,6 +102,9 @@ export class Sandbox {
     if (this.runner === 'pytest') {
       // No manifest: the CLI detects pytest from its configuration file.
       this.write('pytest.ini', '[pytest]\n')
+    } else if (this.runner === 'playwright') {
+      // Scenarios write their own configuration (the app server differs between them).
+      this.write('package.json', JSON.stringify({ name, private: true, type: 'module' }, null, 2))
     } else if (this.runner === 'node-test') {
       this.write(
         'package.json',
@@ -159,6 +171,8 @@ export class Sandbox {
     }
     // Scenarios decide snapshot behavior themselves; CI systems set CI=true, which forbids writes.
     if (!('CI' in env)) delete childEnv.CI
+    if (this.runner === 'playwright' && !('PLAYWRIGHT_BROWSERS_PATH' in env))
+      childEnv.PLAYWRIGHT_BROWSERS_PATH = PLAYWRIGHT_BROWSERS
     if (!('GITHUB_ACTIONS' in env)) delete childEnv.GITHUB_ACTIONS
     return childEnv
   }
