@@ -36,6 +36,13 @@ function write(rel: string, content: string): Digest {
   return hashFileBytes(Buffer.from(content))
 }
 
+/** The repository's files as the product lists them: repository paths, forward slashes. */
+const repoFiles = (): string[] =>
+  fs
+    .readdirSync(root, { recursive: true })
+    .map((f) => String(f).split(path.sep).join('/'))
+    .sort()
+
 let seq = 0
 function record(
   closure: ClosureEntry[],
@@ -51,10 +58,7 @@ function record(
     runtime: {},
     shared: [],
     injectedEnv: {},
-    files: fs
-      .readdirSync(root, { recursive: true })
-      .map((f) => String(f).split(path.sep).join('/'))
-      .sort(),
+    files: repoFiles(),
     runner: { name: 'test', version: '0', isolate: true, pool: 'forks' },
     ...runOverrides,
   }
@@ -85,7 +89,7 @@ async function decide(options: { transformer?: ModuleTransformer; env?: NodeJS.P
     store,
     checks: [check],
     runtimeKey: KEY,
-    files: fs.readdirSync(root, { recursive: true }).map(String).sort(),
+    files: repoFiles(),
     env: options.env ?? {},
     ...(options.transformer ? { transformer: options.transformer } : {}),
   })
