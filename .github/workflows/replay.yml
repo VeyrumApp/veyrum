@@ -29,6 +29,9 @@ on:
       mutation-every:
         description: Sample mutants every Nth commit (empty for the corpus default)
         default: ''
+      overhead-every:
+        description: Measure capture overhead every Nth commit (empty for the preset's; quick measures every commit)
+        default: ''
       cpu-profile:
         description: Write a CPU profile of every capture window (diagnostics; use a short range)
         type: boolean
@@ -62,6 +65,7 @@ jobs:
           COMMITS: ${{ inputs.commits }}
           MUTANTS: ${{ inputs.mutants-per-commit }}
           EVERY: ${{ inputs.mutation-every }}
+          OVERHEAD: ${{ inputs.overhead-every }}
         run: |
           node --input-type=module -e '
             import fs from "node:fs"
@@ -73,6 +77,7 @@ jobs:
               commits: pick(process.env.COMMITS, "10"),
               mutants: pick(process.env.MUTANTS, "2"),
               every: pick(process.env.EVERY, "1"),
+              overhead: pick(process.env.OVERHEAD, "1") || "4",
             }
             const include = []
             for (const name of JSON.parse(process.env.CORPORA)) {
@@ -114,10 +119,11 @@ jobs:
           COMMITS: ${{ matrix.commits }}
           MUTANTS: ${{ matrix.mutants }}
           EVERY: ${{ matrix.every }}
+          OVERHEAD: ${{ matrix.overhead }}
           VEYRUM_CPU_PROFILE: ${{ inputs.cpu-profile && format('{0}/profiles', runner.temp) || '' }}
           VEYRUM_JEST_COVERAGE: ${{ inputs.jest-coverage }}
         run: |
-          args=(--bench "$RUNNER_TEMP/bench" --overhead-every 4 --shard "$SHARD" --until "$UNTIL")
+          args=(--bench "$RUNNER_TEMP/bench" --overhead-every "$OVERHEAD" --shard "$SHARD" --until "$UNTIL")
           if [ -n "$COMMITS" ]; then args+=(--commits "$COMMITS"); fi
           if [ -n "$MUTANTS" ]; then args+=(--mutants-per-commit "$MUTANTS"); fi
           if [ -n "$EVERY" ]; then args+=(--mutation-every "$EVERY"); fi
