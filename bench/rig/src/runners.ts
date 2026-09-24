@@ -1,5 +1,4 @@
 import fs from 'node:fs'
-import { createRequire } from 'node:module'
 import path from 'node:path'
 import type { CheckOutcomeSummary, Decision } from '@veyrum/core'
 import type { Corpus } from './corpus.ts'
@@ -98,12 +97,21 @@ export function veyrumPlan(
 }
 
 /**
- * The project's own runner entry point, resolved the way Node resolves it from the test root, so
- * a workspace package that inherits the runner from the repository root finds it too.
+ * The project's own runner entry point: the nearest node_modules/<runner> from the test root
+ * upwards, so a workspace package that inherits the runner from the repository root finds it too.
+ * Looked up afresh on every call: the rig outlives many installs, and require.resolve would keep
+ * returning a path the package manager has since replaced (pnpm renames a package's directory
+ * when its peers change).
  */
 function runnerBin(testRoot: string, runner: 'vitest' | 'jest'): string {
-  const manifest = createRequire(path.join(testRoot, 'package.json')).resolve(`${runner}/package.json`)
-  return path.join(path.dirname(manifest), ...(runner === 'vitest' ? ['vitest.mjs'] : ['bin', 'jest.js']))
+  for (let dir = path.resolve(testRoot); ; dir = path.dirname(dir)) {
+    const link = path.join(dir, 'node_modules', runner)
+    if (fs.existsSync(path.join(link, 'package.json'))) {
+      const root = fs.realpathSync(link)
+      return path.join(root, ...(runner === 'vitest' ? ['vitest.mjs'] : ['bin', 'jest.js']))
+    }
+    if (path.dirname(dir) === dir) throw new Error(`no ${runner} installed above ${testRoot}`)
+  }
 }
 
 /** Jest takes project filters as --selectProjects. */
