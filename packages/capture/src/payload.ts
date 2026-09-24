@@ -13,6 +13,11 @@ export interface WorkerPayload {
   readonly modules: readonly PayloadModule[]
   /** Absolute paths of scripts loaded without the transform pipeline (node_modules, natives). */
   readonly natives: readonly string[]
+  /**
+   * Repository modules evaluated before coverage started (see WorkerCaptureOptions.deferCoverage):
+   * compared whole, by their source.
+   */
+  readonly wholeModules?: readonly string[]
   readonly paths: readonly { readonly p: string; readonly kind: PathKind; readonly type: PathType }[]
   readonly writes: readonly string[]
   /** Environment variables read before this check wrote them, with value digests (never raw values). */

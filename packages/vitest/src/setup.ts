@@ -52,6 +52,14 @@ function evaluatedSources(absolutePath: string): string[] | undefined {
   for (const node of nodes) if (typeof node.meta?.code === 'string') out.push(node.meta.code)
   return out
 }
+/** Every file the runner has evaluated in this worker so far. */
+function evaluatedFiles(): string[] {
+  const state = (globalThis as Record<string, unknown>).__vitest_worker__ as
+    | { evaluatedModules?: { fileToModulesMap?: Map<string, unknown> } }
+    | undefined
+  return [...(state?.evaluatedModules?.fileToModulesMap?.keys() ?? [])]
+}
+
 const raw = process.env.VEYRUM_CAPTURE
 const config = raw ? (JSON.parse(raw) as SetupConfig) : null
 
@@ -89,6 +97,9 @@ if (config) {
       }))
   g[PENDING] = undefined
   const capture = pending ? await pending : null
+  // A capture the preload began has recorded I/O since the worker started; coverage starts now,
+  // before any setup file or test code, and what the runner evaluated so far is recorded whole.
+  if (capture) await capture.startCoverage(evaluatedFiles())
   if (capture)
     vitest.afterAll(async () => {
       const state = vitest.expect.getState() as unknown as {

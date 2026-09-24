@@ -158,10 +158,13 @@ closes after the file's tests finish.
 
 - **Code that runs before setup files moves the window earlier.** A Vitest worker runs project
   code before setup files only for a custom environment, snapshot serializers, a diff
-  configuration module or a custom runner. A project with any of these starts capture when the
-  worker starts, through a `node --import` preload, so reads they make are recorded. Projects
-  without them skip the preload: Vitest's own start-up then runs without coverage, which is
-  measurably cheaper.
+  configuration module or a custom runner. A project with any of these starts recording when the
+  worker starts, through a `node --import` preload, so reads they make are recorded; projects
+  without them skip the preload. Coverage always starts in Veyrum's setup file, so Vitest's own
+  start-up runs without it, which is much cheaper (docusaurus, whose snapshot serializers load
+  first, went from about twice plain Vitest's time to a fraction more). The modules the runner
+  evaluated before coverage started are compared whole, by their source: coverage saw none of
+  what they ran while loading.
 - **Custom environments are shared inputs.** Vitest loads them through a separate module runner
   whose code V8 cannot attribute to a file. Every module Vitest serves through its `__vitest__`
   environment (custom environments, global setup, the VCS provider) is recorded as a shared input

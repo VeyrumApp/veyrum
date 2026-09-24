@@ -99,6 +99,9 @@ export function readPayloads(outDir: string): WorkerPayload[] {
   return out
 }
 
+/** Dependency text kept in memory while assembling (see depText). */
+const MAX_DEP_TEXT_BYTES = 64 * 1024 * 1024
+
 export function assemble(input: AssembleInput): Assembled {
   const { root } = input
   const state = new CurrentState(root, input.store, process.env, input.fs)
@@ -142,12 +145,38 @@ export function assemble(input: AssembleInput): Assembled {
     }
     return code
   }
+  // Dependency text, for locating function source a test read. Files share dependencies, so their
+  // text is cached, within a bound: dependencies can be large.
+  const depTexts = new Map<string, string>()
+  let depTextBytes = 0
   const depText = (absolute: string): string => {
+    let text = depTexts.get(absolute)
+    if (text !== undefined) return text
     try {
-      return input.fs.readFileSync(absolute, 'utf8') as string
+      text = input.fs.readFileSync(absolute, 'utf8') as string
     } catch {
-      return ''
+      text = ''
     }
+    depTexts.set(absolute, text)
+    depTextBytes += text.length
+    for (const [key, old] of depTexts) {
+      if (depTextBytes <= MAX_DEP_TEXT_BYTES || key === absolute) break
+      depTexts.delete(key)
+      depTextBytes -= old.length
+    }
+    return text
+  }
+  /** The dependency each observed source text was last found in: files read the same functions. */
+  const textFoundIn = new Map<string, string>()
+  const inDependency = (text: string, natives: ReadonlySet<string>): boolean => {
+    const hint = textFoundIn.get(text)
+    if (hint !== undefined && natives.has(hint) && depText(hint).includes(text)) return true
+    for (const dep of natives) {
+      if (dep === hint || ignored(dep) || !depText(dep).includes(text)) continue
+      textFoundIn.set(text, dep)
+      return true
+    }
+    return false
   }
   const dynCache = new Map<string, boolean>()
   const isDynamic = (absolute: string): boolean => {
@@ -250,6 +279,7 @@ export function assemble(input: AssembleInput): Assembled {
       // (compiled from a string, or too much to keep) pins every module.
       const rawModules = new Set<string>()
       if (payload.sourceObserved) {
+        const natives = new Set(payload.natives)
         const texts = payload.observedSources
         let located = texts !== undefined && texts.length > 0
         for (const text of texts ?? []) {
@@ -260,7 +290,7 @@ export function assemble(input: AssembleInput): Assembled {
               found = true
             }
           }
-          if (!found) found = payload.natives.some((dep) => !ignored(dep) && depText(dep).includes(text))
+          if (!found) found = inDependency(text, natives)
           if (!found) {
             located = false
             break
@@ -295,8 +325,21 @@ export function assemble(input: AssembleInput): Assembled {
           units,
           env: outcome.env,
           ...(isDynamic(absolute) ? { dyn: true as const } : {}),
-          ...(rawModules.has(absolute) ? { raw: true as const } : {}),
+          ...(rawModules.has(absolute) || payload.wholeModules?.includes(absolute)
+            ? { raw: true as const }
+            : {}),
         })
+      }
+      for (const absolute of payload.wholeModules ?? []) {
+        allModulePaths.add(absolute)
+        if (modulesByPath.has(absolute) || createdDuringRun(checkWrites, absolute)) continue
+        const repoPath = toRepoPath(root, absolute)
+        const src = state.fileDigest(repoPath)
+        if (src === null) {
+          flags.add(FLAGS.captureIncomplete)
+          continue
+        }
+        add(`mod:${repoPath}`, { k: 'mod', p: repoPath, src, units: {}, env: outcome.env, raw: true })
       }
       for (const absolute of [...payload.natives, ...payload.dlopen]) {
         if (ignored(absolute)) continue

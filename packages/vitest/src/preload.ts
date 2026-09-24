@@ -15,10 +15,12 @@ if (config) {
     ignoredPrefixes: config.ignored,
     volatileEnv: VOLATILE_ENV,
     ...(config.projectCoverage ? { projectCoverage: true } : {}),
+    // Coverage starts in the setup file; what loads before it is recorded whole.
+    deferCoverage: true,
   })
-  // Wait until coverage is on before the worker runs anything: Node finishes --import modules
-  // (top-level await included) before the entry point, so a custom environment or snapshot
-  // serializer loaded right after is observed. Start-up failures surface when the setup file
+  // Wait until the hooks are in before the worker runs anything: Node finishes --import modules
+  // (top-level await included) before the entry point, so what a custom environment or snapshot
+  // serializer reads while loading is observed. Start-up failures surface when the setup file
   // awaits the same promise, not as crashes here.
   await (g[PENDING_KEY] as Promise<unknown>).catch(() => {})
 }

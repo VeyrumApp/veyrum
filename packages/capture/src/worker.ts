@@ -49,6 +49,12 @@ export interface WorkerCaptureOptions {
    * to count coverage, so the mode must not change once code has run (see coverage.ts).
    */
   readonly projectCoverage?: boolean
+  /**
+   * Install the hooks and start recording now, but start coverage only when startCoverage is
+   * called: code that runs before then (Vitest's own start-up, snapshot serializers) runs without
+   * coverage, which is much cheaper, and the modules it evaluated are recorded whole.
+   */
+  readonly deferCoverage?: boolean
 }
 
 /** The prefix Vitest wraps every transformed module in; offsets are shifted by its length. */
@@ -357,6 +363,12 @@ class FileRecorder implements HookSink {
 export type ModuleSources = (absolutePath: string) => readonly string[] | undefined
 
 export interface WorkerCapture {
+  /**
+   * Starts coverage for a capture begun with deferCoverage. `loadedBefore` lists the absolute paths
+   * of the modules the runner evaluated before this: they are recorded whole (a repository module is
+   * compared by its source, a dependency like any other), since coverage saw none of their start.
+   */
+  startCoverage(loadedBefore: Iterable<string>): Promise<void>
   /** Collects coverage and writes the payload for the test file that just ran. */
   finish(
     testFile: string,
@@ -542,19 +554,26 @@ export async function beginWorkerCapture(options: WorkerCaptureOptions): Promise
   // functions through V8's compilation cache, so a later file's calls would go unreported. Giving
   // each file unique source restores binary coverage but defeats the cache, which costs more.
   const hub = coverageHub()
-  if (layout === 'jest' && isolate.session && heapGrown(isolate))
-    await hub.restart((fresh) => collectDeadCode(fresh, isolate))
-  // Under Vitest, a second file in the same isolate (isolation off) starts coverage again, but
-  // modules cached by earlier files will not re-execute, so its payload is marked as reused.
-  const session = await hub.acquire(
-    CAPTURE_CONSUMER,
-    options.projectCoverage ? { callCount: true, detailed: true } : { callCount: false, detailed: false },
-    (fresh) => collectDeadCode(fresh, isolate),
-  )
-  isolate.session = session
-  // Reported before this file began: under Jest, scripts of earlier files, which it ignores anyway.
-  hub.discard(CAPTURE_CONSUMER)
-  if (CPU_PROFILE_DIR) await session.post('Profiler.start')
+  let session: Session | null = null
+  const loadedBeforeCoverage = new Set<string>()
+  const startCoverage = async (loadedBefore: Iterable<string>): Promise<void> => {
+    if (session) return
+    if (layout === 'jest' && isolate.session && heapGrown(isolate))
+      await hub.restart((fresh) => collectDeadCode(fresh, isolate))
+    // Under Vitest, a second file in the same isolate (isolation off) starts coverage again, but
+    // modules cached by earlier files will not re-execute, so its payload is marked as reused.
+    session = await hub.acquire(
+      CAPTURE_CONSUMER,
+      options.projectCoverage ? { callCount: true, detailed: true } : { callCount: false, detailed: false },
+      (fresh) => collectDeadCode(fresh, isolate),
+    )
+    isolate.session = session
+    for (const file of loadedBefore) loadedBeforeCoverage.add(file)
+    // Reported before this file began: under Jest, scripts of earlier files, which it ignores anyway.
+    hub.discard(CAPTURE_CONSUMER)
+    if (CPU_PROFILE_DIR) await session.post('Profiler.start')
+  }
+  if (!options.deferCoverage) await startCoverage([])
   isolate.files++
   const reused = isolate.files > 1
   const envBaseline = unobserved(() => {
@@ -577,9 +596,11 @@ export async function beginWorkerCapture(options: WorkerCaptureOptions): Promise
 
   const beginMs = performance.now() - beginStarted
   return {
+    startCoverage,
     async abandon() {
       setSink(outerSink)
       state.compiled = null
+      if (!session) return
       if (CPU_PROFILE_DIR) await session.post('Profiler.stop').catch(() => {})
       if (layout !== 'jest') {
         state.session = null
@@ -588,6 +609,11 @@ export async function beginWorkerCapture(options: WorkerCaptureOptions): Promise
     },
     async finish(testFile, snapshot, sources) {
       const finishStarted = performance.now()
+      if (!session) {
+        errors.push('coverage never started')
+        await startCoverage([])
+      }
+      const active = session as unknown as Session
       let debuggerEnabled = false
       /** The executed module code and its offset inside the script, or null if not a wrapped module. */
       const moduleCode = async (
@@ -596,16 +622,20 @@ export async function beginWorkerCapture(options: WorkerCaptureOptions): Promise
         scriptLength: number,
       ): Promise<{ code: string; offset: number } | null> => {
         // The script is WRAPPER_START + args + WRAPPER_OPEN + code + WRAPPER_CLOSE.
-        for (const code of sources?.(absolute) ?? []) {
+        const evaluated = sources?.(absolute)
+        // A file the runner never evaluated was loaded natively (an externalized workspace package,
+        // for example): it is no wrapped module, and asking the Debugger to confirm is costly.
+        if (sources && evaluated === undefined) return null
+        for (const code of evaluated ?? []) {
           const offset = scriptLength - WRAPPER_CLOSE.length - code.length
           if (offset > WRAPPER_START.length + WRAPPER_OPEN.length) return { code, offset }
         }
         if (!debuggerEnabled) {
-          await session.post('Debugger.enable')
+          await active.post('Debugger.enable')
           debuggerEnabled = true
         }
         const source = (
-          (await session.post('Debugger.getScriptSource', { scriptId })) as { scriptSource: string }
+          (await active.post('Debugger.getScriptSource', { scriptId })) as { scriptSource: string }
         ).scriptSource
         const open = source.startsWith(WRAPPER_START) ? source.indexOf(WRAPPER_OPEN) : -1
         if (open < 0 || !source.endsWith(WRAPPER_CLOSE)) return null
@@ -621,11 +651,11 @@ export async function beginWorkerCapture(options: WorkerCaptureOptions): Promise
         for (const source of compiled?.get(absolute) ?? [])
           if (source.length === scriptLength) return jestModuleCode(source)
         if (!debuggerEnabled) {
-          await session.post('Debugger.enable')
+          await active.post('Debugger.enable')
           debuggerEnabled = true
         }
         const source = (
-          (await session.post('Debugger.getScriptSource', { scriptId })) as { scriptSource: string }
+          (await active.post('Debugger.getScriptSource', { scriptId })) as { scriptSource: string }
         ).scriptSource
         return jestModuleCode(source)
       }
@@ -636,6 +666,7 @@ export async function beginWorkerCapture(options: WorkerCaptureOptions): Promise
         errors.push('module loads cannot be observed (Node lacks module.registerHooks)')
       if (hasteModuleResolved) errors.push('a haste module was resolved; haste module names are not observed')
       const modules: PayloadModule[] = []
+      const wholeModules: string[] = []
       const natives = new Set<string>()
       let evalScripts = 0
       let takeMs = 0
@@ -668,6 +699,8 @@ export async function beginWorkerCapture(options: WorkerCaptureOptions): Promise
             if (layout !== 'jest') natives.add(absolute)
             continue
           }
+          // Evaluated before coverage started: recorded whole (below), so its functions need no mapping.
+          if (loadedBeforeCoverage.has(absolute)) continue
           // Jest keeps earlier files' scripts in the isolate; only those that ran now belong to this
           // file. Scripts Jest did not compile into the test context during this file are the runner
           // and its toolchain (transformers), recorded as shared inputs instead.
@@ -712,6 +745,15 @@ export async function beginWorkerCapture(options: WorkerCaptureOptions): Promise
             const where = scriptLocation(file, options)
             if (!where.ignored && !where.repositoryModule) natives.add(where.absolute)
           }
+        // Evaluated before coverage started: repository modules are compared whole.
+        for (const file of loadedBeforeCoverage) {
+          // Builtins are listed by name.
+          if (!path.isAbsolute(file) && !file.startsWith('file://')) continue
+          const where = scriptLocation(file, options)
+          if (where.ignored) continue
+          if (where.repositoryModule) wholeModules.push(where.absolute)
+          else natives.add(where.absolute)
+        }
         for (const mod of byKey.values())
           modules.push({ path: mod.path, code: mod.code, executed: [...mod.executed.values()] })
       } catch (error) {
@@ -726,6 +768,7 @@ export async function beginWorkerCapture(options: WorkerCaptureOptions): Promise
         isolateReused: layout === 'vitest' && reused,
         modules,
         natives: [...natives],
+        ...(wholeModules.length > 0 ? { wholeModules } : {}),
         paths: [
           ...recorder.paths.values(),
           // Module files the runner read and compiled are recorded as modules, by what executed.
@@ -756,7 +799,7 @@ export async function beginWorkerCapture(options: WorkerCaptureOptions): Promise
       }
       if (CPU_PROFILE_DIR) {
         try {
-          const { profile } = await session.post('Profiler.stop')
+          const { profile } = await active.post('Profiler.stop')
           const name = `${digest(testFile)}-${process.pid}-${threadId}-${Date.now()}.cpuprofile`
           unobserved(() => {
             fs.mkdirSync(CPU_PROFILE_DIR, { recursive: true })
@@ -768,7 +811,7 @@ export async function beginWorkerCapture(options: WorkerCaptureOptions): Promise
       }
       if (debuggerEnabled) {
         try {
-          await session.post('Debugger.disable')
+          await active.post('Debugger.disable')
         } catch {
           // The session failed; the coverage above reports it.
         }

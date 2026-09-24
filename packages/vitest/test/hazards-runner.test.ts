@@ -618,6 +618,29 @@ describe('code that runs before setup files', () => {
     expect(sandbox.actions()['test/a.test.ts']).toBe('run')
   })
 
+  test('what a snapshot serializer runs while it loads, before coverage starts, is an input', () => {
+    sandbox = new Sandbox('serializer-load')
+      .write('src/prefix.ts', "export function prefix() {\n  return 'v1'\n}\n")
+      .write(
+        'test/serializer.ts',
+        "import { prefix } from '../src/prefix'\nconst P = prefix()\nexport default { test: (v: unknown) => typeof v === 'number', serialize: (v: number) => P + ':' + v }\n",
+      )
+      .write(
+        'vitest.config.ts',
+        "import { defineConfig } from 'vitest/config'\nexport default defineConfig({ test: { snapshotSerializers: ['./test/serializer.ts'] } })\n",
+      )
+      .write(
+        'test/a.test.ts',
+        "import { expect, test } from 'vitest'\ntest('snap', () => expect(1).toMatchInlineSnapshot())\n",
+      )
+      .write('test/plain.test.ts', PLAIN_TEST)
+    sandbox.capture()
+    sandbox.capture({ CI: 'true' })
+    expect(sandbox.actions({ CI: 'true' })['test/a.test.ts']).toBe('skip')
+    sandbox.edit('src/prefix.ts', "'v1'", "'v2'")
+    expect(sandbox.actions({ CI: 'true' })['test/a.test.ts']).toBe('run')
+  })
+
   test('a snapshot serializer is captured, with the modules it loads', () => {
     sandbox = new Sandbox('serializer')
       .write('src/label.ts', "export const LABEL = 'v1'\n")
