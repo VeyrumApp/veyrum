@@ -527,7 +527,8 @@ describe("Node programs traced with capture's own hooks", () => {
     }
   })
 
-  test('a script whose #! line runs this Node is traced too', () => {
+  // Windows does not run #! scripts.
+  test.skipIf(process.platform === 'win32')('a script whose #! line runs this Node is traced too', () => {
     sandbox = new Sandbox('node-child-script')
       .write('fixtures/x.txt', 'a')
       .write(
