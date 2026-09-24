@@ -77,20 +77,50 @@ function project(name, devDependencies, files) {
   return dir
 }
 
-function cycle(dir, source, testExt) {
+function cycle(dir, source, testExt, files = 2) {
   const veyrum = path.join(dir, 'node_modules', '.bin', 'veyrum')
-  expectMatch(run(veyrum, ['run', '--quiet'], dir), /2 test files, ran 2, reused evidence for 0/, 'first run')
+  const counts = (ran) => new RegExp(`${files} test files, ran ${ran}, reused evidence for ${files - ran}`)
+  expectMatch(run(veyrum, ['run', '--quiet'], dir), counts(files), 'first run')
   // --explain: a failure then shows why each file ran.
-  expectMatch(
-    run(veyrum, ['run', '--quiet', '--explain'], dir),
-    /2 test files, ran 0, reused evidence for 2/,
-    'unchanged',
-  )
+  expectMatch(run(veyrum, ['run', '--quiet', '--explain'], dir), counts(0), 'unchanged')
   const file = path.join(dir, source)
   fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('a * b', 'b * a'))
   const edited = run(veyrum, ['run', '--quiet', '--explain'], dir)
   expectMatch(edited, new RegExp(`run\\s+test/mul\\.test\\.${testExt}`), 'after edit')
-  expectMatch(edited, /2 test files, ran 1, reused evidence for 1/, 'after edit')
+  expectMatch(edited, counts(1), 'after edit')
+  return (step, expectedFile) => {
+    const out = run(veyrum, ['run', '--quiet', '--explain'], dir)
+    expectMatch(out, new RegExp(`run\\s+${expectedFile.replaceAll('.', '\\.')}`), step)
+    expectMatch(out, counts(1), step)
+  }
+}
+
+/**
+ * On Linux, a statically linked program: child-process tracing runs it under ptrace through
+ * veyrum-exec, which must work from an install (package managers drop the executable bit). Null
+ * where it cannot be built.
+ */
+function staticProgram(dir) {
+  if (process.platform !== 'linux') return null
+  const source = path.join(dir, 'fixtures', 'show.c')
+  fs.mkdirSync(path.dirname(source), { recursive: true })
+  fs.writeFileSync(
+    source,
+    '#include <stdio.h>\nint main(int argc, char **argv) {\n  FILE *f = fopen(argv[1], "r");\n  int c;\n  while (f && (c = fgetc(f)) != EOF) putchar(c);\n  return 0;\n}\n',
+  )
+  const cc = spawnSync(process.env.CC ?? 'cc', [
+    '-static',
+    '-O2',
+    '-o',
+    path.join(dir, 'fixtures', 'show'),
+    source,
+  ])
+  if (cc.status !== 0) {
+    // CI runners have a static C library: there, a missing one is a failure.
+    if (process.env.CI) throw new Error(`cannot build a static program:\n${cc.stderr}`)
+    return null
+  }
+  return path.join(dir, 'fixtures', 'show')
 }
 
 try {
@@ -109,10 +139,22 @@ try {
           "import { expect, test } from 'vitest'\nimport { add } from '../src/math'\ntest('add', () => expect(add(1, 2)).toBe(3))\n",
         'test/mul.test.ts':
           "import { expect, test } from 'vitest'\nimport { mul } from '../src/math'\ntest('mul', () => expect(mul(2, 3)).toBe(6))\n",
+        'fixtures/data.txt': 'hello\n',
       },
     )
-    cycle(vitestDir, 'src/math.ts', 'ts')
-    process.stdout.write(`vitest ${vitestVersion}: ok\n`)
+    const program = staticProgram(vitestDir)
+    if (program) {
+      fs.writeFileSync(
+        path.join(vitestDir, 'test/show.test.ts'),
+        "import { execFileSync } from 'node:child_process'\nimport { expect, test } from 'vitest'\ntest('show', () => expect(execFileSync('./fixtures/show', ['fixtures/data.txt']).toString()).toMatch(/^h/))\n",
+      )
+    }
+    const next = cycle(vitestDir, 'src/math.ts', 'ts', program ? 3 : 2)
+    if (program) {
+      fs.writeFileSync(path.join(vitestDir, 'fixtures/data.txt'), 'hi\n')
+      next('static program input', 'test/show.test.ts')
+    }
+    process.stdout.write(`vitest ${vitestVersion}: ok${program ? ' (with a static program)' : ''}\n`)
   }
 
   if (jestVersion) {

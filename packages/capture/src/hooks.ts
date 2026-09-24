@@ -9,10 +9,8 @@ import { promisify } from 'node:util'
 import workerThreads from 'node:worker_threads'
 import {
   classifyExecutable,
-  EXEC_LAUNCHER,
-  launcherAvailable,
+  nativeTools,
   resolveExecutable,
-  TRACE_LIBRARY,
   type TraceEvent,
   type TraceFs,
   tracingAvailable,
@@ -622,10 +620,11 @@ function prepareSpawn(name: SpawnFunction, args: unknown[]): unknown[] | undefin
     }
     if (!resolved) return undefined // Nothing runs: the start fails.
     const kind = classifyExecutable(resolved, traceFs)
+    const tools = nativeTools(path.dirname(log))
     // A program run through a shell option would need the shell command rebuilt: only a program
     // run directly is launched.
-    const launch = kind === 'launched' && call.shell === null && name !== 'fork' && launcherAvailable(traceFs)
-    if (kind === 'untraceable' || (kind === 'launched' && !launch)) {
+    const launcher = kind === 'launched' && call.shell === null && name !== 'fork' ? tools.launcher : null
+    if (kind === 'untraceable' || (kind === 'launched' && !launcher)) {
       sink.spawn(label)
       return undefined
     }
@@ -636,14 +635,14 @@ function prepareSpawn(name: SpawnFunction, args: unknown[]): unknown[] | undefin
       if (given !== undefined && unobserved(() => process.env[n]) !== v) continue
       sink.env(n, v, false, 'test')
     }
-    if (launch) {
+    if (launcher) {
       // veyrum-exec traces the program with ptrace, which replaces the preloaded library, and runs
       // it with the arguments and argv[0] it would have had.
       const { argv0, ...options } = call.options ?? {}
       const argv = [resolved, String(argv0 ?? call.file), ...call.args]
-      return call.relaunch(EXEC_LAUNCHER, argv, { ...options, env: { ...env, VEYRUM_TRACE: log } })
+      return call.relaunch(launcher, argv, { ...options, env: { ...env, VEYRUM_TRACE: log } })
     }
-    const preload = env.LD_PRELOAD ? `${TRACE_LIBRARY}:${env.LD_PRELOAD}` : TRACE_LIBRARY
+    const preload = env.LD_PRELOAD ? `${tools.library}:${env.LD_PRELOAD}` : tools.library
     // libuv can read files through io_uring, which the tracer cannot see.
     const childEnv = { ...env, LD_PRELOAD: preload, VEYRUM_TRACE: log, UV_USE_IO_URING: '0' }
     return call.rebuild({ ...call.options, env: childEnv })

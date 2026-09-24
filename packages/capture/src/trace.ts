@@ -1,6 +1,7 @@
-import type fs from 'node:fs'
+import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { threadId } from 'node:worker_threads'
 
 /**
  * Child processes a test starts are traced by a preloaded library (native/trace.c) that logs the
@@ -40,13 +41,50 @@ export function tracingAvailable(raw: TraceFs): boolean {
   return libraryPresent
 }
 
-let launcherPresent: boolean | undefined
-export function launcherAvailable(raw: TraceFs): boolean {
-  if (launcherPresent === undefined) {
-    launcherPresent =
-      tracingAvailable(raw) && raw.statSync(EXEC_LAUNCHER, { throwIfNoEntry: false })?.isFile() === true
+export interface NativeTools {
+  /** The preloaded library. */
+  readonly library: string
+  /** veyrum-exec, next to the library, or null when it cannot run. */
+  readonly launcher: string | null
+}
+
+const toolsByDir = new Map<string, NativeTools>()
+
+/**
+ * The tracer's files as a run uses them. npm and pnpm pack files without their executable bit,
+ * which the launcher needs: without it, the launcher and the library it is found next to are
+ * copied into `dir` (a directory of the run's own) and used from there. Call with the capture
+ * layer's hooks suspended.
+ */
+export function nativeTools(dir: string, library = TRACE_LIBRARY, launcher = EXEC_LAUNCHER): NativeTools {
+  const cached = toolsByDir.get(dir)
+  if (cached) return cached
+  let tools: NativeTools = { library, launcher: null }
+  const st = fs.statSync(launcher, { throwIfNoEntry: false })
+  if (st?.isFile() && (st.mode & 0o111) !== 0) {
+    tools = { library, launcher }
+  } else if (st?.isFile()) {
+    try {
+      const target = path.join(dir, 'native')
+      fs.mkdirSync(target, { recursive: true })
+      // Workers of one run share the copies: each is written under its own name, then renamed.
+      const place = (from: string, mode: number): string => {
+        const to = path.join(target, path.basename(from))
+        if (fs.statSync(to, { throwIfNoEntry: false })?.size !== fs.statSync(from).size) {
+          const temporary = `${to}.${process.pid}-${threadId}`
+          fs.copyFileSync(from, temporary)
+          fs.chmodSync(temporary, mode)
+          fs.renameSync(temporary, to)
+        }
+        return to
+      }
+      tools = { library: place(library, 0o644), launcher: place(launcher, 0o755) }
+    } catch {
+      // Without a launcher, static and Go programs block reuse.
+    }
   }
-  return launcherPresent
+  toolsByDir.set(dir, tools)
+  return tools
 }
 
 /**
