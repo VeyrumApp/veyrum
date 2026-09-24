@@ -296,15 +296,15 @@ export async function replay(corpus: Corpus, benchRoot: string, options: ReplayO
           )
         }
 
-        // 2. Optional uninstrumented run for overhead (before capture, alternating order is not needed
-        //    since both runs are sequential on the same tree).
-        let plainWallMs: number | null = null
-        if (scored && options.overheadEvery > 0 && index % options.overheadEvery === 0) {
-          plainWallMs = plainRun(corpus, paths.testRoot, paths.scratch).wallMs
-        }
+        // 2. On sampled commits, overhead: a plain warm-up run first, since the first run after a
+        //    checkout pays for cold transform caches, then the captured run, then the plain run it
+        //    is compared with. Both measured runs start equally warm.
+        const measureOverhead = scored && options.overheadEvery > 0 && index % options.overheadEvery === 0
+        if (measureOverhead) plainRun(corpus, paths.testRoot, paths.scratch)
 
         // 3. Ground truth and evidence for the next commit.
         const capture = captureRun(corpus, paths.testRoot, paths.store, paths.scratch)
+        const plainWallMs = measureOverhead ? plainRun(corpus, paths.testRoot, paths.scratch).wallMs : null
         const outcomes = capture.outcomes
         const flaky = detectFlaky(corpus, paths.testRoot, paths.scratch, outcomes)
         const prevOutcomes = new Map(Object.entries(prev?.outcomes ?? {}))
