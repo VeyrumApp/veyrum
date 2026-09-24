@@ -21,6 +21,26 @@ const ADD_TEST = "const { add } = require('../src/math')\ntest('adds', () => exp
 const MUL_TEST = "const { mul } = require('../src/math')\ntest('muls', () => expect(mul(2, 3)).toBe(6))\n"
 const PLAIN_TEST = "test('plain', () => expect(1).toBe(1))\n"
 
+describe('worker threads', () => {
+  test('what a worker thread reads is an input of the file that started it', () => {
+    const s = jest('worker-read')
+      .write('fixtures/x.txt', 'a')
+      .write(
+        'fixtures/worker.js',
+        "const { parentPort } = require('node:worker_threads')\nparentPort.postMessage(require('node:fs').readFileSync('fixtures/x.txt', 'utf8'))\n",
+      )
+      .write(
+        'test/thread.test.js',
+        "const { Worker } = require('node:worker_threads')\ntest('thread', async () => {\n  const w = new Worker('./fixtures/worker.js')\n  const text = await new Promise((r) => w.once('message', r))\n  await w.terminate()\n  expect(text).toMatch(/^[ab]$/)\n})\n",
+      )
+      .write('test/plain.test.js', PLAIN_TEST)
+    s.capture()
+    expect(s.actions()).toEqual({ 'test/plain.test.js': 'skip', 'test/thread.test.js': 'skip' })
+    s.write('fixtures/x.txt', 'b')
+    expect(s.actions()).toEqual({ 'test/plain.test.js': 'skip', 'test/thread.test.js': 'run' })
+  })
+})
+
 describe('code', () => {
   for (const workers of [1, 2]) {
     test(`an edit invalidates only the files that executed the changed function (${workers === 1 ? 'in band' : 'workers'})`, () => {

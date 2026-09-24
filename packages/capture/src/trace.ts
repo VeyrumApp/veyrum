@@ -25,6 +25,9 @@ export interface TraceFs {
   readonly closeSync: typeof fs.closeSync
 }
 
+/** Preloaded into Node programs and worker threads no native tracer follows (see child.ts). */
+export const CHILD_PRELOAD = path.join(path.dirname(fileURLToPath(import.meta.url)), 'child-preload.cjs')
+
 /** The launcher that traces statically linked and Go programs with ptrace; built with the library. */
 export const EXEC_LAUNCHER = path.join(path.dirname(TRACE_LIBRARY), 'veyrum-exec')
 
@@ -32,7 +35,13 @@ export const EXEC_LAUNCHER = path.join(path.dirname(TRACE_LIBRARY), 'veyrum-exec
 export const TRACED_PLATFORMS: readonly string[] = ['linux-x64', 'linux-arm64']
 
 let libraryPresent: boolean | undefined
+/**
+ * Whether native tracing (the preloaded library, and veyrum-exec) follows child processes here.
+ * VEYRUM_NATIVE_TRACING=off turns it off: Node programs are then traced with capture's own hooks,
+ * as on platforms without it, and any other program blocks reuse.
+ */
 export function tracingAvailable(raw: TraceFs): boolean {
+  if (process.env.VEYRUM_NATIVE_TRACING === 'off') return false
   if (libraryPresent === undefined) {
     libraryPresent =
       TRACED_PLATFORMS.includes(`${process.platform}-${process.arch}`) &&
@@ -165,24 +174,95 @@ export function classifyExecutable(file: string, raw: TraceFs, depth = 0): Execu
   return value
 }
 
-/** The program a spawn runs: the name itself when it has a slash, else the first match on PATH. */
+/** A variable of a child's environment; Windows names them case-insensitively. */
+export function envValue(env: NodeJS.ProcessEnv, name: string): string | undefined {
+  if (process.platform !== 'win32' || name in env) return env[name]
+  const upper = name.toUpperCase()
+  for (const key of Object.keys(env)) if (key.toUpperCase() === upper) return env[key]
+  return undefined
+}
+
+/**
+ * The files a spawn would try for a program, in order, as Node's spawn looks them up: on POSIX,
+ * the name itself when it has a slash, else each PATH directory; on Windows (libuv), the current
+ * directory and then PATH, each name as given when it has an extension, else with .com and .exe.
+ */
+export function executableCandidates(file: string, pathVariable: string | undefined, cwd: string): string[] {
+  if (process.platform !== 'win32') {
+    if (file.includes('/')) return [path.resolve(cwd, file)]
+    return (pathVariable ?? '/usr/bin:/bin').split(':').map((dir) => path.resolve(cwd, dir || '.', file))
+  }
+  const names = path.extname(file) ? [file] : [`${file}.com`, `${file}.exe`]
+  const dirs = /[\\/]/.test(file) ? [cwd] : [cwd, ...(pathVariable ?? '').split(';').filter(Boolean)]
+  return dirs.flatMap((dir) => names.map((name) => path.resolve(cwd, dir, name)))
+}
+
+/** The program a spawn runs: the first candidate that is a program, or null when none is. */
 export function resolveExecutable(
   file: string,
   pathVariable: string | undefined,
   cwd: string,
   raw: TraceFs,
 ): string | null {
-  const isProgram = (candidate: string): boolean => {
+  for (const candidate of executableCandidates(file, pathVariable, cwd)) {
     const st = raw.statSync(candidate, { throwIfNoEntry: false })
-    return st?.isFile() === true && (st.mode & 0o111) !== 0
+    // Windows has no executable bit: a file found there runs.
+    if (st?.isFile() && (process.platform === 'win32' || (st.mode & 0o111) !== 0)) return candidate
   }
-  if (file.includes('/')) {
-    const absolute = path.resolve(cwd, file)
-    return isProgram(absolute) ? absolute : null
+  return null
+}
+
+/**
+ * How a program is this Node itself, for tracing it with capture's own hooks: the same binary, or
+ * (POSIX) a script whose `#!` line runs it, directly or through `/usr/bin/env node`. Null for
+ * anything else, including another Node, which may not take the flags the tracer adds.
+ */
+export type NodeProgram =
+  | { readonly kind: 'binary' }
+  | { readonly kind: 'script'; readonly interpreterLookup: readonly string[] }
+
+export function nodeProgram(
+  resolved: string,
+  pathVariable: string | undefined,
+  cwd: string,
+  raw: TraceFs & { readonly realpathSync: (p: string) => string },
+): NodeProgram | null {
+  const real = (p: string): string | null => {
+    try {
+      return raw.realpathSync(p)
+    } catch {
+      return null
+    }
   }
-  for (const dir of (pathVariable ?? '/usr/bin:/bin').split(':')) {
-    const candidate = path.resolve(cwd, dir || '.', file)
-    if (isProgram(candidate)) return candidate
+  const self = real(process.execPath)
+  if (self !== null && real(resolved) === self) return { kind: 'binary' }
+  if (process.platform === 'win32') return null
+  let line = ''
+  let fd: number | undefined
+  try {
+    fd = raw.openSync(resolved, 'r')
+    const head = Buffer.alloc(256)
+    const n = raw.readSync(fd, head, 0, head.length, 0)
+    line = head.subarray(0, n).toString('latin1').split('\n')[0] ?? ''
+  } catch {
+    return null
+  } finally {
+    if (fd !== undefined) raw.closeSync(fd)
+  }
+  if (!line.startsWith('#!')) return null
+  const words = line
+    .slice(2)
+    .trim()
+    .split(/[ \t]+/)
+  if (words.length === 1 && self !== null && real(words[0]!) === self)
+    return { kind: 'script', interpreterLookup: [] }
+  if (words.length === 2 && words[0] === '/usr/bin/env' && words[1] === 'node') {
+    // env looks node up on PATH: the directories before the match are inputs (absent), like a
+    // program's own lookup.
+    const candidates = executableCandidates('node', pathVariable, cwd)
+    const found = resolveExecutable('node', pathVariable, cwd, raw)
+    if (found === null || real(found) !== self) return null
+    return { kind: 'script', interpreterLookup: candidates.slice(0, candidates.indexOf(found)) }
   }
   return null
 }

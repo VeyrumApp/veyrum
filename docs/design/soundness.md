@@ -107,8 +107,8 @@ Flags record channels the closure cannot fully observe.
 
 ## Child processes
 
-A child process a test starts (`child_process`, including through a shell) is traced on Linux x64
-and arm64. How depends on the program:
+A child process a test starts (`child_process`, including through a shell), and a worker thread
+it creates, is traced. How depends on the program and the platform:
 
 - **Through the C library.** A dynamically linked, 64-bit ELF program that is not written in Go,
   or a script whose interpreter is one, gets a preloaded library (`packages/capture/native/trace.c`)
@@ -128,6 +128,16 @@ and arm64. How depends on the program:
   ptrace is not allowed (Yama `ptrace_scope` 2 or 3, a container that forbids it, a debugger
   already attached), the program runs untraced and blocks reuse, as below.
 
+- **Through capture's own hooks.** Where no native tracer follows it (macOS, Windows, or with
+  `VEYRUM_NATIVE_TRACING=off`), a program that is the test's own Node binary, or a script whose
+  `#!` line runs it, starts with a preload (`packages/capture/src/child.ts`) that installs the same
+  hooks as the test's worker and logs what the program reads, lists, writes, starts and connects
+  to, and every module it loads (its code is an input file by file). Its own Node children are
+  traced the same way. Like the test's own code, a native addon's file access is not seen (the
+  addon's binary is recorded). A worker thread gets the same preload on every platform, and its
+  whole environment is an input; one that shares the test's environment (`SHARE_ENV`) cannot get
+  it, and blocks reuse.
+
 The test file's closure gets what its children did like its own reads. On top of that:
 
 - **The program and its lookup are inputs.** The executed file's content, and the absence of the
@@ -143,8 +153,8 @@ The test file's closure gets what its children did like its own reads. On top of
   system call or `fexecve` from a dynamically linked program, `glob`, `ftw` and `nftw` (which read
   directories internally), system calls of another architecture, `io_uring`, `open_by_handle_at`,
   and a statically linked shell started through a `shell` option are reported as untraceable, and
-  the check gets the `spawn` flag. So does a worker thread, and a child process on any other
-  platform.
+  the check gets the `spawn` flag. On macOS and Windows, so does any program other than the test's
+  own Node, including a shell.
 
 Temporary files are ignored for children as for tests. Unix socket connections count as local
 network use, as they do for the test itself.

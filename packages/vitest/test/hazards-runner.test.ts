@@ -95,9 +95,9 @@ describe('incremental capture', () => {
 })
 
 describe('audit and canaries', () => {
-  // A worker thread's reads are not attributed to the test file: an unobservable channel.
+  // A worker thread sharing the test's environment is not traced: an unobservable channel.
   const SPAWN_READ =
-    "import { Worker } from 'node:worker_threads'\nimport { expect, test } from 'vitest'\ntest('reads through a worker thread', async () => {\n  const text = await new Promise((resolve) => new Worker(\"require('worker_threads').parentPort.postMessage(require('fs').readFileSync('fixtures/x.txt', 'utf8'))\", { eval: true }).on('message', resolve))\n  expect(text).toBe('a')\n})\n"
+    "import { SHARE_ENV, Worker } from 'node:worker_threads'\nimport { expect, test } from 'vitest'\ntest('reads through a worker thread', async () => {\n  const text = await new Promise((resolve) => new Worker(\"require('worker_threads').parentPort.postMessage(require('fs').readFileSync('fixtures/x.txt', 'utf8'))\", { eval: true, env: SHARE_ENV }).on('message', resolve))\n  expect(text).toBe('a')\n})\n"
 
   test('the audit catches a reuse that an allowed unobservable channel made wrong', () => {
     sandbox = new Sandbox('audit')
@@ -451,11 +451,115 @@ describe.runIf(tracing)('child processes', () => {
   })
 })
 
+describe('worker threads', () => {
+  test('what a worker thread reads and loads is an input of the file that started it', () => {
+    sandbox = new Sandbox('worker-read')
+      .write('fixtures/x.txt', 'a')
+      .write('fixtures/other.txt', 'o')
+      .write(
+        'fixtures/worker.cjs',
+        "const { parentPort } = require('node:worker_threads')\nparentPort.postMessage(require('node:fs').readFileSync('fixtures/x.txt', 'utf8'))\n",
+      )
+      .write(
+        'test/thread.test.ts',
+        "import { Worker } from 'node:worker_threads'\nimport { expect, test } from 'vitest'\ntest('thread', async () => {\n  const w = new Worker('./fixtures/worker.cjs')\n  const text = await new Promise((r) => w.once('message', r))\n  await w.terminate()\n  expect(text).toMatch(/^[ab]$/)\n})\n",
+      )
+      .write('test/plain.test.ts', PLAIN_TEST)
+    sandbox.capture()
+    expect(sandbox.actions()).toEqual({ 'test/plain.test.ts': 'skip', 'test/thread.test.ts': 'skip' })
+    sandbox.write('fixtures/other.txt', 'p')
+    expect(sandbox.actions()['test/thread.test.ts']).toBe('skip')
+    sandbox.write('fixtures/x.txt', 'b')
+    expect(sandbox.plan()['test/thread.test.ts']?.details).toEqual(['fixtures/x.txt changed'])
+    sandbox.capture()
+    // The worker's own code is an input too.
+    sandbox.edit('fixtures/worker.cjs', "'utf8'", "'utf-8'")
+    expect(sandbox.actions()['test/thread.test.ts']).toBe('run')
+  })
+})
+
+describe("Node programs traced with capture's own hooks", () => {
+  // As on macOS and Windows, where no native tracer follows child processes.
+  const JS_ONLY = { VEYRUM_NATIVE_TRACING: 'off' }
+  const childTest = (body: string): string =>
+    `import { execFileSync, execSync, fork } from 'node:child_process'\nimport { expect, test } from 'vitest'\ntest('child', async () => {\n${body}\n})\n`
+
+  test('what a Node child, its forks and its Node children read and load are inputs', () => {
+    sandbox = new Sandbox('node-child')
+      .write('fixtures/x.txt', 'a')
+      .write('fixtures/y.txt', 'b')
+      .write('fixtures/z.txt', 'c')
+      .write('fixtures/other.txt', 'o')
+      .write('fixtures/lib.cjs', "module.exports = (f) => require('node:fs').readFileSync(f, 'utf8')\n")
+      .write(
+        'fixtures/child.cjs',
+        "const read = require('./lib.cjs')\nconst { execFileSync } = require('node:child_process')\nprocess.stdout.write(read('fixtures/x.txt') + execFileSync(process.execPath, ['fixtures/grandchild.cjs']))\n",
+      )
+      .write(
+        'fixtures/grandchild.cjs',
+        "process.stdout.write(require('node:fs').readFileSync('fixtures/y.txt', 'utf8'))\n",
+      )
+      .write(
+        'fixtures/forked.cjs',
+        "process.send(require('node:fs').readFileSync('fixtures/z.txt', 'utf8'), () => process.exit(0))\n",
+      )
+      .write(
+        'test/child.test.ts',
+        childTest(
+          "  expect(execFileSync(process.execPath, ['fixtures/child.cjs']).toString()).toMatch(/^..$/)\n  const child = fork('fixtures/forked.cjs')\n  expect(await new Promise((r) => child.once('message', r))).toMatch(/^.$/)",
+        ),
+      )
+      .write('test/plain.test.ts', PLAIN_TEST)
+    sandbox.capture(JS_ONLY)
+    expect(sandbox.actions(JS_ONLY)).toEqual({ 'test/child.test.ts': 'skip', 'test/plain.test.ts': 'skip' })
+    sandbox.write('fixtures/other.txt', 'p')
+    expect(sandbox.actions(JS_ONLY)['test/child.test.ts']).toBe('skip')
+    for (const [file, from, to] of [
+      ['fixtures/x.txt', 'a', 'A'],
+      ['fixtures/y.txt', 'b', 'B'],
+      ['fixtures/z.txt', 'c', 'C'],
+      ['fixtures/lib.cjs', "'utf8'", "'utf-8'"],
+      ['fixtures/grandchild.cjs', "'utf8'", "'utf-8'"],
+    ] as const) {
+      sandbox.edit(file, from, to)
+      expect(sandbox.actions(JS_ONLY)['test/child.test.ts'], file).toBe('run')
+      sandbox.capture(JS_ONLY)
+    }
+  })
+
+  test('a script whose #! line runs this Node is traced too', () => {
+    sandbox = new Sandbox('node-child-script')
+      .write('fixtures/x.txt', 'a')
+      .write(
+        'fixtures/cli',
+        `#!${process.execPath}\nimport fs from 'node:fs'\nprocess.stdout.write(fs.readFileSync('fixtures/x.txt', 'utf8'))\n`,
+      )
+      .write(
+        'test/child.test.ts',
+        childTest("  expect(execFileSync('./fixtures/cli').toString()).toMatch(/^.$/)"),
+      )
+    fs.chmodSync(path.join(sandbox.dir, 'fixtures/cli'), 0o755)
+    sandbox.capture(JS_ONLY)
+    expect(sandbox.actions(JS_ONLY)['test/child.test.ts']).toBe('skip')
+    sandbox.write('fixtures/x.txt', 'b')
+    expect(sandbox.plan(JS_ONLY)['test/child.test.ts']?.details).toEqual(['fixtures/x.txt changed'])
+  })
+
+  test('a program other than this Node blocks reuse', () => {
+    sandbox = new Sandbox('node-child-other').write(
+      'test/child.test.ts',
+      childTest("  expect(execSync('echo hi').toString().trim()).toBe('hi')"),
+    )
+    sandbox.capture(JS_ONLY)
+    expect(sandbox.plan(JS_ONLY)['test/child.test.ts']?.reason).toBe('blocked-flag')
+  })
+})
+
 describe('unobservable channels', () => {
-  test('starting a worker thread blocks reuse', () => {
+  test("a worker thread sharing the test's environment blocks reuse", () => {
     sandbox = new Sandbox('worker-thread').write(
       'test/thread.test.ts',
-      "import { Worker } from 'node:worker_threads'\nimport { expect, test } from 'vitest'\ntest('thread', async () => {\n  const w = new Worker('require(\"node:worker_threads\").parentPort.postMessage(42)', { eval: true })\n  const n = await new Promise((r) => w.once('message', r))\n  await w.terminate()\n  expect(n).toBe(42)\n})\n",
+      "import { SHARE_ENV, Worker } from 'node:worker_threads'\nimport { expect, test } from 'vitest'\ntest('thread', async () => {\n  const w = new Worker('require(\"node:worker_threads\").parentPort.postMessage(42)', { eval: true, env: SHARE_ENV })\n  const n = await new Promise((r) => w.once('message', r))\n  await w.terminate()\n  expect(n).toBe(42)\n})\n",
     )
     sandbox.capture()
     const decision = sandbox.plan()['test/thread.test.ts']

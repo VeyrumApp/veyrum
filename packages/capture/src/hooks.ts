@@ -9,11 +9,14 @@ import { promisify } from 'node:util'
 import workerThreads from 'node:worker_threads'
 import { type PathAlias, pathAliases, unalias } from '@veyrum/core/paths'
 import {
+  CHILD_PRELOAD,
   classifyExecutable,
+  envValue,
+  executableCandidates,
   nativeTools,
+  nodeProgram,
   resolveExecutable,
   type TraceEvent,
-  type TraceFs,
   tracingAvailable,
 } from './trace.ts'
 
@@ -500,23 +503,75 @@ function installNetHooks(): void {
 }
 
 /**
- * Code in a worker thread runs in another isolate: its reads are not attributed to the test file,
- * so starting one is treated like starting a child process.
+ * Code in a worker thread runs in another isolate, where these hooks are not installed. When the
+ * sink traces children, the worker gets capture's own hooks through a preload and logs to the same
+ * trace (see child.ts); its whole environment is an input, as for a child process. Otherwise, or
+ * when the worker shares this thread's environment, starting one is treated like starting an
+ * untraced child process.
  */
 function installWorkerThreadHook(): void {
   const Original = workerThreads.Worker
+  originalWorker = Original
   class ObservedWorker extends Original {
     constructor(...args: ConstructorParameters<typeof Original>) {
-      try {
-        state.sink.spawn('worker_threads')
-      } catch {
-        // Observation must never change behavior.
-      }
-      super(...args)
+      super(...(prepareWorker(args) ?? args))
     }
   }
   Object.defineProperty(ObservedWorker, 'name', { value: 'Worker' })
   ;(workerThreads as { Worker: typeof Original }).Worker = ObservedWorker
+}
+
+let originalWorker: typeof workerThreads.Worker = workerThreads.Worker
+const acceptedExecArgv = new Map<string, boolean>()
+
+/** Whether a worker thread can start with these flags: checked once each, with a worker that is stopped at once. */
+function workerAccepts(execArgv: readonly string[]): boolean {
+  const key = JSON.stringify(execArgv)
+  let accepted = acceptedExecArgv.get(key)
+  if (accepted === undefined) {
+    try {
+      void new originalWorker('', { eval: true, execArgv: [...execArgv] }).terminate()
+      accepted = true
+    } catch (error) {
+      accepted = (error as { code?: string }).code !== 'ERR_WORKER_INVALID_EXEC_ARGV'
+    }
+    acceptedExecArgv.set(key, accepted)
+  }
+  return accepted
+}
+
+function prepareWorker(
+  args: ConstructorParameters<typeof workerThreads.Worker>,
+): ConstructorParameters<typeof workerThreads.Worker> | undefined {
+  if (!recording()) return undefined
+  const sink = state.sink
+  state.depth++
+  try {
+    const [filename, options] = args
+    const log = sink.traceLog?.() ?? null
+    if (!log || options?.env === workerThreads.SHARE_ENV) {
+      sink.spawn('worker_threads')
+      return undefined
+    }
+    const env = (options?.env as NodeJS.ProcessEnv | undefined) ?? { ...process.env }
+    // Explicit execArgv replaces what the worker would inherit, and Node refuses some flags there.
+    const execArgv = [...(options?.execArgv ?? process.execArgv), '--require', CHILD_PRELOAD]
+    if (!workerAccepts(execArgv)) {
+      sink.spawn('worker_threads')
+      return undefined
+    }
+    for (const [n, v] of Object.entries(env)) {
+      if (options?.env !== undefined && unobserved(() => process.env[n]) !== v) continue
+      sink.env(n, v, false, 'test')
+    }
+    return [filename, { ...options, env: { ...env, VEYRUM_TRACE: log }, execArgv }]
+  } catch {
+    // Observation must never change behavior.
+    sink.spawn('worker_threads')
+    return undefined
+  } finally {
+    state.depth--
+  }
 }
 
 type SpawnFunction = 'spawn' | 'spawnSync' | 'exec' | 'execSync' | 'execFile' | 'execFileSync' | 'fork'
@@ -586,11 +641,12 @@ function spawnCall(name: SpawnFunction, args: unknown[]): SpawnCall {
   }
 }
 
-const traceFs: TraceFs = {
+const traceFs = {
   statSync: state.raw.statSync,
   openSync: fs.openSync,
   readSync: fs.readSync,
   closeSync: fs.closeSync,
+  realpathSync: fs.realpathSync.native,
 }
 
 /**
@@ -606,7 +662,7 @@ function prepareSpawn(name: SpawnFunction, args: unknown[]): unknown[] | undefin
   state.depth++
   try {
     const log = sink.traceLog?.() ?? null
-    if (!log || !tracingAvailable(traceFs)) {
+    if (!log) {
       sink.spawn(label)
       return undefined
     }
@@ -617,17 +673,52 @@ function prepareSpawn(name: SpawnFunction, args: unknown[]): unknown[] | undefin
     const env = given ?? { ...process.env }
     const cwd = typeof call.options?.cwd === 'string' ? path.resolve(call.options.cwd) : process.cwd()
     const program = call.shell ?? call.file
-    const pathVariable = env.PATH
+    const pathVariable = envValue(env, 'PATH')
     const resolved = resolveExecutable(program, pathVariable, cwd, traceFs)
-    // Programs looked up on PATH: the directories searched before the match, and the match.
-    if (!program.includes('/')) {
-      for (const dir of (pathVariable ?? '/usr/bin:/bin').split(':')) {
-        const candidate = path.resolve(cwd, dir || '.', program)
+    // Programs looked up on PATH: the candidates tried before the match are inputs (absent).
+    const recordLookup = (candidates: readonly string[]): void => {
+      for (const candidate of candidates) {
         if (candidate === resolved) break
         if (!ignored(candidate)) sink.path(candidate, 'stat', typeOf(candidate), 'other')
       }
     }
+    recordLookup(executableCandidates(program, pathVariable, cwd))
     if (!resolved) return undefined // Nothing runs: the start fails.
+    // The child's environment is an input where it comes from this process's: a value the call set
+    // itself comes from the test's code, which is recorded already.
+    const recordStart = (): void => {
+      if (!ignored(resolved)) sink.path(resolved, 'read', 'file', 'other')
+      for (const [n, v] of Object.entries(env)) {
+        if (given !== undefined && unobserved(() => process.env[n]) !== v) continue
+        sink.env(n, v, false, 'test')
+      }
+    }
+    if (!tracingAvailable(traceFs)) {
+      // No native tracer: a Node program runs with capture's own hooks (see child.ts).
+      const node = call.shell === null ? nodeProgram(resolved, pathVariable, cwd, traceFs) : null
+      if (!node) {
+        sink.spawn(label)
+        return undefined
+      }
+      if (node.kind === 'script') recordLookup(node.interpreterLookup)
+      recordStart()
+      const childEnv = { ...env, VEYRUM_TRACE: log }
+      if (name === 'fork') {
+        const execArgv = [...((call.options?.execArgv as string[] | undefined) ?? process.execArgv)]
+        return call.rebuild({
+          ...call.options,
+          env: childEnv,
+          execArgv: [...execArgv, '--require', CHILD_PRELOAD],
+        })
+      }
+      const traced = ['--require', CHILD_PRELOAD]
+      return node.kind === 'binary'
+        ? call.relaunch(call.file, [...traced, ...call.args], { ...call.options, env: childEnv })
+        : call.relaunch(process.execPath, [...traced, resolved, ...call.args], {
+            ...call.options,
+            env: childEnv,
+          })
+    }
     const kind = classifyExecutable(resolved, traceFs)
     const tools = nativeTools(path.dirname(log))
     // A program run through a shell option would need the shell command rebuilt: only a program
@@ -637,13 +728,7 @@ function prepareSpawn(name: SpawnFunction, args: unknown[]): unknown[] | undefin
       sink.spawn(label)
       return undefined
     }
-    if (!ignored(resolved)) sink.path(resolved, 'read', 'file', 'other')
-    // The child's environment is an input where it comes from this process's: a value the call set
-    // itself comes from the test's code, which is recorded already.
-    for (const [n, v] of Object.entries(env)) {
-      if (given !== undefined && unobserved(() => process.env[n]) !== v) continue
-      sink.env(n, v, false, 'test')
-    }
+    recordStart()
     if (launcher) {
       // veyrum-exec traces the program with ptrace, which replaces the preloaded library, and runs
       // it with the arguments and argv[0] it would have had.
