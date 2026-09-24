@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from 'vitest'
 import { Sandbox } from '../../../test/support/sandbox.ts'
+import { TRACED_PLATFORMS } from '../../capture/src/trace.ts'
 
 /**
  * End-to-end soundness scenarios for the Jest adapter, through the real CLI and a real Jest 30.
@@ -445,7 +446,7 @@ describe('outcomes and channels', () => {
     expect(s.plan()['test/flaky.test.js']?.reason).toBe('not-reusable')
   })
 
-  test.runIf(process.platform === 'linux' && process.arch === 'x64')(
+  test.runIf(TRACED_PLATFORMS.includes(`${process.platform}-${process.arch}`))(
     "a child process is traced: its reads are the test file's inputs",
     () => {
       const s = jest('spawn')

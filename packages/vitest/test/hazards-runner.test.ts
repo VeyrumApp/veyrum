@@ -286,6 +286,19 @@ function writeStaticProgram(dir: string, rel: string): void {
 
 const tracing = TRACED_PLATFORMS.includes(`${process.platform}-${process.arch}`)
 
+describe.skipIf(tracing)('child processes where they cannot be traced', () => {
+  test('a test that starts a child process is never reused', () => {
+    sandbox = new Sandbox('child-untraced')
+      .write(
+        'test/child.test.ts',
+        "import { execFileSync } from 'node:child_process'\nimport { expect, test } from 'vitest'\ntest('child', () => expect(execFileSync(process.execPath, ['-e', 'process.stdout.write(\"a\")']).toString()).toBe('a'))\n",
+      )
+      .write('test/plain.test.ts', PLAIN_TEST)
+    sandbox.capture()
+    expect(sandbox.actions()).toEqual({ 'test/child.test.ts': 'run', 'test/plain.test.ts': 'skip' })
+  })
+})
+
 describe.runIf(tracing)('child processes', () => {
   const spawnTest = (body: string): string =>
     `import { execFileSync, execSync } from 'node:child_process'\nimport { expect, test } from 'vitest'\ntest('child', () => {\n${body}\n})\n`
