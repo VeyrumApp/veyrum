@@ -303,6 +303,14 @@ export function assemble(input: AssembleInput): Assembled {
       !flags.has(FLAGS.snapshotWritten) &&
       !flags.has(FLAGS.captureIncomplete)
     closure.sort((a, b) => entryKey(a).localeCompare(entryKey(b)))
+    const remote = [
+      ...new Set(
+        (payload?.net ?? [])
+          .filter((n) => !n.local)
+          .map((n) => (n.port === null ? n.host : `${n.host}:${n.port}`)),
+      ),
+    ]
+    const spawned = [...new Set(payload?.spawns ?? [])]
     records.push({
       id: digest(`${input.runId}\u0000${outcome.project}\u0000${check}`),
       check,
@@ -317,6 +325,10 @@ export function assemble(input: AssembleInput): Assembled {
       closure,
       createdAt: input.createdAt,
       revision: input.revision,
+      channels: {
+        ...(remote.length > 0 ? { net: remote.sort().slice(0, 20) } : {}),
+        ...(spawned.length > 0 ? { spawn: spawned.sort().slice(0, 20) } : {}),
+      },
     })
   }
 

@@ -51,6 +51,7 @@ export {
   type EvidenceRecord,
   FLAGS,
   type Flag,
+  type RecordChannels,
   type RunInfo,
   type TestOutcome,
 } from './types.ts'

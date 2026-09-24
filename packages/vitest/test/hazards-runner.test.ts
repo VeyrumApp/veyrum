@@ -292,6 +292,7 @@ describe.runIf(tracing)('child processes', () => {
     const plan = sandbox.plan()
     expect(plan['test/direct.test.ts']?.reason).toBe('blocked-flag')
     expect(plan['test/nested.test.ts']?.reason).toBe('blocked-flag')
+    expect(plan['test/nested.test.ts']?.details[0]).toMatch(/spawn \(.*fixtures\/static\)$/)
   })
 })
 
@@ -321,6 +322,9 @@ describe('unobservable channels', () => {
     sandbox.capture()
     const plan = sandbox.plan()
     expect(plan['test/remote.test.ts']?.action).toBe('run')
+    expect(plan['test/remote.test.ts']?.details).toEqual([
+      'the check uses channels Veyrum does not observe: net-remote (203.0.113.1:9)',
+    ])
     expect(plan['test/local.test.ts']?.action).toBe('skip')
     expect(plan['test/local.test.ts']?.flagsRelied).toContain('net-local')
   })

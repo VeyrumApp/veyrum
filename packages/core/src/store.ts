@@ -3,9 +3,9 @@ import path from 'node:path'
 import { DatabaseSync, type StatementSync } from 'node:sqlite'
 import { brotliCompressSync, brotliDecompressSync, constants as zlibConstants } from 'node:zlib'
 import { type Digest, digest } from './hash.ts'
-import type { CheckRef, ClosureEntry, EvidenceRecord, RunInfo, TestOutcome } from './types.ts'
+import type { CheckRef, ClosureEntry, EvidenceRecord, RecordChannels, RunInfo, TestOutcome } from './types.ts'
 
-const SCHEMA_VERSION = 1
+const SCHEMA_VERSION = 2
 
 interface RecordRow {
   id: string
@@ -21,6 +21,7 @@ interface RecordRow {
   flags: string
   tests: string
   closure_digest: string
+  channels: string
 }
 
 /**
@@ -56,7 +57,7 @@ export class Store {
         id TEXT PRIMARY KEY, check_path TEXT NOT NULL, project TEXT NOT NULL, run_id TEXT NOT NULL,
         runtime_key TEXT NOT NULL, verdict TEXT NOT NULL, reusable INTEGER NOT NULL, created_at TEXT NOT NULL,
         revision TEXT, duration_ms REAL NOT NULL, flags TEXT NOT NULL, tests TEXT NOT NULL,
-        closure_digest TEXT NOT NULL
+        closure_digest TEXT NOT NULL, channels TEXT NOT NULL DEFAULT '{}'
       );
       CREATE INDEX IF NOT EXISTS records_by_check ON records (check_path, project, created_at DESC);
       CREATE TABLE IF NOT EXISTS stat_cache (
@@ -73,7 +74,11 @@ export class Store {
       | { value: string }
       | undefined
     if (!row) db.prepare('INSERT INTO meta (key, value) VALUES (?, ?)').run('schema', String(SCHEMA_VERSION))
-    else if (Number(row.value) !== SCHEMA_VERSION) {
+    else if (Number(row.value) === 1) {
+      // Schema 2 names the unobserved channels a record used; older records have none recorded.
+      db.exec(`ALTER TABLE records ADD COLUMN channels TEXT NOT NULL DEFAULT '{}'`)
+      db.prepare('UPDATE meta SET value = ? WHERE key = ?').run(String(SCHEMA_VERSION), 'schema')
+    } else if (Number(row.value) !== SCHEMA_VERSION) {
       throw new Error(
         `Veyrum store ${file} has schema ${row.value}, expected ${SCHEMA_VERSION}. Delete it to rebuild.`,
       )
@@ -129,7 +134,7 @@ export class Store {
       this.sql('INSERT INTO blobs (digest, data) VALUES (?, ?)').run(closureDigest, compress(closureJson))
     this.sql(
       `INSERT OR REPLACE INTO records (id, check_path, project, run_id, runtime_key, verdict, reusable, created_at,
-          revision, duration_ms, flags, tests, closure_digest) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          revision, duration_ms, flags, tests, closure_digest, channels) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       record.id,
       record.check,
@@ -144,6 +149,7 @@ export class Store {
       JSON.stringify(record.flags),
       JSON.stringify(record.tests),
       closureDigest,
+      JSON.stringify(record.channels ?? {}),
     )
   }
 
@@ -303,6 +309,7 @@ export class Store {
 
   private hydrate(row: RecordRow): EvidenceRecord {
     const closure = this.closure(row.closure_digest)
+    const channels = JSON.parse(row.channels) as RecordChannels
     return {
       id: row.id,
       check: row.check_path,
@@ -317,6 +324,7 @@ export class Store {
       closure,
       createdAt: row.created_at,
       revision: row.revision,
+      ...(Object.keys(channels).length > 0 ? { channels } : {}),
     }
   }
 }

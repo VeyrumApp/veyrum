@@ -84,6 +84,14 @@ export interface TestOutcome {
   readonly retries: number
 }
 
+/** What a record's unobserved channels were, for explanations; never an input to decisions. */
+export interface RecordChannels {
+  /** Remote network destinations (`host:port`). */
+  readonly net?: readonly string[]
+  /** Programs or threads that could not be traced. */
+  readonly spawn?: readonly string[]
+}
+
 export interface EvidenceRecord {
   readonly id: string
   /** Repository-relative test file path. */
@@ -101,6 +109,8 @@ export interface EvidenceRecord {
   readonly closure: readonly ClosureEntry[]
   readonly createdAt: string
   readonly revision: string | null
+  /** The unobserved channels behind the record's blocking flags. */
+  readonly channels?: RecordChannels
 }
 
 /** Facts about one runner invocation, shared by every record it produced. */

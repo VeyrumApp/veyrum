@@ -216,7 +216,7 @@ export async function plan(options: PlanOptions): Promise<Decision[]> {
       const blocked = record.flags.filter((f) => policy.blockingFlags.has(f))
       if (blocked.length > 0) {
         reject('blocked-flag', record, [
-          `the check uses channels Veyrum does not observe: ${blocked.join(', ')}`,
+          `the check uses channels Veyrum does not observe: ${blocked.map((f) => describeChannel(f, record)).join(', ')}`,
         ])
         continue
       }
@@ -343,6 +343,15 @@ function sharedDigest(run: RunInfo): Digest {
     sharedDigestCache.set(run, d)
   }
   return d
+}
+
+/** A blocking flag with what it was about, when the record names it (`net-remote (host:443)`). */
+function describeChannel(flag: string, record: EvidenceRecord): string {
+  const named =
+    flag === 'net-remote' ? record.channels?.net : flag === 'spawn' ? record.channels?.spawn : undefined
+  if (!named || named.length === 0) return flag
+  const more = named.length > 3 ? ` and ${named.length - 3} more` : ''
+  return `${flag} (${named.slice(0, 3).join(', ')}${more})`
 }
 
 /** Renders `@top/fn:add#0/v:inner#0` as `add > inner`, dropping ordinals of 0. */
