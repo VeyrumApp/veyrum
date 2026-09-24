@@ -128,6 +128,10 @@ function execOnce(
     fs.closeSync(out)
     fs.closeSync(err)
   }
+  if ((result.error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT') {
+    fs.rmSync(dir, { recursive: true, force: true })
+    throw new Error('the benchmark rig needs coreutils `timeout` (Linux) to bound every command')
+  }
   if (result.pid) {
     try {
       process.kill(-result.pid, 'SIGKILL')
