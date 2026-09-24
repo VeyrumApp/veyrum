@@ -1,8 +1,11 @@
 #!/usr/bin/env node
-// Builds the child-process tracer (packages/capture/native/trace.c, and exec.c for programs it
-// cannot follow) next to the capture package's compiled code. Tracing is built on Linux x64 and arm64 (TRACED_PLATFORMS in
-// packages/capture/src/trace.ts); elsewhere, or without a C compiler, nothing is built and child
-// processes stay unobserved (a test that starts one always runs).
+// Builds the child-process tracer next to the capture package's compiled code, in
+// dist/native/<platform>-<arch>/. On Linux x64 and arm64: the preloaded library
+// (packages/capture/native/trace.c) and the ptrace launcher for programs it cannot follow
+// (exec.c). On Windows x64: a DLL loaded into every traced process and its launcher
+// (trace-win.c, exec-win.c; see build-native-windows.mjs). These are TRACED_PLATFORMS in
+// packages/capture/src/trace.ts; elsewhere, or without a C compiler, nothing is built: a Node
+// program a test starts is then traced with capture's own hooks, and any other blocks reuse.
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -13,6 +16,11 @@ const source = path.join(root, 'packages/capture/native/trace.c')
 const nativeDir = path.join(root, 'packages/capture/dist/native', `${process.platform}-${process.arch}`)
 const output = path.join(nativeDir, 'libveyrum-trace.so')
 
+if (process.platform === 'win32') {
+  const { buildWindows } = await import('./build-native-windows.mjs')
+  buildWindows(root, nativeDir)
+  process.exit(0)
+}
 if (!['linux-x64', 'linux-arm64'].includes(`${process.platform}-${process.arch}`)) {
   console.log(`build-native: child-process tracing is not built on ${process.platform}-${process.arch}`)
   process.exit(0)

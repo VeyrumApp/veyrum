@@ -19,7 +19,9 @@ const launcher = path.resolve(
   fileURLToPath(import.meta.url),
   `../../../capture/dist/native/${process.platform}-${process.arch}/veyrum-exec`,
 )
-const tracing = TRACED_PLATFORMS.includes(`${process.platform}-${process.arch}`)
+// The ptrace launcher is Linux-only; Windows programs are covered by hazards-windows.test.ts.
+const tracing =
+  process.platform === 'linux' && TRACED_PLATFORMS.includes(`${process.platform}-${process.arch}`)
 const tool = tracing ? staticTool() : null
 const go = tracing ? goTool() : null
 

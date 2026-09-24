@@ -13,11 +13,14 @@ import {
   classifyExecutable,
   envValue,
   executableCandidates,
+  LAUNCHER_ARGV0,
+  launchArguments,
   nativeTools,
   nodeProgram,
   resolveExecutable,
   type TraceEvent,
   tracingAvailable,
+  windowsCommandLine,
 } from './trace.ts'
 
 /** `manifest`: a package manifest a manifest reader read (see InstallOptions.manifestReaders). */
@@ -604,8 +607,30 @@ interface SpawnCall {
 const isOptions = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v)
 
-/** The shell Node runs commands with: cmd.exe (ComSpec) on Windows, /bin/sh elsewhere. */
-const DEFAULT_SHELL = process.platform === 'win32' ? (process.env.ComSpec ?? 'cmd.exe') : '/bin/sh'
+/** The shell Node runs a command with when `shell` is true, or for exec. */
+function defaultShell(): string {
+  if (process.platform !== 'win32') return '/bin/sh'
+  return unobserved(() => process.env.comspec) || 'cmd.exe'
+}
+
+/** A shell Node runs with `/d /s /c "command"` (and verbatim arguments) rather than `-c command`. */
+const CMD_SHELL = /^(?:.*\\)?cmd(?:\.exe)?$/i
+
+/**
+ * The execArgv a fork passes before the module: the given one, else this process's, without the
+ * `-e <code>` this process may have been started with.
+ */
+function forkExecArgv(options: Record<string, unknown> | undefined): string[] {
+  const given = options?.execArgv as string[] | undefined
+  if (given) return [...given]
+  const execArgv = [...process.execArgv]
+  const code = (process as { _eval?: string })._eval
+  if (code != null) {
+    const index = execArgv.lastIndexOf(code)
+    if (index > 0) execArgv.splice(index - 1, 2)
+  }
+  return execArgv
+}
 
 /** Reads a child_process call's arguments the way Node normalizes them. */
 function spawnCall(name: SpawnFunction, args: unknown[]): SpawnCall {
@@ -615,15 +640,13 @@ function spawnCall(name: SpawnFunction, args: unknown[]): SpawnCall {
     const options = isOptions(second) ? second : undefined
     const callback = [args[1], args[2]].find((a) => typeof a === 'function')
     return {
-      shell: typeof options?.shell === 'string' ? options.shell : DEFAULT_SHELL,
+      shell: typeof options?.shell === 'string' ? options.shell : defaultShell(),
       file,
       options,
       args: [],
       rebuild: (o) => (callback ? [file, o, callback] : [file, o]),
-      // A shell command runs through its shell, which spawnCall's callers launch instead.
-      relaunch: () => {
-        throw new Error('a shell command cannot be relaunched')
-      },
+      // A shell command can only run another command, through the shell its options name.
+      relaunch: (f, _l, o) => (callback ? [f, o, callback] : [f, o]),
     }
   }
   let i = 1
@@ -642,7 +665,7 @@ function spawnCall(name: SpawnFunction, args: unknown[]): SpawnCall {
     name === 'fork'
       ? null
       : options?.shell === true
-        ? DEFAULT_SHELL
+        ? defaultShell()
         : typeof options?.shell === 'string'
           ? options.shell
           : null
@@ -724,11 +747,10 @@ function prepareSpawn(name: SpawnFunction, args: unknown[]): unknown[] | undefin
       recordStart()
       const childEnv = { ...env, VEYRUM_TRACE: log }
       if (name === 'fork') {
-        const execArgv = [...((call.options?.execArgv as string[] | undefined) ?? process.execArgv)]
         return call.rebuild({
           ...call.options,
           env: childEnv,
-          execArgv: [...execArgv, '--require', CHILD_PRELOAD],
+          execArgv: [...forkExecArgv(call.options), '--require', CHILD_PRELOAD],
         })
       }
       const traced = ['--require', CHILD_PRELOAD]
@@ -741,6 +763,24 @@ function prepareSpawn(name: SpawnFunction, args: unknown[]): unknown[] | undefin
     }
     const kind = classifyExecutable(resolved, traceFs)
     const tools = nativeTools(path.dirname(log))
+    if (process.platform === 'win32') {
+      // Every program starts through the launcher, which loads the tracer into it. Node refuses
+      // to start a batch file without a shell: such a call is left to fail as it would.
+      if (call.shell === null && /\.(?:bat|cmd)$/i.test(resolved)) return undefined
+      if (kind !== 'launched' || !tools.launcher) {
+        sink.spawn(label)
+        return undefined
+      }
+      if (call.shell !== null && typeof call.options?.shell !== 'string' && name !== 'fork')
+        sink.env(
+          'comspec',
+          unobserved(() => process.env.comspec),
+          false,
+          'test',
+        )
+      recordStart()
+      return launchWindows(name, call, resolved, tools.launcher, { ...env, VEYRUM_TRACE: log })
+    }
     // A program run through a shell option would need the shell command rebuilt: only a program
     // run directly is launched.
     const launcher = kind === 'launched' && call.shell === null && name !== 'fork' ? tools.launcher : null
@@ -763,6 +803,59 @@ function prepareSpawn(name: SpawnFunction, args: unknown[]): unknown[] | undefin
   } finally {
     state.depth--
   }
+}
+
+/**
+ * A Windows spawn rewritten to start the program through the launcher (native/exec-win.c), which
+ * gets the program and the exact command line Node would have built for it, and passes that on:
+ * the program sees the arguments, argv[0], environment, streams and window settings it would
+ * have. The caller sees the launcher's pid, and the program's exit code.
+ */
+function launchWindows(
+  name: SpawnFunction,
+  call: SpawnCall,
+  resolved: string,
+  launcher: string,
+  env: NodeJS.ProcessEnv,
+): unknown[] {
+  const options = call.options ?? {}
+  if (name === 'fork') {
+    // fork runs options.execPath with execArgv, the module and its arguments, quoted by Node: the
+    // launcher takes the place of Node, and the program and Node's argv[0] lead execArgv.
+    const argv0 =
+      typeof options.argv0 === 'string' ? options.argv0 : String(options.execPath ?? process.execPath)
+    const verbatim = options.windowsVerbatimArguments === true
+    const program = verbatim ? launchArguments(resolved, '')[0]! : resolved
+    return call.rebuild({
+      ...options,
+      env,
+      execPath: launcher,
+      argv0: LAUNCHER_ARGV0,
+      execArgv: [program, argv0, ...forkExecArgv(options)],
+    })
+  }
+  // The command line as Node's normalizeSpawnArguments would build it.
+  let file = call.file
+  let args = call.args.map(String)
+  let verbatim = options.windowsVerbatimArguments === true
+  if (call.shell !== null) {
+    const command = args.length > 0 ? `${file} ${args.join(' ')}` : file
+    file = call.shell
+    if (CMD_SHELL.test(file)) {
+      args = ['/d', '/s', '/c', `"${command}"`]
+      verbatim = true
+    } else {
+      args = ['-c', command]
+    }
+  }
+  const argv0 = typeof options.argv0 === 'string' ? options.argv0 : file
+  const [program, commandLine] = launchArguments(resolved, windowsCommandLine([argv0, ...args], verbatim))
+  const launch = { ...options, env, argv0: LAUNCHER_ARGV0, windowsVerbatimArguments: true }
+  if (name === 'exec' || name === 'execSync') {
+    // A shell command runs through `shell -c command`: the launcher is the shell, and skips -c.
+    return call.relaunch(`${program} ${commandLine}`, [], { ...launch, shell: launcher })
+  }
+  return call.relaunch(launcher, [program, commandLine], { ...launch, shell: false })
 }
 
 /** Records what traced child processes did, as if the test had done it (see trace.ts). */

@@ -32,7 +32,9 @@ function writeForeignProgram(dir: string, rel: string): void {
   fs.writeFileSync(file, elf, { mode: 0o755 })
 }
 
-const tracing = TRACED_PLATFORMS.includes(`${process.platform}-${process.arch}`)
+// ELF programs and POSIX shell commands: Linux only (Windows: hazards-windows.test.ts).
+const tracing =
+  process.platform === 'linux' && TRACED_PLATFORMS.includes(`${process.platform}-${process.arch}`)
 
 describe.runIf(tracing)('programs that cannot be traced', () => {
   const spawnTest = (body: string): string =>

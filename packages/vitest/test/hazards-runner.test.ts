@@ -343,10 +343,10 @@ describe('evidence store placement', () => {
   })
 })
 
-/** A 64-bit ELF executable without an interpreter: statically linked, so it cannot be traced. */
 const tracing = TRACED_PLATFORMS.includes(`${process.platform}-${process.arch}`)
 
 describe.skipIf(tracing)('child processes where they cannot be traced', () => {
+  // A Node program is traced with capture's own hooks everywhere; any other program is not.
   test('a test that starts a child process is never reused', () => {
     sandbox = new Sandbox('child-untraced')
       .write(
@@ -360,7 +360,8 @@ describe.skipIf(tracing)('child processes where they cannot be traced', () => {
   })
 })
 
-describe.runIf(tracing)('child processes', () => {
+// POSIX programs and shell commands; Windows has its own scenarios (hazards-windows.test.ts).
+describe.runIf(tracing && process.platform !== 'win32')('child processes', () => {
   const spawnTest = (body: string): string =>
     `import { execFileSync, execSync } from 'node:child_process'\nimport { expect, test } from 'vitest'\ntest('child', () => {\n${body}\n})\n`
 
