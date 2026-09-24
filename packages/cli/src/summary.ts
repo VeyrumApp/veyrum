@@ -52,7 +52,10 @@ export function markdownSummary(result: RunResult, context: SummaryContext): str
       `Shadow mode: every test file ran. Veyrum would have reused evidence for **${reusable.length} of ${decisions.length}** test files, **${percent(reusableMs, totalMs)}** of recorded test time (${duration(reusableMs)}).`,
     )
   } else if (context.mode === 'full') {
-    out.push(`Full run: every test file ran and its evidence was recorded (${decisions.length} test files).`)
+    const recorded = result.outcomes.filter((o) => o.captured).length
+    out.push(
+      `Full run: every test file ran (${decisions.length} test files). Evidence was recorded for **${recorded}**; the other ${result.outcomes.length - recorded} already had valid evidence.`,
+    )
   } else {
     const verb = context.mode === 'plan' ? 'would run' : 'ran'
     out.push(
@@ -86,10 +89,10 @@ export function markdownSummary(result: RunResult, context: SummaryContext): str
     out.push('')
   }
 
-  const failed = result.records.filter((r) => r.verdict === 'fail')
+  const failed = result.outcomes.filter((o) => o.verdict === 'fail')
   if (failed.length > 0) {
     out.push(`Failing test files (${failed.length}):`)
-    for (const r of failed.slice(0, 20)) out.push(`- \`${r.check}\``)
+    for (const o of failed.slice(0, 20)) out.push(`- \`${o.check.path}\``)
     if (failed.length > 20) out.push(`- and ${failed.length - 20} more`)
     out.push('')
   }

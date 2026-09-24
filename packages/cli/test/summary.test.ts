@@ -1,4 +1,4 @@
-import type { Decision, EvidenceRecord, RunResult } from '@veyrum/core'
+import type { Decision, RunResult } from '@veyrum/core'
 import { describe, expect, test } from 'vitest'
 import { markdownSummary } from '../src/summary.ts'
 
@@ -24,6 +24,7 @@ const result = (decisions: Decision[], extra: Partial<RunResult> = {}): RunResul
   decisions,
   records: [],
   ran: [],
+  outcomes: [],
   verifications: [],
   ok: true,
   timings: { planMs: 1200, runMs: 65_000, recordMs: 300 },
@@ -58,7 +59,14 @@ describe('markdown summary', () => {
             outcome: 'fail',
           },
         ],
-        records: [{ check: 'test/b.test.ts', verdict: 'fail' } as EvidenceRecord],
+        outcomes: [
+          {
+            check: { path: 'test/b.test.ts', project: 'unit' },
+            verdict: 'fail',
+            durationMs: 6000,
+            captured: false,
+          },
+        ],
       }),
       { mode: 'full', audit: true },
     )
@@ -70,5 +78,27 @@ describe('markdown summary', () => {
     )
     expect(text).toContain('- Escape: `test/b.test.ts` (unit) was reusable but fails.')
     expect(text).toContain('Failing test files (1):')
+  })
+
+  test('a full run says how many files needed new evidence', () => {
+    const outcome = (path: string, captured: boolean) => ({
+      check: { path, project: '' },
+      verdict: 'pass' as const,
+      durationMs: 1,
+      captured,
+    })
+    const text = markdownSummary(
+      result(decisions, {
+        outcomes: [
+          outcome('test/a.test.ts', false),
+          outcome('test/b.test.ts', false),
+          outcome('test/c.test.ts', true),
+        ],
+      }),
+      { mode: 'full', audit: false },
+    )
+    expect(text).toContain(
+      'Full run: every test file ran (3 test files). Evidence was recorded for **1**; the other 2 already had valid evidence.',
+    )
   })
 })

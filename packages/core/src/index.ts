@@ -17,6 +17,7 @@ export { describeUnit, type ModuleTransformer, type PlanOptions, plan } from './
 export { DEFAULT_POLICY, makePolicy, type Policy, STRICT_SOURCE_FLAGS } from './policy.ts'
 export { CAPTURE_VERSION, runtimeFacts, runtimeKeyOf } from './runtime.ts'
 export {
+  type CheckOutcomeSummary,
   checkKey,
   type Execution,
   forcedDecisions,
@@ -25,6 +26,7 @@ export {
   type RunOptions,
   type RunResult,
   recordEvidence,
+  recordUncapturedFailures,
   recordVerifications,
   seededRandom,
   selectExecution,

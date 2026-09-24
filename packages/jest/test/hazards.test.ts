@@ -319,6 +319,27 @@ describe('inputs', () => {
   })
 })
 
+describe('incremental capture', () => {
+  for (const workers of [1, 2]) {
+    test(`a full run records evidence only for files whose evidence is stale (${workers === 1 ? 'in band' : 'workers'})`, () => {
+      const s = jest(`incremental-${workers}`, workers)
+        .write('src/math.js', MATH)
+        .write('test/add.test.js', ADD_TEST)
+        .write('test/mul.test.js', MUL_TEST)
+      const captured = (r: { outcomes: readonly { check: { path: string }; captured: boolean }[] }) =>
+        Object.fromEntries(r.outcomes.map((o) => [o.check.path, o.captured]))
+      expect(captured(s.capture())).toEqual({ 'test/add.test.js': true, 'test/mul.test.js': true })
+      expect(captured(s.capture())).toEqual({ 'test/add.test.js': false, 'test/mul.test.js': false })
+      s.edit('src/math.js', 'return a * b', 'return a * b * 1')
+      expect(captured(s.capture())).toEqual({ 'test/add.test.js': false, 'test/mul.test.js': true })
+      expect(s.actions()).toEqual({ 'test/add.test.js': 'skip', 'test/mul.test.js': 'skip' })
+      // Precision survives a run where capture stopped and started again in the same worker.
+      s.edit('src/math.js', 'return a + b', 'return a + b + 0')
+      expect(s.actions()).toEqual({ 'test/add.test.js': 'run', 'test/mul.test.js': 'skip' })
+    })
+  }
+})
+
 describe('outcomes and channels', () => {
   test('a failing file always runs', () => {
     const s = jest('failing').write('test/fail.test.js', "test('fails', () => expect(1).toBe(2))\n")

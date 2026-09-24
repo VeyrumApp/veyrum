@@ -349,6 +349,32 @@ export interface WorkerCapture {
     snapshot: { added: number; updated: number },
     sources?: ModuleSources,
   ): Promise<void>
+  /** Ends capture without a payload, for a file that turns out to need none. */
+  abandon(): Promise<void>
+}
+
+/** Where a run lists the test files that execute without capture (their evidence is valid). */
+export const UNCAPTURED_FILE = 'uncaptured.json'
+const UNCAPTURED_KEY = Symbol.for('veyrum.capture.uncaptured')
+
+/**
+ * The test files of this run that execute without capture, read once per isolate from the run's
+ * scratch directory. A missing or unreadable list means every file is captured.
+ */
+export function uncapturedFiles(outDir: string): ReadonlySet<string> {
+  const g = globalThis as unknown as Record<symbol, { dir: string; files: ReadonlySet<string> } | undefined>
+  const cached = g[UNCAPTURED_KEY]
+  if (cached?.dir === outDir) return cached.files
+  let files: ReadonlySet<string> = new Set()
+  unobserved(() => {
+    try {
+      files = new Set(JSON.parse(fs.readFileSync(path.join(outDir, UNCAPTURED_FILE), 'utf8')) as string[])
+    } catch {
+      // Every file is captured.
+    }
+  })
+  g[UNCAPTURED_KEY] = { dir: outDir, files }
+  return files
 }
 
 /**
@@ -537,6 +563,15 @@ export async function beginWorkerCapture(options: WorkerCaptureOptions): Promise
 
   const beginMs = performance.now() - beginStarted
   return {
+    async abandon() {
+      setSink(outerSink)
+      state.compiled = null
+      if (CPU_PROFILE_DIR) await session.post('Profiler.stop').catch(() => {})
+      if (layout !== 'jest') {
+        state.session = null
+        await stopCoverage(session)
+      }
+    },
     async finish(testFile, snapshot, sources) {
       const finishStarted = performance.now()
       let debuggerEnabled = false

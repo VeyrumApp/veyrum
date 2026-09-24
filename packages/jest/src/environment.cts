@@ -101,9 +101,16 @@ function VeyrumEnvironment(envConfig: EnvironmentConfig, context: EnvironmentCon
   let pending: Promise<CaptureWorker.WorkerCapture> | null = null
   const setup = env.setup.bind(env)
   const teardown = env.teardown.bind(env)
+  // A file whose evidence is still valid runs plain: its record already describes this execution.
+  // The coverage session kept across files ends, since it slows everything the worker runs.
+  const plain = worker.uncapturedFiles(config.outDir).has(context.testPath)
   env.setup = async () => {
-    pending = worker.beginWorkerCapture(options)
-    await pending
+    if (plain) {
+      await worker.endWorkerCapture()
+    } else {
+      pending = worker.beginWorkerCapture(options)
+      await pending
+    }
     await setup()
   }
   env.teardown = async () => {

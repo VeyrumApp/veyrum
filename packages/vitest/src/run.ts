@@ -6,7 +6,9 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { MainRecorder, rawFs, VOLATILE_ENV } from '@veyrum/capture'
 import { assemble } from '@veyrum/capture/assemble'
 import { packageJsonAbove, storeFiles, veyrumDirs } from '@veyrum/capture/host'
+import { UNCAPTURED_FILE } from '@veyrum/capture/worker'
 import {
+  type CheckOutcomeSummary,
   type CheckRef,
   checkKey,
   type Decision,
@@ -17,6 +19,7 @@ import {
   type RunOptions,
   type RunResult,
   recordEvidence,
+  recordUncapturedFailures,
   recordVerifications,
   runtimeFacts,
   runtimeKeyOf,
@@ -301,6 +304,7 @@ export async function runVitest(options: VitestRunOptions): Promise<VitestRunRes
         decisions,
         records: [],
         ran: [],
+        outcomes: [],
         verifications: [],
         ok: true,
         timings: { planMs, runMs: 0, recordMs: 0, totalMs: performance.now() - started },
@@ -309,6 +313,11 @@ export async function runVitest(options: VitestRunOptions): Promise<VitestRunRes
 
     const execution = selectExecution(checks, decisions, options, runId)
     const selected = specs.filter((s) => execution.toRun.has(checkKey(checkOf(root, s))))
+    const captured = (check: CheckRef): boolean => execution.capture.has(checkKey(check))
+    fs.writeFileSync(
+      path.join(scratch, UNCAPTURED_FILE),
+      JSON.stringify(selected.filter((s) => !captured(checkOf(root, s))).map((s) => s.moduleId)),
+    )
     const runStarted = performance.now()
     let unhandled = 0
     if (selected.length > 0) {
@@ -322,6 +331,10 @@ export async function runVitest(options: VitestRunOptions): Promise<VitestRunRes
 
     const recordStarted = performance.now()
     const pool = String((vitest.config as unknown as { pool?: string }).pool ?? '')
+    const outcomes: CheckOutcomeSummary[] = [...reporter.outcomes.values()].map((o) => {
+      const check = { path: toRepoPath(root, o.file), project: o.project }
+      return { check, verdict: o.verdict, durationMs: o.durationMs, captured: captured(check) }
+    })
     const recording = recordEvidence(options.strict, () => {
       // One transaction: assembly caches a digest for every file it reads.
       const { run, records } = options.store.transaction(() =>
@@ -333,7 +346,9 @@ export async function runVitest(options: VitestRunOptions): Promise<VitestRunRes
           revision: options.revision ?? null,
           createdAt,
           outDir: scratch,
-          outcomes: reporter.outcomes.values(),
+          outcomes: [...reporter.outcomes.values()].filter((o) =>
+            captured({ path: toRepoPath(root, o.file), project: o.project }),
+          ),
           main,
           files,
           store: options.store,
@@ -353,22 +368,23 @@ export async function runVitest(options: VitestRunOptions): Promise<VitestRunRes
         options.store.putRun(run)
         for (const record of records) options.store.putRecord(record)
       })
-      return { records, verifications: recordVerifications(options.store, runId, execution, records) }
+      recordUncapturedFailures(options.store, runId, options.revision ?? null, decisions, outcomes)
+      return { records, verifications: recordVerifications(options.store, runId, execution, outcomes) }
     })
     const { records, verifications } = recording
     const recordMs = performance.now() - recordStarted
-    const outcomes = [...reporter.outcomes.values()]
     const failed =
       unhandled > 0 ||
-      (recording.recorded
-        ? records.some((r) => r.verdict === 'fail') || records.length < selected.length
-        : outcomes.some((o) => o.verdict === 'fail') || outcomes.length < selected.length)
+      outcomes.some((o) => o.verdict === 'fail') ||
+      outcomes.length < selected.length ||
+      (recording.recorded && records.some((r) => r.verdict === 'fail'))
     return {
       runId,
       runtimeKey,
       decisions,
       records,
       ran: selected.map((s) => checkOf(root, s)),
+      outcomes,
       verifications,
       ok: !failed,
       timings: { planMs, runMs, recordMs, totalMs: performance.now() - started },

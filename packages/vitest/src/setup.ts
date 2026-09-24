@@ -60,32 +60,44 @@ if (config) {
   const vitest = (await import(/* @vite-ignore */ config.vitestEntry)) as typeof import('vitest')
   const nativeRequire = createRequire(import.meta.url)
   const { VOLATILE_ENV } = nativeRequire(config.captureIndex) as typeof Capture
-  const { beginWorkerCapture } = nativeRequire(config.captureWorker) as typeof CaptureWorker
+  const { beginWorkerCapture, uncapturedFiles } = nativeRequire(config.captureWorker) as typeof CaptureWorker
   const g = globalThis as unknown as Record<symbol, Promise<CaptureWorker.WorkerCapture> | undefined>
+  const testFile = (
+    (globalThis as Record<string, unknown>).__vitest_worker__ as { filepath?: string } | undefined
+  )?.filepath
+  // A file whose evidence is still valid runs plain: its record already describes this execution.
+  const plain = testFile !== undefined && uncapturedFiles(config.outDir).has(testFile)
+  if (plain) {
+    const started = g[PENDING]
+    g[PENDING] = undefined
+    if (started) await (await started).abandon()
+  }
   // The preload starts capture when project code can run before setup files (custom environment,
   // snapshot serializers, diff options, custom runner); otherwise capture starts here, before any
   // project code. When an isolate runs several files (isolation off), later files start here too;
   // their payloads are marked as reused.
-  const pending =
-    g[PENDING] ??
-    beginWorkerCapture({
-      root: config.root,
-      outDir: config.outDir,
-      ignoredPrefixes: config.ignored,
-      volatileEnv: VOLATILE_ENV,
-    })
+  const pending = plain
+    ? null
+    : (g[PENDING] ??
+      beginWorkerCapture({
+        root: config.root,
+        outDir: config.outDir,
+        ignoredPrefixes: config.ignored,
+        volatileEnv: VOLATILE_ENV,
+      }))
   g[PENDING] = undefined
-  const capture = await pending
-  vitest.afterAll(async () => {
-    const state = vitest.expect.getState() as unknown as {
-      testPath?: string
-      snapshotState?: SnapshotStateLike
-    }
-    const snapshot = state.snapshotState
-    await capture.finish(
-      state.testPath ?? '',
-      { added: Number(snapshot?.added ?? 0), updated: Number(snapshot?.updated ?? 0) },
-      evaluatedSources,
-    )
-  })
+  const capture = pending ? await pending : null
+  if (capture)
+    vitest.afterAll(async () => {
+      const state = vitest.expect.getState() as unknown as {
+        testPath?: string
+        snapshotState?: SnapshotStateLike
+      }
+      const snapshot = state.snapshotState
+      await capture.finish(
+        state.testPath ?? '',
+        { added: Number(snapshot?.added ?? 0), updated: Number(snapshot?.updated ?? 0) },
+        evaluatedSources,
+      )
+    })
 }

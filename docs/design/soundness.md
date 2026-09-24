@@ -184,6 +184,14 @@ Jest-specific observation rules, each covered by `packages/jest/test/hazards.tes
 - **Changed modules are re-transformed with the project's own Jest transform**, with the options
   the runtime uses for CommonJS or ECMAScript modules.
 
+## Files that run without capture
+
+A full run plans first. A file whose evidence is still valid runs without capture: its closure
+is unchanged, so the execution is the one its record describes. If such a file fails, its
+failure is stored as a record with that closure, so no later plan reuses the passing record
+behind it. Under Jest, files that need capture run first, so a worker ends its coverage session
+at most once.
+
 ## Files that are never reused
 
 These produce no capture, so they always run. Both are safe and cost little:

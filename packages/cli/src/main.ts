@@ -24,7 +24,9 @@ Options:
   --max-workers <n>    Worker count
   --project <name>     Project filter (repeatable; Vitest allows wildcards, Jest matches
                        display names)
-  --json <file>        Write decisions and records as JSON
+  --json <file>        Write decisions, records and outcomes as JSON
+  --record-all         With --full: record evidence for every file, including those whose
+                       evidence is still valid (by default they run without capture)
   --summary <file>     Append a Markdown report (for example to $GITHUB_STEP_SUMMARY)
   --explain            Print the reason for every decision
   --quiet              Do not print the runner's test output
@@ -58,6 +60,7 @@ interface Args {
   strict: boolean
   isolate: boolean
   audit: boolean
+  recordAll: boolean
   canary: number
   allow: string[]
 }
@@ -82,6 +85,7 @@ function parse(argv: string[]): Args | null {
       strict: { type: 'boolean', default: false },
       isolate: { type: 'boolean', default: false },
       audit: { type: 'boolean', default: false },
+      'record-all': { type: 'boolean', default: false },
       canary: { type: 'string' },
       allow: { type: 'string', multiple: true },
       help: { type: 'boolean', short: 'h', default: false },
@@ -112,6 +116,7 @@ function parse(argv: string[]): Args | null {
     strict: values.strict,
     isolate: values.isolate,
     audit: values.audit,
+    recordAll: values['record-all'],
     canary: values.canary ? Math.max(0, Math.min(1, Number(values.canary))) : 0,
     allow: values.allow ?? [],
   }
@@ -192,6 +197,14 @@ function describe(decision: Decision): string {
 function summarize(result: RunResult, mode: RunMode): string {
   const reused = result.decisions.filter((d) => d.action === 'skip')
   const savedMs = reused.reduce((sum, d) => sum + d.durationMs, 0)
+  if (mode === 'full') {
+    const recorded = result.outcomes.filter((o) => o.captured).length
+    const { planMs, runMs, recordMs } = result.timings
+    return [
+      `veyrum: ${result.decisions.length} test files, ran ${result.outcomes.length}, recorded evidence for ${recorded} (the others already had valid evidence)`,
+      `veyrum: plan ${formatMs(planMs)}, run ${formatMs(runMs)}, record ${formatMs(recordMs)}`,
+    ].join('\n')
+  }
   const lines = [
     `veyrum: ${result.decisions.length} test files, ${mode === 'plan' ? 'would run' : 'ran'} ${result.decisions.length - reused.length}, reused evidence for ${reused.length}`,
   ]
@@ -261,6 +274,7 @@ async function main(argv: string[]): Promise<number> {
       keepScratch: args.keepScratch,
       audit: args.audit,
       canary: args.canary,
+      recordAll: args.recordAll,
       ...(args.allow.length > 0 ? { policy: makePolicy({ allow: args.allow }) } : {}),
     }
     let result: RunResult
@@ -310,6 +324,7 @@ async function main(argv: string[]): Promise<number> {
             runtimeKey: result.runtimeKey,
             decisions: result.decisions,
             records: result.records,
+            outcomes: result.outcomes,
             timings: result.timings,
           },
           null,

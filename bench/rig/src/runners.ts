@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import { createRequire } from 'node:module'
 import path from 'node:path'
-import type { Decision, EvidenceRecord } from '@veyrum/core'
+import type { CheckOutcomeSummary, Decision } from '@veyrum/core'
 import type { Corpus } from './corpus.ts'
 import { childEnv, exec, VEYRUM_CLI } from './exec.ts'
 
@@ -66,12 +66,12 @@ export function captureRun(corpus: Corpus, repo: string, store: string, scratch:
       `veyrum run --full produced no output (exit ${r.code}, signal ${r.signal ?? 'none'}):\n${r.stdout}\n${r.stderr}`,
     )
   const data = JSON.parse(fs.readFileSync(json, 'utf8')) as {
-    records: EvidenceRecord[]
+    outcomes: CheckOutcomeSummary[]
     timings: { runMs: number; recordMs: number }
   }
+  // Files whose evidence was still valid ran without capture; every file that ran has an outcome.
   const outcomes: Outcomes = new Map()
-  for (const rec of data.records)
-    outcomes.set(rec.check, { verdict: rec.verdict, durationMs: rec.durationMs })
+  for (const o of data.outcomes) outcomes.set(o.check.path, { verdict: o.verdict, durationMs: o.durationMs })
   return { outcomes, runMs: data.timings.runMs, recordMs: data.timings.recordMs, wallMs: r.ms }
 }
 

@@ -1,4 +1,5 @@
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, test } from 'vitest'
 import { Sandbox } from '../../../test/support/sandbox.ts'
@@ -46,6 +47,49 @@ describe('verdicts', () => {
     expect(sandbox.actions()['test/stack.test.ts']).toBe('skip')
     sandbox.edit('src/thrower.ts', 'export function boom', '// moved down one line\nexport function boom')
     expect(sandbox.actions()['test/stack.test.ts']).toBe('run')
+  })
+})
+
+describe('incremental capture', () => {
+  const captured = (result: { outcomes: readonly { check: { path: string }; captured: boolean }[] }) =>
+    Object.fromEntries(result.outcomes.map((o) => [o.check.path, o.captured]))
+
+  test('a full run records evidence only for files whose evidence is stale', () => {
+    sandbox = new Sandbox('incremental')
+      .write('src/a.ts', 'export const a = 1\n')
+      .write(
+        'test/a.test.ts',
+        "import { expect, test } from 'vitest'\nimport { a } from '../src/a'\ntest('a', () => expect(a).toBe(1))\n",
+      )
+      .write('test/plain.test.ts', PLAIN_TEST)
+    expect(captured(sandbox.capture())).toEqual({ 'test/a.test.ts': true, 'test/plain.test.ts': true })
+    expect(captured(sandbox.capture())).toEqual({ 'test/a.test.ts': false, 'test/plain.test.ts': false })
+    sandbox.edit('src/a.ts', '= 1', '= 1 + 0')
+    expect(captured(sandbox.capture())).toEqual({ 'test/a.test.ts': true, 'test/plain.test.ts': false })
+    expect(sandbox.actions()).toEqual({ 'test/a.test.ts': 'skip', 'test/plain.test.ts': 'skip' })
+    expect(captured(sandbox.cli(['run', '--full', '--record-all']))).toEqual({
+      'test/a.test.ts': true,
+      'test/plain.test.ts': true,
+    })
+  })
+
+  test('a file that fails while running without capture is not reused afterwards', () => {
+    // A marker in the temporary directory, which Veyrum ignores: the second run fails.
+    const marker = path.join(os.tmpdir(), `veyrum-marker-${process.pid}-${Date.now()}`)
+    try {
+      sandbox = new Sandbox('incremental-fail').write(
+        'test/flip.test.ts',
+        `import fs from 'node:fs'\nimport { expect, test } from 'vitest'\ntest('flip', () => {\n  const seen = fs.existsSync(${JSON.stringify(marker)})\n  fs.writeFileSync(${JSON.stringify(marker)}, '')\n  expect(seen).toBe(false)\n})\n`,
+      )
+      sandbox.capture()
+      expect(sandbox.actions()['test/flip.test.ts']).toBe('skip')
+      const second = sandbox.cli(['run', '--full'])
+      expect(second.code).toBe(1)
+      expect(captured(second)).toEqual({ 'test/flip.test.ts': false })
+      expect(sandbox.plan()['test/flip.test.ts']?.reason).toBe('no-evidence')
+    } finally {
+      fs.rmSync(marker, { force: true })
+    }
   })
 })
 

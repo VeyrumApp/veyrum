@@ -6,8 +6,9 @@ import { fileURLToPath } from 'node:url'
 import { MainRecorder, rawFs, VOLATILE_ENV } from '@veyrum/capture'
 import { assemble } from '@veyrum/capture/assemble'
 import { packageJsonAbove, storeFiles, veyrumDirs } from '@veyrum/capture/host'
-import { endWorkerCapture } from '@veyrum/capture/worker'
+import { endWorkerCapture, UNCAPTURED_FILE } from '@veyrum/capture/worker'
 import {
+  type CheckOutcomeSummary,
   type CheckRef,
   checkKey,
   type Decision,
@@ -19,6 +20,7 @@ import {
   type RunOptions,
   type RunResult,
   recordEvidence,
+  recordUncapturedFailures,
   recordVerifications,
   runtimeFacts,
   runtimeKeyOf,
@@ -101,7 +103,11 @@ interface ProjectConfig extends ProjectConfigLike {
 interface GlobalConfig {
   readonly maxWorkers: number
   readonly watchman: boolean
+  readonly testSequencer: string
 }
+
+/** Jest's stock sequencer, which Veyrum's wraps; a project's own sequencer is left in place. */
+const STOCK_SEQUENCER = /[\\/]@jest[\\/]test-sequencer[\\/]build[\\/]index\.js$/
 
 interface JestApis {
   readConfigs(
@@ -200,16 +206,28 @@ export async function runJest(options: JestRunOptions): Promise<RunResult> {
   // The wrapper lives under a node_modules directory so no project transform applies to it, at a
   // path that depends only on its content: the path is part of the project config, which Jest's
   // transformers put in their cache keys, so a per-run path would defeat the transform cache.
-  const environmentSource = fs
-    .readFileSync(path.join(here, 'environment.cjs'), 'utf8')
-    .replace(/\n\/\/# sourceMappingURL=.*$/m, '\n')
-  const environmentDir = path.join(root, '.veyrum', 'jest', digest(environmentSource), 'node_modules')
+  const source = (name: string): string =>
+    fs.readFileSync(path.join(here, name), 'utf8').replace(/\n\/\/# sourceMappingURL=.*$/m, '\n')
+  const environmentSource = source('environment.cjs')
+  const sequencerSource = source('sequencer.cjs')
+  const environmentDir = path.join(
+    root,
+    '.veyrum',
+    'jest',
+    digest(`${environmentSource}\u0000${sequencerSource}`),
+    'node_modules',
+  )
   const environmentPath = path.join(environmentDir, 'veyrum-environment.cjs')
-  if (!fs.existsSync(environmentPath)) {
+  const sequencerPath = path.join(environmentDir, 'veyrum-sequencer.cjs')
+  for (const [file, content] of [
+    [environmentPath, environmentSource],
+    [sequencerPath, sequencerSource],
+  ] as const) {
+    if (fs.existsSync(file)) continue
     fs.mkdirSync(environmentDir, { recursive: true })
-    const temporary = `${environmentPath}.${runId}`
-    fs.writeFileSync(temporary, environmentSource)
-    fs.renameSync(temporary, environmentPath)
+    const temporary = `${file}.${runId}`
+    fs.writeFileSync(temporary, content)
+    fs.renameSync(temporary, file)
   }
   ignored.push(path.dirname(environmentDir) + path.sep)
   const reporterPath = path.join(here, 'reporter.js')
@@ -255,6 +273,7 @@ export async function runJest(options: JestRunOptions): Promise<RunResult> {
       captureWorker: ownRequire.resolve('@veyrum/capture/worker'),
       resolver: target.runtimeResolve,
       environments,
+      sequencer: globalConfig.testSequencer,
     }
     process.env[JEST_CAPTURE_ENV] = JSON.stringify(captureConfig)
 
@@ -315,6 +334,7 @@ export async function runJest(options: JestRunOptions): Promise<RunResult> {
         decisions,
         records: [],
         ran: [],
+        outcomes: [],
         verifications: [],
         ok: true,
         timings: { planMs, runMs: 0, recordMs: 0, totalMs: performance.now() - started },
@@ -323,6 +343,12 @@ export async function runJest(options: JestRunOptions): Promise<RunResult> {
 
     const execution = selectExecution(checks, decisions, options, runId)
     const selected = selectedSpecs.filter((s) => execution.toRun.has(checkKey(s.check)))
+    const captured = (check: CheckRef): boolean => execution.capture.has(checkKey(check))
+    fs.mkdirSync(scratch, { recursive: true })
+    fs.writeFileSync(
+      path.join(scratch, UNCAPTURED_FILE),
+      JSON.stringify(selected.filter((s) => !captured(s.check)).map((s) => s.file)),
+    )
     const runStarted = performance.now()
     const session = openSession(names)
     let runError = false
@@ -333,6 +359,7 @@ export async function runJest(options: JestRunOptions): Promise<RunResult> {
           _: [...new Set(selected.map((s) => s.file))],
           runTestsByPath: true,
           testEnvironment: environmentPath,
+          ...(STOCK_SEQUENCER.test(globalConfig.testSequencer) ? { testSequencer: sequencerPath } : {}),
           reporters: options.printTests ? ['default', reporterPath] : [reporterPath],
         },
         [root],
@@ -348,9 +375,13 @@ export async function runJest(options: JestRunOptions): Promise<RunResult> {
     // Jest runs every file of a multi-project config in each project whose patterns match it;
     // only outcomes for checks that were discovered for that project become records.
     const known = new Set(specs.map((s) => checkKey(s.check)))
-    const outcomes = [...session.outcomes.values()].filter((o) =>
+    const ranOutcomes = [...session.outcomes.values()].filter((o) =>
       known.has(checkKey({ path: toRepoPath(root, o.file), project: o.project })),
     )
+    const outcomes: CheckOutcomeSummary[] = ranOutcomes.map((o) => {
+      const check = { path: toRepoPath(root, o.file), project: o.project }
+      return { check, verdict: o.verdict, durationMs: o.durationMs, captured: captured(check) }
+    })
     const recording = recordEvidence(options.strict, () => {
       // One transaction: assembly caches a digest for every file it reads.
       const { run, records } = options.store.transaction(() =>
@@ -362,7 +393,9 @@ export async function runJest(options: JestRunOptions): Promise<RunResult> {
           revision: options.revision ?? null,
           createdAt,
           outDir: scratch,
-          outcomes,
+          outcomes: ranOutcomes.filter((o) =>
+            captured({ path: toRepoPath(root, o.file), project: o.project }),
+          ),
           main,
           files,
           store: options.store,
@@ -378,20 +411,16 @@ export async function runJest(options: JestRunOptions): Promise<RunResult> {
         options.store.putRun(run)
         for (const record of records) options.store.putRecord(record)
       })
-      return { records, verifications: recordVerifications(options.store, runId, execution, records) }
+      recordUncapturedFailures(options.store, runId, options.revision ?? null, decisions, outcomes)
+      return { records, verifications: recordVerifications(options.store, runId, execution, outcomes) }
     })
     const { records, verifications } = recording
     const recordMs = performance.now() - recordStarted
-    const ranKeys = new Set(
-      recording.recorded
-        ? records.map((r) => checkKey({ path: r.check, project: r.project }))
-        : outcomes.map((o) => checkKey({ path: toRepoPath(root, o.file), project: o.project })),
-    )
+    const ranKeys = new Set(outcomes.map((o) => checkKey(o.check)))
     const failed =
       runError ||
-      (recording.recorded
-        ? records.some((r) => r.verdict === 'fail')
-        : outcomes.some((o) => o.verdict === 'fail')) ||
+      outcomes.some((o) => o.verdict === 'fail') ||
+      (recording.recorded && records.some((r) => r.verdict === 'fail')) ||
       selected.some((s) => !ranKeys.has(checkKey(s.check)))
     return {
       runId,
@@ -399,6 +428,7 @@ export async function runJest(options: JestRunOptions): Promise<RunResult> {
       decisions,
       records,
       ran: selected.map((s) => s.check),
+      outcomes,
       verifications,
       ok: !failed,
       timings: { planMs, runMs, recordMs, totalMs: performance.now() - started },

@@ -1,3 +1,4 @@
+import { digest } from './hash.ts'
 import type { Policy } from './policy.ts'
 import type { Store } from './store.ts'
 import type { CheckRef, Decision, EvidenceRecord } from './types.ts'
@@ -33,6 +34,11 @@ export interface RunOptions {
   /** With mode 'affected': also run this fraction of reusable files as canaries (0 to 1). */
   readonly canary?: number
   /**
+   * Record evidence for every file that runs. By default a file whose evidence is still valid
+   * runs without capture: its existing record already describes this execution.
+   */
+  readonly recordAll?: boolean
+  /**
    * Fail on Veyrum's own errors instead of degrading. By default a failure while recording evidence
    * leaves the test results standing and only loses that run's evidence.
    */
@@ -47,6 +53,15 @@ export interface Verification {
   readonly outcome: 'pass' | 'fail'
 }
 
+/** How a file that ran ended, whether or not its evidence was recorded. */
+export interface CheckOutcomeSummary {
+  readonly check: CheckRef
+  readonly verdict: 'pass' | 'fail'
+  readonly durationMs: number
+  /** Whether evidence was captured for this execution. */
+  readonly captured: boolean
+}
+
 export interface RunResult {
   readonly runId: string
   /** Key of the runtime this run planned and recorded against (Node, platform, runner versions). */
@@ -54,6 +69,8 @@ export interface RunResult {
   readonly decisions: readonly Decision[]
   readonly records: readonly EvidenceRecord[]
   readonly ran: readonly CheckRef[]
+  /** Every file that ran, with its verdict. */
+  readonly outcomes: readonly CheckOutcomeSummary[]
   /** Reuse decisions that were checked by running the file anyway (audit or canary). */
   readonly verifications: readonly Verification[]
   readonly ok: boolean
@@ -83,14 +100,22 @@ export function forcedDecisions(checks: readonly CheckRef[]): Decision[] {
   }))
 }
 
-/** Whether the mode needs a plan (a full run needs one only to audit it). */
-export function needsPlan(options: Pick<RunOptions, 'mode' | 'audit'>): boolean {
-  return options.mode !== 'full' || options.audit === true
+/**
+ * Whether the mode needs a plan. A full run plans to audit, and to find the files whose evidence is
+ * still valid, which run without capture; only one that records everything can skip planning.
+ */
+export function needsPlan(options: Pick<RunOptions, 'mode' | 'audit' | 'recordAll'>): boolean {
+  return options.mode !== 'full' || options.audit === true || options.recordAll !== true
 }
 
 export interface Execution {
   /** Keys (checkKey) of the checks to execute. */
   readonly toRun: ReadonlySet<string>
+  /**
+   * Keys of the checks to execute with capture: those without valid evidence. The others run
+   * plain, because their existing record already describes the execution.
+   */
+  readonly capture: ReadonlySet<string>
   /** Reuse decisions that are executed anyway, keyed by checkKey. */
   readonly verified: ReadonlyMap<string, { readonly decision: Decision; readonly kind: Verification['kind'] }>
 }
@@ -102,7 +127,7 @@ export interface Execution {
 export function selectExecution(
   checks: readonly CheckRef[],
   decisions: readonly Decision[],
-  options: Pick<RunOptions, 'mode' | 'audit' | 'canary'>,
+  options: Pick<RunOptions, 'mode' | 'audit' | 'canary' | 'recordAll'>,
   seed: string,
 ): Execution {
   const toRun = new Set(decisions.filter((d) => d.action === 'run').map((d) => checkKey(d.check)))
@@ -121,28 +146,66 @@ export function selectExecution(
   }
   for (const key of verified.keys()) toRun.add(key)
   if (options.mode === 'full') for (const c of checks) toRun.add(checkKey(c))
-  return { toRun, verified }
+  const capture = new Set(toRun)
+  if (!options.recordAll) for (const d of reusable) capture.delete(checkKey(d.check))
+  return { toRun, capture, verified }
 }
 
-/** Pairs verified decisions with the records of their executions and stores them. */
+/** Pairs verified decisions with the outcomes of their executions and stores them. */
 export function recordVerifications(
   store: Store,
   runId: string,
   execution: Execution,
-  records: readonly EvidenceRecord[],
+  outcomes: readonly CheckOutcomeSummary[],
 ): Verification[] {
-  const byCheck = new Map(records.map((r) => [checkKey({ path: r.check, project: r.project }), r]))
+  const byCheck = new Map(outcomes.map((o) => [checkKey(o.check), o]))
   const out: Verification[] = []
   for (const [key, { decision, kind }] of execution.verified) {
-    const rec = byCheck.get(key)
-    if (!rec || !decision.recordId) continue
-    out.push({ check: decision.check, recordId: decision.recordId, kind, outcome: rec.verdict })
+    const outcome = byCheck.get(key)
+    if (!outcome || !decision.recordId) continue
+    out.push({ check: decision.check, recordId: decision.recordId, kind, outcome: outcome.verdict })
   }
   if (out.length > 0) {
     store.transaction(() => {
       for (const v of out) store.putVerification(runId, v.check, v.recordId, v.kind, v.outcome)
     })
   }
+  return out
+}
+
+/**
+ * A file that ran without capture because its evidence was valid, and failed, leaves a failing
+ * record with that evidence's inputs, so no later plan reuses the passing record behind it.
+ */
+export function recordUncapturedFailures(
+  store: Store,
+  runId: string,
+  revision: string | null,
+  decisions: readonly Decision[],
+  outcomes: readonly CheckOutcomeSummary[],
+): EvidenceRecord[] {
+  const recordIds = new Map(decisions.map((d) => [checkKey(d.check), d.recordId]))
+  const out: EvidenceRecord[] = []
+  for (const o of outcomes) {
+    if (o.captured || o.verdict !== 'fail') continue
+    const id = recordIds.get(checkKey(o.check))
+    const valid = id ? store.getRecord(id) : undefined
+    if (!valid) continue
+    out.push({
+      ...valid,
+      id: digest(`${runId}\u0000${o.check.project}\u0000${o.check.path}`),
+      verdict: 'fail',
+      reusable: false,
+      tests: [],
+      durationMs: o.durationMs,
+      createdAt: new Date().toISOString(),
+      revision,
+    })
+  }
+  if (out.length > 0)
+    store.transaction(() => {
+      for (const r of out) store.putRecord(r)
+    })
   return out
 }
 

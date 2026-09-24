@@ -33,12 +33,17 @@ run   test/b.test.ts
 ## Usage
 
 ```
-veyrum run --full        Run every test file and record evidence
+veyrum run --full        Run every test file; record evidence where it is missing or stale
 veyrum run               Run test files whose inputs changed; reuse evidence for the rest
 veyrum plan              Show what would run and why
 veyrum explain <file>    Explain one decision
 veyrum stats             Evidence store statistics
 ```
+
+Recording is what costs time, so a full run records only where it is needed: a file whose
+evidence is still valid runs at full speed, and its existing record already describes that
+execution (`--record-all` records every file). On Linux x64, child processes a test starts
+are traced too (see `docs/design/soundness.md`).
 
 Evidence is stored in `.veyrum/store.sqlite`. It holds digests, repository paths, test names,
 outcomes and durations, never source code or environment variable values.

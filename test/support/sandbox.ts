@@ -3,7 +3,7 @@ import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import type { Decision } from '@veyrum/core'
+import type { CheckOutcomeSummary, Decision } from '@veyrum/core'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const repoRoot = path.resolve(here, '../..')
@@ -28,6 +28,8 @@ export interface CliResult {
   readonly code: number
   readonly output: string
   readonly decisions: readonly Decision[]
+  /** Files that ran, with their verdict and whether evidence was recorded for them. */
+  readonly outcomes: readonly CheckOutcomeSummary[]
 }
 
 /**
@@ -123,13 +125,19 @@ export class Sandbox {
     )
     const output = `${result.stdout ?? ''}${result.stderr ?? ''}`
     let decisions: Decision[] = []
-    if (args[0] === 'stats') return { code: result.status ?? -1, output, decisions }
+    let outcomes: CheckOutcomeSummary[] = []
+    if (args[0] === 'stats') return { code: result.status ?? -1, output, decisions, outcomes }
     try {
-      decisions = (JSON.parse(fs.readFileSync(json, 'utf8')) as { decisions: Decision[] }).decisions
+      const data = JSON.parse(fs.readFileSync(json, 'utf8')) as {
+        decisions: Decision[]
+        outcomes?: CheckOutcomeSummary[]
+      }
+      decisions = data.decisions
+      outcomes = data.outcomes ?? []
     } catch {
       throw new Error(`veyrum ${args.join(' ')} produced no JSON (exit ${result.status}):\n${output}`)
     }
-    return { code: result.status ?? -1, output, decisions }
+    return { code: result.status ?? -1, output, decisions, outcomes }
   }
 
   /** Runs every test file and records evidence; fails the calling test if the run fails. */
