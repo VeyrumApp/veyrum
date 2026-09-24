@@ -14,12 +14,38 @@ const adapterModules = {
   jest: path.join(repoRoot, 'packages', 'jest', 'node_modules'),
   mocha: path.join(repoRoot, 'packages', 'mocha', 'node_modules'),
 }
-export type SandboxRunner = 'vitest' | 'jest' | 'mocha' | 'node-test'
+export type SandboxRunner = 'vitest' | 'jest' | 'mocha' | 'node-test' | 'pytest'
+
+/**
+ * A Python interpreter that can run the pytest adapter (3.12 or later, with pytest), or null: the
+ * one VEYRUM_TEST_PYTHON names, else a virtual environment at .sandbox/python (create it with
+ * `uv venv .sandbox/python && uv pip install --python .sandbox/python pytest`), else python3.
+ */
+export function testPython(): string | null {
+  const venv = path.join(
+    repoRoot,
+    '.sandbox',
+    'python',
+    process.platform === 'win32' ? 'Scripts' : 'bin',
+    'python',
+  )
+  const candidates = [process.env.VEYRUM_TEST_PYTHON, venv, 'python3'].filter((c): c is string => Boolean(c))
+  for (const python of candidates) {
+    const probe = spawnSync(python, ['-c', 'import sys, pytest; assert sys.version_info >= (3, 12)'], {
+      stdio: 'ignore',
+      timeout: 30_000,
+    })
+    if (probe.status === 0) return python
+  }
+  return null
+}
 
 export interface SandboxOptions {
   /** Parent directory (default: the repository's .sandbox directory). */
   readonly base?: string
   readonly runner?: SandboxRunner
+  /** pytest: the Python interpreter (default: testPython()). */
+  readonly python?: string
   /** Worker count passed to the runner (Jest runs in the main process with one worker). */
   readonly workers?: number
   /**
@@ -39,28 +65,35 @@ export interface CliResult {
 }
 
 /**
- * A throwaway Vitest, Jest, Mocha or node:test project driven through the real Veyrum CLI. Lives
- * under the repository's .sandbox directory (not the OS temp directory) unless a base is given.
+ * A throwaway Vitest, Jest, Mocha, node:test or pytest project driven through the real Veyrum CLI.
+ * Lives under the repository's .sandbox directory (not the OS temp directory) unless a base is given.
  */
 export class Sandbox {
   readonly dir: string
   readonly runner: SandboxRunner
   private readonly workers: number
+  private readonly runnerArgs: readonly string[]
 
   constructor(name: string, options: SandboxOptions = {}) {
     this.runner = options.runner ?? 'vitest'
     this.workers = options.workers ?? 1
+    const python = this.runner === 'pytest' ? (options.python ?? testPython()) : null
+    this.runnerArgs = python ? ['--python', python] : []
     const base = options.base ?? path.join(repoRoot, '.sandbox')
     this.dir = path.join(base, `${name}-${crypto.randomBytes(4).toString('hex')}`)
     fs.mkdirSync(path.join(this.dir, 'node_modules'), { recursive: true })
-    for (const name of [...(this.runner === 'node-test' ? [] : [this.runner]), ...(options.modules ?? [])]) {
+    const ownModules = this.runner === 'node-test' || this.runner === 'pytest' ? [] : [this.runner]
+    for (const name of [...ownModules, ...(options.modules ?? [])]) {
       const link = path.join(this.dir, 'node_modules', name)
       const own = path.join(adapterModules[this.runner === 'node-test' ? 'vitest' : this.runner], name)
       fs.mkdirSync(path.dirname(link), { recursive: true })
       // Junctions: plain symbolic links need administrator rights on Windows.
       fs.symlinkSync(fs.existsSync(own) ? own : path.join(repoRoot, 'node_modules', name), link, 'junction')
     }
-    if (this.runner === 'node-test') {
+    if (this.runner === 'pytest') {
+      // No manifest: the CLI detects pytest from its configuration file.
+      this.write('pytest.ini', '[pytest]\n')
+    } else if (this.runner === 'node-test') {
       this.write(
         'package.json',
         JSON.stringify({ name, private: true, type: 'module', scripts: { test: 'node --test' } }, null, 2),
@@ -105,12 +138,16 @@ export class Sandbox {
 
   /** Runs the CLI as a user would (without --strict) and returns only its exit code and output. */
   raw(args: readonly string[], env: Record<string, string> = {}): { code: number; output: string } {
-    const result = spawnSync(process.execPath, [cli, ...args, '--max-workers', String(this.workers)], {
-      cwd: this.dir,
-      encoding: 'utf8',
-      env: this.childEnv(env),
-      timeout: 120_000,
-    })
+    const result = spawnSync(
+      process.execPath,
+      [cli, ...args, ...this.runnerArgs, '--max-workers', String(this.workers)],
+      {
+        cwd: this.dir,
+        encoding: 'utf8',
+        env: this.childEnv(env),
+        timeout: 120_000,
+      },
+    )
     return { code: result.status ?? -1, output: `${result.stdout ?? ''}${result.stderr ?? ''}` }
   }
 
@@ -133,7 +170,17 @@ export class Sandbox {
     const childEnv = this.childEnv(env)
     const result = spawnSync(
       process.execPath,
-      [cli, ...args, '--quiet', '--strict', '--max-workers', String(this.workers), '--json', json],
+      [
+        cli,
+        ...args,
+        ...this.runnerArgs,
+        '--quiet',
+        '--strict',
+        '--max-workers',
+        String(this.workers),
+        '--json',
+        json,
+      ],
       {
         cwd: this.dir,
         encoding: 'utf8',

@@ -30,8 +30,10 @@ Usage:
 
 Options:
   --root <dir>         Project root (default: current directory)
-  --runner <name>      vitest, jest, mocha or node-test (default: detected from the project)
+  --runner <name>      vitest, jest, mocha, node-test or pytest (default: detected from the project)
   --config <file>      Runner config file
+  --python <exe>       pytest: the Python interpreter that runs it, 3.12 or later
+                       (default: python3)
   --store <file>       Evidence store (default: <root>/.veyrum/store.sqlite)
   --max-workers <n>    Worker count
   --project <name>     Project filter (repeatable; Vitest allows wildcards, Jest matches
@@ -68,6 +70,7 @@ interface Args {
   root: string
   runner: Runner | undefined
   config: string | undefined
+  python: string | undefined
   store: string
   maxWorkers: number | undefined
   projects: string[]
@@ -109,6 +112,7 @@ function parse(argv: string[]): Args | null {
       root: { type: 'string' },
       runner: { type: 'string' },
       config: { type: 'string' },
+      python: { type: 'string' },
       store: { type: 'string' },
       'max-workers': { type: 'string' },
       project: { type: 'string', multiple: true },
@@ -143,6 +147,8 @@ function parse(argv: string[]): Args | null {
     root,
     runner: values.runner as Runner | undefined,
     config: values.config,
+    // A path (not a command name) is relative to where Veyrum was started.
+    python: values.python && /[\\/]/.test(values.python) ? path.resolve(values.python) : values.python,
     store: path.resolve(values.store ?? path.join(root, '.veyrum', 'store.sqlite')),
     maxWorkers: maxWorkers && Number.isFinite(maxWorkers) ? maxWorkers : undefined,
     projects: values.project ?? [],
@@ -168,12 +174,33 @@ const VITEST_CONFIG = /^vitest\.(config|workspace)\.[cm]?[jt]s$/
 const JEST_CONFIG = /^jest\.config\.([cm]?[jt]s|json)$/
 const MOCHA_CONFIG = /^\.mocharc\.(c?js|mjs|jsonc?|ya?ml)$/
 
-const RUNNERS = ['vitest', 'jest', 'mocha', 'node-test'] as const
+const RUNNERS = ['vitest', 'jest', 'mocha', 'node-test', 'pytest'] as const
 type Runner = (typeof RUNNERS)[number]
+
+/** pytest's configuration files, and the sections that make pyproject.toml, setup.cfg and tox.ini one. */
+const PYTEST_CONFIG = /^(pytest\.ini|\.pytest\.ini|conftest\.py)$/
+const PYTEST_SECTIONS: Readonly<Record<string, RegExp>> = {
+  'pyproject.toml': /^\[tool\.pytest(\.ini_options)?\]/m,
+  'setup.cfg': /^\[tool:pytest\]/m,
+  'tox.ini': /^\[pytest\]/m,
+}
+
+function hasPytestConfig(root: string, names: readonly string[]): boolean {
+  if (names.some((n) => PYTEST_CONFIG.test(n))) return true
+  for (const [name, section] of Object.entries(PYTEST_SECTIONS)) {
+    if (!names.includes(name)) continue
+    try {
+      if (section.test(fs.readFileSync(path.join(root, name), 'utf8'))) return true
+    } catch {
+      // Unreadable: not evidence of pytest.
+    }
+  }
+  return false
+}
 
 /**
  * Picks the runner from configuration files, then from declared dependencies, then from a test
- * script that runs Node's own runner.
+ * script that runs Node's own runner, then from pytest's configuration.
  */
 function detectRunner(root: string): Runner {
   let names: string[] = []
@@ -202,6 +229,7 @@ function detectRunner(root: string): Runner {
   if (pkg.jest !== undefined || 'jest' in deps) return 'jest'
   if (pkg.mocha !== undefined || 'mocha' in deps) return 'mocha'
   if (/\bnode\b[^&|;]*\s--test\b/.test(String(pkg.scripts?.test ?? ''))) return 'node-test'
+  if (hasPytestConfig(root, names)) return 'pytest'
   return 'vitest'
 }
 
@@ -209,6 +237,15 @@ function detectRunner(root: string): Runner {
 async function runWith(runner: Runner, args: Args, common: RunOptions): Promise<RunResult> {
   // Fault injection for the fail-open tests.
   if (process.env.VEYRUM_FAULT === 'before-run') throw new Error('injected fault before the run')
+  if (runner === 'pytest') {
+    const { runPytest } = await import('@veyrum/pytest')
+    return runPytest({
+      ...common,
+      ...(args.python ? { python: args.python } : {}),
+      ...(args.config ? { config: args.config } : {}),
+      ...(args.maxWorkers ? { maxWorkers: args.maxWorkers } : {}),
+    })
+  }
   if (runner === 'node-test') {
     const { runNodeTest } = await import('@veyrum/node-test')
     return runNodeTest({ ...common, ...(args.maxWorkers ? { maxWorkers: args.maxWorkers } : {}) })
@@ -435,6 +472,7 @@ async function main(argv: string[]): Promise<number> {
         root: args.root,
         runner,
         ...(args.config ? { config: args.config } : {}),
+        ...(args.python ? { python: args.python } : {}),
         projects: args.projects,
         ...(args.maxWorkers ? { maxWorkers: args.maxWorkers } : {}),
         ...(only ? { only } : {}),

@@ -1,0 +1,35 @@
+{
+  "name": "@veyrum/pytest",
+  "version": "0.1.0",
+  "description": "Veyrum adapter for pytest: capture, planning and selective execution of Python tests",
+  "license": "Apache-2.0",
+  "homepage": "https://github.com/VeyrumApp/veyrum#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/VeyrumApp/veyrum.git",
+    "directory": "packages/pytest"
+  },
+  "engines": {
+    "node": ">=22.15"
+  },
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "!dist/**/__pycache__",
+    "LICENSE"
+  ],
+  "dependencies": {
+    "@veyrum/capture": "workspace:*",
+    "@veyrum/core": "workspace:*"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}

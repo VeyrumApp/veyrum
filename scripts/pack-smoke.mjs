@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url'
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const work = fs.mkdtempSync(path.join(os.tmpdir(), 'veyrum-pack-'))
 const packDir = path.join(work, 'pack')
-const PACKAGES = ['core', 'capture', 'vitest', 'jest', 'mocha', 'node-test', 'cli']
+const PACKAGES = ['core', 'capture', 'vitest', 'jest', 'mocha', 'node-test', 'pytest', 'cli']
 
 /**
  * Runner versions to check: the versions this repository develops against, or the ones given as
@@ -84,7 +84,7 @@ function project(name, devDependencies, files) {
   return dir
 }
 
-function cycle(dir, source, testExt, files = 2) {
+function cycle(dir, source, mulTest, files = 2) {
   const veyrum = path.join(dir, 'node_modules', '.bin', 'veyrum')
   const counts = (ran) => new RegExp(`${files} test files, ran ${ran}, reused evidence for ${files - ran}`)
   expectMatch(run(veyrum, ['run', '--quiet'], dir), counts(files), 'first run')
@@ -93,7 +93,7 @@ function cycle(dir, source, testExt, files = 2) {
   const file = path.join(dir, source)
   fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('a * b', 'b * a'))
   const edited = run(veyrum, ['run', '--quiet', '--explain'], dir)
-  expectMatch(edited, new RegExp(`run\\s+test/mul\\.test\\.${testExt}`), 'after edit')
+  expectMatch(edited, new RegExp(`run\\s+${mulTest.replaceAll('.', '\\.')}`), 'after edit')
   expectMatch(edited, counts(1), 'after edit')
   return (step, expectedFile) => {
     const out = run(veyrum, ['run', '--quiet', '--explain'], dir)
@@ -156,7 +156,7 @@ try {
         "import { execFileSync } from 'node:child_process'\nimport { expect, test } from 'vitest'\ntest('show', () => expect(execFileSync('./fixtures/show', ['fixtures/data.txt']).toString()).toMatch(/^h/))\n",
       )
     }
-    const next = cycle(vitestDir, 'src/math.ts', 'ts', program ? 3 : 2)
+    const next = cycle(vitestDir, 'src/math.ts', 'test/mul.test.ts', program ? 3 : 2)
     if (program) {
       fs.writeFileSync(path.join(vitestDir, 'fixtures/data.txt'), 'hi\n')
       next('static program input', 'test/show.test.ts')
@@ -177,8 +177,30 @@ try {
           "import test from 'node:test'\nimport assert from 'node:assert'\nimport { mul } from '../src/math.js'\ntest('mul', () => assert.equal(mul(2, 3), 6))\n",
       },
     )
-    cycle(nodeDir, 'src/math.js', 'js')
+    cycle(nodeDir, 'src/math.js', 'test/mul.test.js')
     process.stdout.write('node:test: ok\n')
+  }
+
+  // pytest needs python3 to be 3.12 or later with pytest, as on the Linux CI jobs; skipped elsewhere.
+  const hasPytest =
+    spawnSync('python3', ['-c', 'import sys, pytest; assert sys.version_info >= (3, 12)'], {
+      stdio: 'ignore',
+    }).status === 0
+  if (!pinned && hasPytest) {
+    const pytestDir = project(
+      'pytest',
+      {},
+      {
+        'pytest.ini': '[pytest]\npythonpath = src\n',
+        'src/calc.py': 'def add(a, b):\n    return a + b\n\n\ndef mul(a, b):\n    return a * b\n',
+        'tests/test_add.py': 'from calc import add\n\n\ndef test_add():\n    assert add(1, 2) == 3\n',
+        'tests/test_mul.py': 'from calc import mul\n\n\ndef test_mul():\n    assert mul(2, 3) == 6\n',
+      },
+    )
+    cycle(pytestDir, 'src/calc.py', 'tests/test_mul.py')
+    process.stdout.write('pytest: ok\n')
+  } else if (!pinned) {
+    process.stdout.write('pytest: skipped (python3 is not 3.12 or later with pytest)\n')
   }
 
   if (jestVersion) {
@@ -194,7 +216,7 @@ try {
           "const { mul } = require('../src/math')\ntest('mul', () => expect(mul(2, 3)).toBe(6))\n",
       },
     )
-    cycle(jestDir, 'src/math.js', 'js')
+    cycle(jestDir, 'src/math.js', 'test/mul.test.js')
     process.stdout.write(`jest ${jestVersion}: ok\n`)
   }
 
@@ -211,7 +233,7 @@ try {
           "const assert = require('node:assert')\nconst { mul } = require('../src/math')\nit('mul', () => assert.equal(mul(2, 3), 6))\n",
       },
     )
-    cycle(mochaDir, 'src/math.js', 'js')
+    cycle(mochaDir, 'src/math.js', 'test/mul.test.js')
     process.stdout.write(`mocha ${mochaVersion}: ok\n`)
   }
 } finally {

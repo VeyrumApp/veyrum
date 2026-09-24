@@ -7,8 +7,10 @@ import { Store } from '@veyrum/core'
 /** What the fallback needs to run the project's tests the way Veyrum would have. */
 export interface PlainRunOptions {
   readonly root: string
-  readonly runner: 'vitest' | 'jest' | 'mocha' | 'node-test'
+  readonly runner: 'vitest' | 'jest' | 'mocha' | 'node-test' | 'pytest'
   readonly config?: string
+  /** pytest: the Python interpreter (default python3). */
+  readonly python?: string
   readonly projects: readonly string[]
   readonly maxWorkers?: number
   /** Repository-relative test files to run; everything when empty. */
@@ -25,6 +27,18 @@ function packageDir(root: string, name: string): string {
 /** The runner's own command line for the same selection of tests, projects and workers. */
 export function plainRunnerCommand(options: PlainRunOptions): { command: string; args: string[] } {
   const files = options.only ?? []
+  if (options.runner === 'pytest') {
+    return {
+      command: options.python ?? 'python3',
+      args: [
+        '-m',
+        'pytest',
+        ...(options.config ? ['-c', options.config] : []),
+        ...(options.quiet ? ['-q'] : []),
+        ...files,
+      ],
+    }
+  }
   if (options.runner === 'node-test') {
     return {
       command: process.execPath,
