@@ -56,6 +56,9 @@ importers:
       '@veyrum/node-test':
         specifier: workspace:*
         version: link:../node-test
+      '@veyrum/pytest':
+        specifier: workspace:*
+        version: link:../pytest
       '@veyrum/vitest':
         specifier: workspace:*
         version: link:../vitest
@@ -101,6 +104,15 @@ importers:
         version: 30.5.2
 
   packages/node-test:
+    dependencies:
+      '@veyrum/capture':
+        specifier: workspace:*
+        version: link:../capture
+      '@veyrum/core':
+        specifier: workspace:*
+        version: link:../core
+
+  packages/pytest:
     dependencies:
       '@veyrum/capture':
         specifier: workspace:*

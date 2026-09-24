@@ -1,37 +1,32 @@
 {
-  "name": "veyrum",
+  "name": "@veyrum/pytest",
   "version": "0.1.0",
-  "description": "Veyrum CLI: run only the tests whose evidence is no longer valid",
+  "description": "Veyrum adapter for pytest: capture, planning and selective execution of Python tests",
   "license": "Apache-2.0",
   "homepage": "https://github.com/VeyrumApp/veyrum#readme",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/VeyrumApp/veyrum.git",
-    "directory": "packages/cli"
+    "directory": "packages/pytest"
   },
   "engines": {
     "node": ">=22.15"
   },
   "type": "module",
-  "bin": {
-    "veyrum": "./dist/main.js"
-  },
   "exports": {
     ".": {
-      "types": "./dist/main.d.ts",
-      "default": "./dist/main.js"
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
     }
   },
   "files": [
     "dist",
+    "!dist/**/__pycache__",
     "LICENSE"
   ],
   "dependencies": {
-    "@veyrum/core": "workspace:*",
-    "@veyrum/jest": "workspace:*",
-    "@veyrum/node-test": "workspace:*",
-    "@veyrum/pytest": "workspace:*",
-    "@veyrum/vitest": "workspace:*"
+    "@veyrum/capture": "workspace:*",
+    "@veyrum/core": "workspace:*"
   },
   "publishConfig": {
     "access": "public",

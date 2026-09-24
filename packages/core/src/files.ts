@@ -1,7 +1,8 @@
 import fs from 'node:fs'
 import path from 'node:path'
 
-const SKIP_DIRS = new Set(['node_modules', '.git', '.veyrum', '.hg', '.svn'])
+/** Dependency, VCS and Veyrum directories, and Python's caches of compiled and pytest state. */
+const SKIP_DIRS = new Set(['node_modules', '.git', '.veyrum', '.hg', '.svn', '__pycache__', '.pytest_cache'])
 
 /**
  * Lists repository files (POSIX, repository-relative), skipping dependency and VCS directories.
@@ -29,9 +30,12 @@ export function listRepoFiles(root: string): string[] {
   return out.sort()
 }
 
-/** Files whose appearance anywhere can change configuration or resolution for every check. */
+/**
+ * Files whose appearance anywhere can change configuration or resolution for every check: those of
+ * the JavaScript toolchains, and pytest's configuration and conftest.py files.
+ */
 const CONFIG_LIKE =
-  /^(package\.json|tsconfig(\..*)?\.json|jsconfig(\..*)?\.json|\.env(\..*)?|vite(st)?\.config\..*|vitest\.(workspace|projects)\..*|jest\.config\..*|jest-preset\..*|\.babelrc(\..*)?|\.babelignore|babel\.config\..*|\.npmrc|pnpm-workspace\.yaml|\.swcrc|\.browserslistrc|browserslist)$/
+  /^(package\.json|tsconfig(\..*)?\.json|jsconfig(\..*)?\.json|\.env(\..*)?|vite(st)?\.config\..*|vitest\.(workspace|projects)\..*|jest\.config\..*|jest-preset\..*|\.babelrc(\..*)?|\.babelignore|babel\.config\..*|\.npmrc|pnpm-workspace\.yaml|\.swcrc|\.browserslistrc|browserslist|pytest\.ini|\.pytest\.ini|pyproject\.toml|tox\.ini|setup\.cfg|conftest\.py)$/
 
 /**
  * Manual mocks apply by location: Jest uses a root `__mocks__` file for a node module without any

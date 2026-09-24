@@ -3,6 +3,7 @@ dist/
 *.tsbuildinfo
 .veyrum/
 coverage/
+__pycache__/
 .bench/
 .sandbox/
 .claude/

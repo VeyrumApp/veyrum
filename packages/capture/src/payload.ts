@@ -1,3 +1,4 @@
+import type { Digest } from '@veyrum/core'
 import type { PathKind, PathType } from './hooks.ts'
 
 /** What one test file's worker observed. Written as JSON; code lives in content-addressed blobs. */
@@ -75,4 +76,12 @@ export interface PayloadModule {
   readonly code: string
   /** Executed function ranges as [start, end] offsets into the module code. */
   readonly executed: readonly (readonly [number, number])[]
+  /**
+   * Fingerprints of the executed units, keyed by unit path, when the runtime computes them itself
+   * (Python, which runs its source as written): then no code blob is written and `executed` is
+   * empty. Always holds the module top level.
+   */
+  readonly units?: Readonly<Record<string, Digest>>
+  /** With `units`: digest of the source file they were computed from. */
+  readonly src?: Digest
 }

@@ -3,7 +3,8 @@
 Veyrum reuses a passing result for a test file only when every input the file consumed is
 unchanged. This document defines what counts as an input, how each one is observed, and what
 Veyrum assumes. Every channel listed here has at least one end-to-end scenario in
-`packages/vitest/test/hazards-*.test.ts` or `packages/jest/test/hazards.test.ts`.
+`packages/vitest/test/hazards-*.test.ts`, `packages/jest/test/hazards.test.ts` or, for pytest,
+`packages/pytest/test/hazards.test.ts`.
 
 ## The skip rule
 
@@ -244,6 +245,55 @@ Jest-specific observation rules, each covered by `packages/jest/test/hazards.tes
   configuration-like addition.
 - **Changed modules are re-transformed with the project's own Jest transform**, with the options
   the runtime uses for CommonJS or ECMAScript modules.
+
+## pytest
+
+pytest runs each test file in its own `python -m pytest <file>` process (Python 3.12 or later),
+several at once, so no state carries over between files. The configuration file and root
+directory are those pytest picks for the whole suite (`--collect-only` finds both), passed to
+every process. A plugin (`packages/pytest/src/python/veyrum_capture.py`) loads before any
+conftest.py and records the file's closure until the process exits. Scenarios are in
+`packages/pytest/test/hazards.test.ts`.
+
+What is observed:
+
+- **Code, by unit.** Every code object that starts (`sys.monitoring` PY_START, switched off for a
+  code object after its first start) is mapped to a unit of its source file: the module top level,
+  functions, methods, lambdas, generator expressions and class bodies, named as in fingerprint.ts
+  (`class:` for class bodies). A unit is fingerprinted on its `ast` with positions left out and
+  nested units reduced to what the enclosing scope evaluates (name, parameters with defaults and
+  annotations, decorators; a class's bases), so formatting and comments never count and
+  docstrings do. Code a source file does not explain (compiled from a string under its name) makes
+  the module compare by raw source, and so does a test file that ran doctests. conftest.py files
+  are code like any other; a new one is a configuration-like addition for the files below it, and
+  so is a new pytest configuration file.
+- **Files, directories, environment.** An audit hook sees `open` (reads and writes by mode),
+  `os.listdir` and `os.scandir`; wrappers of `os.stat` and `os.lstat` see existence checks
+  (`os.path.exists`, `Path.is_file`); `os.environ` records each variable read, and enumeration.
+  Reads by the import system and by pytest's assertion rewriter are code, recorded as code.
+  pytest's own reads of the environment are shared inputs of the run, and its checks inside
+  directories next to the test file's ancestors (virtual environment and package detection while
+  collecting) are left out: they only classify nodes it does not collect.
+- **Imports, including how they resolved.** A module found in the repository is code; any other
+  file loaded as a module (site-packages, a C extension) is a whole-file input, and the packages
+  pytest loaded before the plugin are shared inputs. For each import, the absence of the module's
+  names (package directory, extension module, source file) in every earlier entry of its search
+  path is an input, so a new file that would shadow it reruns the files that imported it. The
+  standard library is covered by the runtime key: the Python version, implementation and
+  platform, pytest's version and Python's own environment variables.
+- **Python child processes.** A process a test starts through `subprocess` that runs the same
+  interpreter, named by path (`sys.executable`), gets the plugin too (through a `sitecustomize`
+  on its `PYTHONPATH`), and its closure joins the test file's. Variables the test set for it are
+  the test's own code. A traced child that leaves no payload (started with `-S` or `-I`, killed,
+  or still running when the file ends), any other program, and processes started without
+  `subprocess` (`os.system`, `os.fork`, multiprocessing) set the `spawn` flag. Network
+  connections and `ctypes` libraries are recorded as for Node.
+
+What is not observed: file access inside C extensions and other native code (as with Node's native
+addons, the binary is recorded, not what it reads), existence checks Python makes without
+`os.stat` (the native `os.path` checks on Windows), reads through file descriptors the test did not
+open by path, and line numbers, which a test can observe through tracebacks or `inspect` without
+reading its source. Reading a source file does record it, in full.
 
 ## Function source and generated files
 

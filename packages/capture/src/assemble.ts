@@ -270,10 +270,23 @@ export function assemble(input: AssembleInput): Assembled {
         closure.push(entry)
       }
 
-      const modulesByPath = new Map<string, { code: string; executed: (readonly [number, number])[] }[]>()
+      const modulesByPath = new Map<
+        string,
+        {
+          code: string
+          executed: (readonly [number, number])[]
+          units?: Readonly<Record<string, Digest>>
+          src?: Digest
+        }[]
+      >()
       for (const mod of payload.modules) {
         const list = modulesByPath.get(mod.path)
-        const item = { code: mod.code, executed: [...mod.executed] }
+        const item = {
+          code: mod.code,
+          executed: [...mod.executed],
+          ...(mod.units ? { units: mod.units } : {}),
+          ...(mod.src ? { src: mod.src } : {}),
+        }
         if (list) list.push(item)
         else modulesByPath.set(mod.path, [item])
       }
@@ -313,6 +326,12 @@ export function assemble(input: AssembleInput): Assembled {
         }
         const units: Record<string, Digest> = {}
         for (const version of versions) {
+          if (version.units) {
+            // Fingerprinted by the runtime from the source it read: that must be the source now.
+            if (version.src !== src) flags.add(FLAGS.captureIncomplete)
+            Object.assign(units, version.units)
+            continue
+          }
           const m = unitsFor(version.code)
           const top = m.opaque ? OPAQUE_UNIT : TOP_UNIT
           units[top] = m.units.get(top)!.fp

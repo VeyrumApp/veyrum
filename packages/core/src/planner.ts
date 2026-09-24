@@ -354,14 +354,17 @@ function describeChannel(flag: string, record: EvidenceRecord): string {
   return `${flag} (${named.slice(0, 3).join(', ')}${more})`
 }
 
-/** Renders `@top/fn:add#0/v:inner#0` as `add > inner`, dropping ordinals of 0. */
+/**
+ * Renders `@top/fn:add#0/v:inner#0` as `add > inner`, dropping ordinals of 0 (Python units add
+ * `class:` for class bodies).
+ */
 export function describeUnit(unit: string): string {
   return unit
     .split('/')
     .slice(1)
     .map((part) => {
       const [name, ordinal] = part.split('#')
-      const bare = (name ?? part).replace(/^(fn|m|p|f|v|a|c):/, '')
+      const bare = (name ?? part).replace(/^(fn|m|p|f|v|a|c|class):/, '')
       return ordinal && ordinal !== '0' ? `${bare}#${ordinal}` : bare
     })
     .join(' > ')

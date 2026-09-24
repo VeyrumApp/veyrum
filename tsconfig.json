@@ -6,6 +6,7 @@
     { "path": "packages/vitest" },
     { "path": "packages/jest" },
     { "path": "packages/node-test" },
+    { "path": "packages/pytest" },
     { "path": "packages/cli" },
     { "path": "bench/rig" }
   ]
