@@ -103,6 +103,8 @@ export interface CheckOutcomeSummary {
   readonly durationMs: number
   /** Whether evidence was captured for this execution. */
   readonly captured: boolean
+  /** On failure, the first failing test and its first error message. */
+  readonly failure?: string
 }
 
 export interface RunResult {

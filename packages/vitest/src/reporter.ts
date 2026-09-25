@@ -9,8 +9,13 @@ export class OutcomeReporter implements Reporter {
   onTestModuleEnd(module: TestModule): void {
     const tests: TestOutcome[] = []
     let retries = 0
+    let failure: string | undefined
+    const describe = (error: { message?: string } | undefined): string =>
+      (error?.message ?? '').split('\n')[0] ?? ''
+    for (const error of module.errors()) failure ??= `(file): ${describe(error)}`
     for (const test of module.children.allTests()) {
       const result = test.result()
+      if (result.state === 'failed') failure ??= `${test.fullName}: ${describe(result.errors?.[0])}`
       const diagnostic = test.diagnostic()
       retries += diagnostic?.retryCount ?? 0
       tests.push({
@@ -30,6 +35,7 @@ export class OutcomeReporter implements Reporter {
       tests,
       durationMs: module.diagnostic().duration,
       retries,
+      ...(state === 'failed' && failure ? { failure: failure.slice(0, 400) } : {}),
     })
   }
 }

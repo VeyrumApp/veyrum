@@ -131,7 +131,11 @@ export function renderReport(title: string, lines: readonly ResultLine[]): strin
     for (const b of broken) out.push(`- ${b.sha.slice(0, 10)}: ${b.error.split('\n')[0]}`)
     out.push('')
   }
-  const divergent = commits.flatMap((c) => (c.divergent ?? []).map((f) => `${c.sha.slice(0, 10)} ${f}`))
+  const divergent = commits.flatMap((c) =>
+    (c.divergent ?? []).map(
+      (f) => `${c.sha.slice(0, 10)} ${f}${c.divergentWhy?.[f] ? `: ${c.divergentWhy[f]}` : ''}`,
+    ),
+  )
   out.push(
     `Verdicts capture changed (failed under Veyrum, passed without it): ${divergent.length}${divergent.length > 0 ? '. Each is a Veyrum bug:' : '.'}`,
     '',
@@ -315,12 +319,18 @@ function unobservable(c: CommitResult): ReadonlySet<string> {
  */
 export function hermeticShares(commits: readonly CommitResult[], name: BaselineName): number[] {
   return commits.flatMap((c) => {
-    const b = c.baselines?.[name]
-    if (!b || b.selected === null) return []
-    const open = unobservable(c)
-    const ms = (f: string): number => c.outcomes[f]?.[1] ?? 0
-    const openMs = [...open].reduce((n, f) => n + ms(f), 0)
-    const selectedOpenMs = b.selected.filter((f) => open.has(f)).reduce((n, f) => n + ms(f), 0)
-    return [(b.selectedMs - selectedOpenMs) / Math.max(1, c.totalMs - openMs)]
+    const share = hermeticShare(c, name)
+    return share === null ? [] : [share]
   })
+}
+
+/** One commit's hermetic share for a selector (see hermeticShares); null when it has no selection. */
+export function hermeticShare(c: CommitResult, name: BaselineName): number | null {
+  const b = c.baselines?.[name]
+  if (!b || b.selected === null) return null
+  const open = unobservable(c)
+  const ms = (f: string): number => c.outcomes[f]?.[1] ?? 0
+  const openMs = [...open].reduce((n, f) => n + ms(f), 0)
+  const selectedOpenMs = b.selected.filter((f) => open.has(f)).reduce((n, f) => n + ms(f), 0)
+  return (b.selectedMs - selectedOpenMs) / Math.max(1, c.totalMs - openMs)
 }
