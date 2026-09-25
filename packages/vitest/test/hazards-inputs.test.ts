@@ -72,6 +72,27 @@ describe('files and directories', () => {
     expect(sandbox.actions()['test/writes.test.ts']).toBe('skip')
   })
 
+  test('what global setup, a test and its child processes create are not inputs of a listing', () => {
+    sandbox = new Sandbox('run-products')
+      .write(
+        'setup/global.ts',
+        "import fs from 'node:fs'\nexport default () => {\n  fs.mkdirSync('test/.cache', { recursive: true })\n  fs.writeFileSync('test/.cache/state.json', '{}')\n}\n",
+      )
+      .write(
+        'test/listing.test.ts',
+        "import { execFileSync } from 'node:child_process'\nimport fs from 'node:fs'\nimport { afterAll, expect, test } from 'vitest'\nafterAll(() => fs.rmSync('test/__out__', { recursive: true, force: true }))\ntest('lists', () => {\n  fs.mkdirSync('test/__out__', { recursive: true })\n  execFileSync(process.execPath, ['-e', \"require('fs').writeFileSync('test/__out__/o.json', '1')\"])\n  expect(fs.readFileSync('test/__out__/o.json', 'utf8')).toBe('1')\n  expect(fs.readdirSync('test')).toContain('listing.test.ts')\n})\n",
+      )
+      .edit('vitest.config.ts', 'test: {}', "test: { globalSetup: ['setup/global.ts'] }")
+    sandbox.capture()
+    // A fresh checkout: global setup's cache is not there yet.
+    sandbox.remove('test/.cache')
+    expect(sandbox.actions()['test/listing.test.ts']).toBe('skip')
+    sandbox.write('test/.cache/state.json', '{}')
+    expect(sandbox.actions()['test/listing.test.ts']).toBe('skip')
+    sandbox.write('test/new.txt', 'new')
+    expect(sandbox.actions()['test/listing.test.ts']).toBe('run')
+  })
+
   test('a repository inside the OS temporary directory still records its fixture reads', () => {
     sandbox = new Sandbox('in-tmp', { base: fs.mkdtempSync(path.join(os.tmpdir(), 'veyrum-')) })
       .write('fixtures/data.json', '{"n": 1}\n')

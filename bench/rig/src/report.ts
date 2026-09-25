@@ -180,6 +180,8 @@ export function renderReport(title: string, lines: readonly ResultLine[]): strin
   }
   out.push('')
 
+  out.push(...extraOverCoverage(commits))
+
   out.push('## Per commit (share of test time run)', '')
   const perCommit = BASELINES.filter((name) => name !== 'all')
   out.push(`| # | Commit | Change | Files changed | Veyrum files | ${perCommit.join(' | ')} |`)
@@ -233,4 +235,51 @@ export function renderReport(title: string, lines: readonly ResultLine[]): strin
   )
   out.push('')
   return out.join('\n')
+}
+
+/**
+ * Where Veyrum ran test time that file-coverage skipped, by the input Veyrum saw change. Each such
+ * run must be justified: the file-coverage baseline either missed a real dependency (an escape it
+ * would have had) or Veyrum's evidence is coarser than it needs to be.
+ */
+function extraOverCoverage(commits: readonly CommitResult[]): string[] {
+  const causes = new Map<string, { ms: number; files: Set<string>; commits: Set<number> }>()
+  let extraMs = 0
+  let totalMs = 0
+  let recorded = true
+  for (const c of commits) {
+    const veyrum = c.baselines?.veyrum?.selected
+    const coverage = c.baselines?.['file-coverage']?.selected
+    if (!veyrum || !coverage) continue
+    totalMs += c.totalMs
+    const skipped = new Set(coverage)
+    for (const file of veyrum) {
+      if (skipped.has(file)) continue
+      const ms = c.outcomes[file]?.[1] ?? 0
+      extraMs += ms
+      if (!c.veyrumExtra) recorded = false
+      // A detail names the input that changed; paths below the file's own directory vary by file.
+      const cause = (c.veyrumExtra?.[file] ?? 'not recorded').replace(/^[^:]+: /, '')
+      const entry = causes.get(cause) ?? { ms: 0, files: new Set(), commits: new Set() }
+      causes.set(cause, entry)
+      entry.ms += ms
+      entry.files.add(file)
+      entry.commits.add(c.index)
+    }
+  }
+  const out = ['## Test time Veyrum ran that file-coverage skipped', '']
+  out.push(
+    `${pct(extraMs / Math.max(1, totalMs))} of all replayed test time${recorded ? '' : ' (causes not recorded by this rig version for some commits)'}.`,
+    '',
+  )
+  if (causes.size === 0) return out
+  out.push('| Cause | Share of test time | Files | Commits | Example file |')
+  out.push('| --- | --- | --- | --- | --- |')
+  for (const [cause, e] of [...causes].sort((a, b) => b[1].ms - a[1].ms).slice(0, 15)) {
+    out.push(
+      `| ${cause.replaceAll('|', '\\|')} | ${pct(e.ms / Math.max(1, totalMs))} | ${e.files.size} | ${e.commits.size} | ${[...e.files][0]} |`,
+    )
+  }
+  out.push('')
+  return out
 }

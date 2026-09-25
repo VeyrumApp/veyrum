@@ -36,8 +36,12 @@ export type ClosureEntry =
   | { readonly k: 'manifest'; readonly p: string; readonly h: Digest | null }
   /** A path whose existence or type was checked, but whose content was not read. */
   | { readonly k: 'stat'; readonly p: string; readonly t: 'file' | 'dir' | 'other' | 'absent' }
-  /** A directory whose listing was read. */
-  | { readonly k: 'dir'; readonly p: string; readonly h: Digest | null }
+  /**
+   * A directory whose listing was read. `x` names the entries the run itself created (a test's
+   * output, a global setup's cache): its own products, left out of the listing both when recorded
+   * and when planning.
+   */
+  | { readonly k: 'dir'; readonly p: string; readonly h: Digest | null; readonly x?: readonly string[] }
   /** An environment variable read. `h` is null when it was unset. */
   | { readonly k: 'env'; readonly n: string; readonly h: Digest | null }
   /**

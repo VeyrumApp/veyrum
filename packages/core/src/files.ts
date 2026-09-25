@@ -2,7 +2,15 @@ import fs from 'node:fs'
 import path from 'node:path'
 
 /** Dependency, VCS and Veyrum directories, and Python's caches of compiled and pytest state. */
-const SKIP_DIRS = new Set(['node_modules', '.git', '.veyrum', '.hg', '.svn', '__pycache__', '.pytest_cache'])
+export const SKIP_DIRS: ReadonlySet<string> = new Set([
+  'node_modules',
+  '.git',
+  '.veyrum',
+  '.hg',
+  '.svn',
+  '__pycache__',
+  '.pytest_cache',
+])
 
 /**
  * Lists repository files (POSIX, repository-relative), skipping dependency and VCS directories.

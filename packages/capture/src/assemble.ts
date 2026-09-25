@@ -15,6 +15,7 @@ import {
   normalizeAbsolute,
   OPAQUE_UNIT,
   type RunInfo,
+  SKIP_DIRS,
   type Store,
   serializeUnits,
   type TestOutcome,
@@ -233,19 +234,36 @@ export function assemble(input: AssembleInput): Assembled {
   const outcomes = [...input.outcomes]
   // Files a test created during the run (fixture output such as a generated site or module) are
   // its own products, derived from its code: not inputs of that test, nor of the runner's main
-  // process when it reads them afterwards. A file that existed when the run started stays an
-  // input, since it may have been read before a test changed it.
-  const filesAtStart = new Set(input.files)
+  // process when it reads them afterwards. So is what the main process created (global setup's
+  // caches and generated files), derived from shared inputs of every test. A path that existed
+  // when the run started stays an input, since it may have been read before a test changed it.
+  const pathsAtStart = new Set<string>()
+  for (const file of input.files)
+    for (let p = file; p !== '.' && !pathsAtStart.has(p); p = path.posix.dirname(p)) pathsAtStart.add(p)
+  /** Every written path and the directories above it (a write under a directory created it too). */
+  const withAncestors = (writes: Iterable<string>): Set<string> => {
+    const out = new Set<string>()
+    for (const w of writes)
+      for (let dir = w; dir !== path.dirname(dir) && !out.has(dir); dir = path.dirname(dir)) out.add(dir)
+    return out
+  }
+  /** A repository path absent when the run started (dependency and VCS directories never count). */
+  const newDuringRun = (absolute: string): boolean => {
+    if (!isInside(root, absolute)) return false
+    const rel = toRepoPath(root, absolute)
+    return !pathsAtStart.has(rel) && !rel.split('/').some((s) => SKIP_DIRS.has(s))
+  }
   const createdDuringRun = (writes: ReadonlySet<string>, absolute: string): boolean => {
-    if (writes.size === 0 || !isInside(root, absolute) || filesAtStart.has(toRepoPath(root, absolute)))
-      return false
+    if (writes.size === 0 || !newDuringRun(absolute)) return false
     for (let dir = absolute; dir !== path.dirname(dir); dir = path.dirname(dir)) {
       if (writes.has(dir)) return true
       if (dir === root) break
     }
     return false
   }
+  const mainWrites = input.main.writes ?? []
   const testWrites = new Set(payloads.flatMap((p) => p.writes))
+  const mainCreated = withAncestors(mainWrites)
 
   for (const outcome of outcomes) {
     const check = toRepoPath(root, outcome.file)
@@ -394,11 +412,29 @@ export function assemble(input: AssembleInput): Assembled {
           add(`manifest:${mp}`, { k: 'manifest', p: mp, h: state.manifestDigest(mp) })
         }
       }
+      const runWrites = mainWrites.length === 0 ? checkWrites : new Set([...checkWrites, ...mainWrites])
+      const created = new Set([...withAncestors(checkWrites), ...mainCreated])
       for (const obs of payload.paths) {
         if (ignored(obs.p)) continue
+        // A path this test or the main process created is their product, whatever its kind.
+        if (obs.type !== 'absent' && createdDuringRun(runWrites, obs.p)) continue
         const p = toRepoPath(root, obs.p)
         if (obs.kind === 'dir') {
-          add(`dir:${p}`, { k: 'dir', p, h: obs.type === 'dir' ? state.dirDigest(p) : null })
+          if (obs.type !== 'dir') {
+            add(`dir:${p}`, { k: 'dir', p, h: null })
+            continue
+          }
+          // Entries the run created in a listed directory are left out of its listing.
+          const x = (state.dirNames(p) ?? []).filter((n) => {
+            const entry = path.join(obs.p, n)
+            return created.has(entry) && newDuringRun(entry)
+          })
+          add(
+            `dir:${p}`,
+            x.length > 0
+              ? { k: 'dir', p, h: state.dirDigest(p, x), x }
+              : { k: 'dir', p, h: state.dirDigest(p) },
+          )
         } else if (obs.kind === 'manifest' && (obs.type === 'file' || obs.type === 'absent')) {
           add(`manifest:${p}`, {
             k: 'manifest',

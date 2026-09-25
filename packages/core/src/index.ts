@@ -1,4 +1,4 @@
-export { isConfigLike, listRepoFiles } from './files.ts'
+export { isConfigLike, listRepoFiles, SKIP_DIRS } from './files.ts'
 export {
   deserializeUnits,
   FINGERPRINT_VERSION,

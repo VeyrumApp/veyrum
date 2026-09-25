@@ -410,6 +410,7 @@ function mergeMain(own: MainObservations, playwright: MainObservations | null): 
     loadedPackages: [...new Set([...own.loadedPackages, ...playwright.loadedPackages])],
     loadedFiles: [...new Set([...own.loadedFiles, ...playwright.loadedFiles])],
     loadsObserved: own.loadsObserved && playwright.loadsObserved,
+    writes: [...(own.writes ?? []), ...(playwright.writes ?? [])],
   }
 }
 

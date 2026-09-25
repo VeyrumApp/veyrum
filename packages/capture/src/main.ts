@@ -25,6 +25,11 @@ export interface MainObservations {
    * inputs are then incomplete and no record of the run is evidence.
    */
   readonly loadsObserved: boolean
+  /**
+   * Paths the process wrote (global setup's caches and generated files). What it created during
+   * the run is a product of shared inputs, not an input of any test.
+   */
+  readonly writes?: readonly string[]
 }
 
 const NODE_MODULES = `${path.sep}node_modules${path.sep}`
@@ -120,6 +125,7 @@ export class MainRecorder implements HookSink {
       paths: [...this.pathMap.values()].filter((o) => !this.written.has(o.p)),
       env: [...this.envMap].map(([n, h]) => ({ n, h })),
       envBaseline: this.baseline,
+      writes: [...this.written],
     }
   }
 

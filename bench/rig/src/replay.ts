@@ -58,6 +58,8 @@ export interface CommitResult {
   readonly veyrumReasons?: Readonly<
     Record<string, { readonly count: number; readonly details: readonly string[] }>
   >
+  /** Why Veyrum ran each file file-coverage skipped: its decision's first detail, or its reason. */
+  readonly veyrumExtra?: Readonly<Record<string, string>>
   readonly capture: { readonly runMs: number; readonly recordMs: number; readonly wallMs: number }
   /** Wall time of an uninstrumented full run, measured on sampled commits for overhead. */
   readonly plainWallMs: number | null
@@ -306,6 +308,7 @@ export async function replay(corpus: Corpus, benchRoot: string, options: ReplayO
         let selections: Record<BaselineName, Set<string> | null> | null = null
         let veyrumPlanMs: number | null = null
         let veyrumReasons: Record<string, { count: number; details: string[] }> | undefined
+        let veyrumExtra: Record<string, string> | undefined
         let checks: CheckRef[] = []
         if (parent) {
           const p = veyrumPlan(corpus, paths.testRoot, paths.store, paths.scratch)
@@ -336,6 +339,13 @@ export async function replay(corpus: Corpus, benchRoot: string, options: ReplayO
             veyrumSelection,
             p.runtimeKey,
           )
+          const coverage = selections['file-coverage']
+          if (coverage) {
+            veyrumExtra = {}
+            for (const d of p.decisions)
+              if (d.action === 'run' && !coverage.has(d.check.path))
+                veyrumExtra[d.check.path] = d.details[0] ?? d.reason
+          }
         }
 
         // 2-3. The captured run: ground truth and evidence for the next commit. On sampled commits,
@@ -420,6 +430,7 @@ export async function replay(corpus: Corpus, benchRoot: string, options: ReplayO
           baselines,
           veyrumPlanMs,
           ...(veyrumReasons ? { veyrumReasons } : {}),
+          ...(veyrumExtra ? { veyrumExtra } : {}),
           capture: { runMs: capture.runMs, recordMs: capture.recordMs, wallMs: capture.wallMs },
           plainWallMs,
         }

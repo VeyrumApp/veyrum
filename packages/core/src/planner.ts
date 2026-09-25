@@ -381,7 +381,7 @@ function checkPlainEntry(
       return now === entry.t ? null : `${entry.p} is now ${now} (was ${entry.t})`
     }
     case 'dir': {
-      const now = state.dirDigest(entry.p)
+      const now = state.dirDigest(entry.p, entry.x)
       return now === entry.h ? null : `directory listing of ${entry.p} changed`
     }
     case 'env': {
