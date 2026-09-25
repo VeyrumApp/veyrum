@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks'
 import module from 'node:module'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -30,6 +31,24 @@ export interface MainObservations {
    * the run is a product of shared inputs, not an input of any test.
    */
   readonly writes?: readonly string[]
+  /**
+   * What the process read on behalf of one project only (its global setup, see
+   * MainRecorder.scoped), by project name: inputs of that project's checks, not of every check.
+   */
+  readonly scoped?: Readonly<Record<string, ScopedObservations>>
+}
+
+/** Reads the main process made within one project's scope. */
+export interface ScopedObservations {
+  readonly paths: MainObservations['paths']
+  readonly env: MainObservations['env']
+  readonly loadedFiles: readonly string[]
+}
+
+interface Bucket {
+  readonly paths: Map<string, { p: string; kind: PathKind; type: PathType }>
+  readonly env: Map<string, Digest | null>
+  readonly files: Set<string>
 }
 
 const NODE_MODULES = `${path.sep}node_modules${path.sep}`
@@ -55,6 +74,11 @@ export class MainRecorder implements HookSink {
   private readonly envWritten = new Set<string>()
   private readonly packages = new Set<string>()
   private readonly files = new Set<string>()
+  /** The project whose work is running (see scoped), carried across its asynchronous work. */
+  private readonly scope = new AsyncLocalStorage<string>()
+  /** Set within work whose reads are no input (see unrecorded), carried across its async work. */
+  private readonly ignoring = new AsyncLocalStorage<true>()
+  private readonly buckets = new Map<string, Bucket>()
   private hooks: { deregister(): void } | null = null
   private loadsObserved = false
   /** The environment as it was when capture was created, before the runner changed anything. */
@@ -90,7 +114,7 @@ export class MainRecorder implements HookSink {
             const file = fileURLToPath(url)
             const root = packageRootOf(file)
             if (root) this.packages.add(path.join(root, 'package.json'))
-            else this.files.add(file)
+            else if (!this.files.has(file)) (this.bucket()?.files ?? this.files).add(file)
           }
           return nextLoad(url, context)
         },
@@ -112,6 +136,44 @@ export class MainRecorder implements HookSink {
     }
   }
 
+  /**
+   * Runs `fn` on behalf of one project: what it and the asynchronous work it starts read are
+   * inputs of that project's checks only (a project's global setup). Work the process does
+   * meanwhile for anything else stays a shared input of every check.
+   */
+  scoped<T>(project: string, fn: () => T): T {
+    return this.scope.run(project, fn)
+  }
+
+  /**
+   * Runs `fn` without recording what it and the asynchronous work it starts read: speculative
+   * runner work such as Vite pre-transforming the imports of a module it transformed. Unlike pause,
+   * reads the process makes meanwhile for other work are still recorded.
+   */
+  unrecorded<T>(fn: () => T): T {
+    return this.ignoring.run(true, fn)
+  }
+
+  /**
+   * Adds files the process executed outside Node's loader (a module runner's global setup), for
+   * `project` only or, without one, for every check.
+   */
+  executed(files: Iterable<string>, project?: string): void {
+    const into = project === undefined ? this.files : this.scoped(project, () => this.bucket()!.files)
+    for (const file of files) if (!this.files.has(file)) into.add(file)
+  }
+
+  private bucket(): Bucket | undefined {
+    const name = this.scope.getStore()
+    if (name === undefined) return undefined
+    let bucket = this.buckets.get(name)
+    if (!bucket) {
+      bucket = { paths: new Map(), env: new Map(), files: new Set() }
+      this.buckets.set(name, bucket)
+    }
+    return bucket
+  }
+
   stop(): MainObservations {
     this.active = false
     setSink(null)
@@ -126,16 +188,29 @@ export class MainRecorder implements HookSink {
       env: [...this.envMap].map(([n, h]) => ({ n, h })),
       envBaseline: this.baseline,
       writes: [...this.written],
+      scoped: Object.fromEntries(
+        [...this.buckets].map(([name, b]) => [
+          name,
+          {
+            paths: [...b.paths.values()].filter((o) => !this.written.has(o.p)),
+            env: [...b.env].map(([n, h]) => ({ n, h })),
+            loadedFiles: [...b.files].sort(),
+          },
+        ]),
+      ),
     }
   }
 
   seen(absolute: string, kind: PathKind): boolean {
-    return this.written.has(absolute) || this.pathMap.has(`${kind}\u0000${absolute}`)
+    const key = `${kind}\u0000${absolute}`
+    return this.written.has(absolute) || this.pathMap.has(key) || (this.bucket()?.paths.has(key) ?? false)
   }
   path(absolute: string, kind: PathKind, type: PathType): void {
-    if (!this.active || this.paused > 0 || this.written.has(absolute)) return
+    if (!this.active || this.paused > 0 || this.written.has(absolute) || this.ignoring.getStore()) return
     const key = `${kind}\u0000${absolute}`
-    if (!this.pathMap.has(key)) this.pathMap.set(key, { p: absolute, kind, type })
+    if (this.pathMap.has(key)) return
+    const into = this.bucket()?.paths ?? this.pathMap
+    if (!into.has(key)) into.set(key, { p: absolute, kind, type })
   }
   write(absolute: string): void {
     if (this.active) this.written.add(absolute)
@@ -146,12 +221,14 @@ export class MainRecorder implements HookSink {
     if (
       !this.active ||
       this.paused > 0 ||
+      this.ignoring.getStore() ||
       this.envMap.has(name) ||
       this.envWritten.has(name) ||
       this.volatileEnv.test(name)
     )
       return
-    this.envMap.set(name, hashEnvValue(value))
+    const into = this.bucket()?.env ?? this.envMap
+    if (!into.has(name)) into.set(name, hashEnvValue(value))
   }
   envEnumerated(): void {}
   envWrite(name: string): void {
