@@ -264,6 +264,26 @@ export function assemble(input: AssembleInput): Assembled {
   const mainWrites = input.main.writes ?? []
   const testWrites = new Set(payloads.flatMap((p) => p.writes))
   const mainCreated = withAncestors(mainWrites)
+  const testFiles = new Set(outcomes.map((o) => normalizeAbsolute(o.file)))
+
+  /** The closure entry for a path the main process read, or null when it is not an input. */
+  const mainPathEntry = (obs: MainObservations['paths'][number]): ClosureEntry | null => {
+    if (ignored(obs.p) || obs.kind === 'dir') return null
+    if (createdDuringRun(testWrites, obs.p)) return null
+    // Reads inside node_modules are resolution metadata. Each check records the manifests of the
+    // packages it loaded, and the toolchain's own packages are recorded below by module load.
+    if (obs.p.includes(`${path.sep}node_modules${path.sep}`)) return null
+    if (testFiles.has(obs.p)) return null
+    const p = toRepoPath(root, obs.p)
+    if ((obs.kind === 'read' || obs.kind === 'manifest') && (obs.type === 'file' || obs.type === 'absent')) {
+      // The toolchain reads manifests for module format, resolution and dependency names. A
+      // configuration file that imports a manifest records its full content as well, below.
+      const k = path.basename(p) === 'package.json' ? 'manifest' : 'file'
+      if (obs.type === 'absent') return { k, p, h: null }
+      return k === 'manifest' ? { k, p, h: state.manifestDigest(p) } : { k, p, h: state.fileDigest(p) }
+    }
+    return { k: 'stat', p, t: obs.type }
+  }
 
   for (const outcome of outcomes) {
     const check = toRepoPath(root, outcome.file)
@@ -448,6 +468,20 @@ export function assemble(input: AssembleInput): Assembled {
         }
       }
       for (const e of payload.env) add(`env:${e.n}`, { k: 'env', n: e.n, h: e.h })
+      // What the main process read for this check's project alone (its global setup).
+      const scoped = input.main.scoped?.[outcome.project]
+      if (scoped) {
+        for (const obs of scoped.paths) {
+          const entry = modulesByPath.has(obs.p) ? null : mainPathEntry(obs)
+          if (entry) add(entryKey(entry), entry)
+        }
+        for (const e of scoped.env) add(`env:${e.n}`, { k: 'env', n: e.n, h: e.h })
+        for (const absolute of scoped.loadedFiles) {
+          if (ignored(absolute) || !isInside(root, absolute) || modulesByPath.has(absolute)) continue
+          const p = toRepoPath(root, absolute)
+          add(`file:${p}`, { k: 'file', p, h: state.fileDigest(p) })
+        }
+      }
       for (const n of payload.packageNames ?? [])
         add(`pkgname:${n}`, { k: 'pkgname', n, h: state.packageNameDigest(n, () => input.files) })
 
@@ -513,25 +547,13 @@ export function assemble(input: AssembleInput): Assembled {
   // test file simply has no evidence) or import.meta.glob (handled by re-transforming `dyn` modules).
   const shared: ClosureEntry[] = []
   const sharedSeen = new Set<string>()
-  const testFiles = new Set(outcomes.map((o) => normalizeAbsolute(o.file)))
+  // Modules a project's runner executed in the main process are inputs of that project's checks
+  // (added to their closures above); Vite reading and resolving them for it is not a shared input.
+  const executedForProjects = new Set(Object.values(input.main.scoped ?? {}).flatMap((s) => s.loadedFiles))
   for (const obs of input.main.paths) {
-    if (ignored(obs.p) || allModulePaths.has(obs.p) || obs.kind === 'dir') continue
-    if (createdDuringRun(testWrites, obs.p)) continue
-    // Reads inside node_modules are resolution metadata. Each check records the manifests of the
-    // packages it loaded, and the toolchain's own packages are recorded below by module load.
-    if (obs.p.includes(`${path.sep}node_modules${path.sep}`)) continue
-    if (testFiles.has(obs.p)) continue
-    const p = toRepoPath(root, obs.p)
-    let entry: ClosureEntry
-    if ((obs.kind === 'read' || obs.kind === 'manifest') && (obs.type === 'file' || obs.type === 'absent')) {
-      // The toolchain reads manifests for module format, resolution and dependency names. A
-      // configuration file that imports a manifest records its full content as well, below.
-      const k = path.basename(p) === 'package.json' ? 'manifest' : 'file'
-      if (obs.type === 'absent') entry = { k, p, h: null }
-      else entry = k === 'manifest' ? { k, p, h: state.manifestDigest(p) } : { k, p, h: state.fileDigest(p) }
-    } else {
-      entry = { k: 'stat', p, t: obs.type }
-    }
+    if (allModulePaths.has(obs.p) || executedForProjects.has(obs.p)) continue
+    const entry = mainPathEntry(obs)
+    if (!entry) continue
     const key = entryKey(entry)
     if (sharedSeen.has(key)) continue
     sharedSeen.add(key)

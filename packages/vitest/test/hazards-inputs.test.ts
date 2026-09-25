@@ -297,6 +297,29 @@ describe('dependencies and configuration', () => {
     expect(sandbox.actions()).toEqual({ 'test/generate.test.ts': 'skip', 'test/plain.test.ts': 'skip' })
   })
 
+  test("a project's global setup and what it reads are inputs of that project's files only", () => {
+    sandbox = new Sandbox('project-global-setup')
+      .write(
+        'vitest.config.ts',
+        "import { defineConfig } from 'vitest/config'\nexport default defineConfig({ test: { projects: [\n  { test: { name: 'a', include: ['a/**/*.test.ts'], globalSetup: ['a/setup.ts'] } },\n  { test: { name: 'b', include: ['b/**/*.test.ts'] } },\n] } })\n",
+      )
+      .write(
+        'a/setup.ts',
+        "import fs from 'node:fs'\nimport { suffix } from './helper.ts'\nexport default () => {\n  process.env.SEED = fs.readFileSync('fixtures/seed.txt', 'utf8') + suffix\n}\n",
+      )
+      .write('a/helper.ts', "export const suffix = '!'\n")
+      .write('fixtures/seed.txt', 'seed')
+      .write('a/a.test.ts', PLAIN_TEST)
+      .write('b/b.test.ts', PLAIN_TEST)
+    sandbox.capture()
+    expect(sandbox.actions()).toEqual({ 'a/a.test.ts': 'skip', 'b/b.test.ts': 'skip' })
+    sandbox.write('fixtures/seed.txt', 'seed 2')
+    expect(sandbox.actions()).toEqual({ 'a/a.test.ts': 'run', 'b/b.test.ts': 'skip' })
+    sandbox.write('fixtures/seed.txt', 'seed')
+    sandbox.write('a/helper.ts', "export const suffix = '?'\n")
+    expect(sandbox.actions()).toEqual({ 'a/a.test.ts': 'run', 'b/b.test.ts': 'skip' })
+  })
+
   test('a Vitest config change reruns everything', () => {
     sandbox = new Sandbox('config').write('test/plain.test.ts', PLAIN_TEST)
     sandbox.capture()

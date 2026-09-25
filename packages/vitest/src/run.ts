@@ -295,6 +295,33 @@ export async function runVitest(options: VitestRunOptions): Promise<VitestRunRes
     const v8Coverage = coverage?.enabled === true && provider === 'v8'
     if (v8Coverage) process.env[CAPTURE_ENV] = JSON.stringify({ ...captureConfig, projectCoverage: true })
 
+    // A project's global setup runs for that project's files only: what it reads is an input of
+    // theirs, not of every file (the root project's applies to all). Vitest runs them one project
+    // at a time; asynchronous work they start stays attributed to their project.
+    const rootProject = vitest.getRootProject()
+    for (const project of vitest.projects) {
+      if (project === rootProject) continue
+      const target = project as unknown as Record<string, unknown>
+      for (const method of ['_initializeGlobalSetup', '_teardownGlobalSetup']) {
+        const original = target[method]
+        if (typeof original !== 'function') continue
+        target[method] = (...args: unknown[]) =>
+          recorder.scoped(project.name, () => (original as (...a: unknown[]) => unknown).apply(project, args))
+      }
+    }
+    // Vite pre-transforms the local imports of each module it transforms, whether or not anything
+    // loads them. What a test loads is recorded by the test; what the main process ran is recorded
+    // after the run (see executedInMain).
+    for (const project of vitest.projects) {
+      for (const environment of Object.values(project.vite.environments)) {
+        const target = environment as unknown as { warmupRequest?: (...args: unknown[]) => unknown }
+        const original = target.warmupRequest
+        if (typeof original !== 'function') continue
+        target.warmupRequest = (...args: unknown[]) =>
+          recorder.unrecorded(() => original.apply(environment, args))
+      }
+    }
+
     const sharedWorkerProjects = new Set<string>()
     for (const project of vitest.projects) {
       const config = project.config as unknown as {
@@ -403,8 +430,32 @@ export async function runVitest(options: VitestRunOptions): Promise<VitestRunRes
       await (vitest as unknown as { pool?: { close?: () => Promise<void> } }).pool?.close?.()
     }
     const runMs = performance.now() - runStarted
+    // What the main process's module runner executed (global setups and what they import): the
+    // root project's is an input of every file, another project's only of that project's files.
+    // Projects defined inline share the root's server, so a module belongs to a project when only
+    // its runner evaluated it; on a server of its own, everything that server transformed is its.
+    const rootServers = new Set<unknown>([vitest.vite, rootProject.vite])
+    const rootGraph = runnerEnvironmentFiles([...rootServers])
+    const rootEvaluated = new Set([...evaluatedBy(vitest), ...evaluatedBy(rootProject)])
+    const projectOnly = new Set<string>()
+    const sharedRunnerFiles = new Set<string>()
+    for (const project of vitest.projects) {
+      if (project === rootProject) continue
+      const own = new Set(evaluatedBy(project).filter((f) => !rootEvaluated.has(f)))
+      if (!rootServers.has(project.vite))
+        for (const f of runnerEnvironmentFiles([project.vite])) if (!rootGraph.includes(f)) own.add(f)
+      for (const f of own) {
+        if (PROJECT_CONFIG.test(path.basename(f))) sharedRunnerFiles.add(f)
+        else projectOnly.add(f)
+      }
+      recorder.executed(
+        [...own].filter((f) => !PROJECT_CONFIG.test(path.basename(f))),
+        project.name,
+      )
+    }
+    for (const f of rootGraph) if (!projectOnly.has(f)) sharedRunnerFiles.add(f)
     const main = recorder.stop()
-    for (const f of runnerEnvironmentFiles([vitest.vite, ...vitest.projects.map((p) => p.vite)])) {
+    for (const f of sharedRunnerFiles) {
       configFiles.add(f)
       projectConfigs.delete(f)
     }
@@ -481,4 +532,12 @@ export async function runVitest(options: VitestRunOptions): Promise<VitestRunRes
     }
     if (!options.keepScratch) fs.rmSync(scratch, { recursive: true, force: true })
   }
+}
+
+/** The files a project's (or Vitest's own) module runner evaluated in the main process. */
+function evaluatedBy(owner: unknown): string[] {
+  const runner = (owner as { runner?: { evaluatedModules?: { fileToModulesMap?: Map<string, unknown> } } })
+    .runner
+  const files = runner?.evaluatedModules?.fileToModulesMap
+  return files ? [...files.keys()].filter((f) => path.isAbsolute(f)) : []
 }
