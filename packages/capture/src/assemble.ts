@@ -66,6 +66,11 @@ export interface AssembleInput {
    */
   readonly configFiles: readonly string[]
   /**
+   * Every test file the runner found, absolute, whether it ran captured, uncaptured or not at all.
+   * The runner reads test files to schedule them; each is its own check's input, never shared.
+   */
+  readonly testFiles?: readonly string[]
+  /**
    * Those of `configFiles` that are project configurations only the runner's native tsconfig
    * discovery reads. Recorded as scoped (see `RunInfo.projectConfigs`) unless the main process
    * also read, checked or loaded them in JavaScript, which could be for any purpose.
@@ -264,7 +269,9 @@ export function assemble(input: AssembleInput): Assembled {
   const mainWrites = input.main.writes ?? []
   const testWrites = new Set(payloads.flatMap((p) => p.writes))
   const mainCreated = withAncestors(mainWrites)
-  const testFiles = new Set(outcomes.map((o) => normalizeAbsolute(o.file)))
+  const testFiles = new Set(
+    [...outcomes.map((o) => o.file), ...(input.testFiles ?? [])].map(normalizeAbsolute),
+  )
 
   /** The closure entry for a path the main process read, or null when it is not an input. */
   const mainPathEntry = (obs: MainObservations['paths'][number]): ClosureEntry | null => {

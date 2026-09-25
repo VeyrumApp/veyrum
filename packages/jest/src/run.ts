@@ -454,6 +454,7 @@ export async function runJest(options: JestRunOptions): Promise<RunResult> {
           ),
           main,
           files,
+          testFiles: specs.map((s) => s.file),
           store: options.store,
           fs: rawFs,
           runner: { name: 'jest', version: target.version, isolate: true, pool: 'workers' },
