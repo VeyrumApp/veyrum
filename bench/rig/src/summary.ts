@@ -1,5 +1,5 @@
 import type { BaselineName, CommitResult, MutantResult, ResultLine } from './replay.ts'
-import { upperBound95 } from './report.ts'
+import { hermeticShares, upperBound95 } from './report.ts'
 
 /** One replayed corpus, for the cross-repository summary. */
 export interface SummaryInput {
@@ -34,9 +34,9 @@ function timeShares(commits: readonly CommitResult[], name: BaselineName): numbe
 export function renderSummary(inputs: readonly SummaryInput[]): string {
   const out: string[] = ['# Veyrum replay summary', '']
   out.push(
-    '| Repository | Runner | Commits (unreplayable) | Veyrum time run (median / mean) | Datadog-style (median / mean) | Runner changed (median / mean) | Killed mutants + mainline flips | Veyrum escapes | Datadog-style escapes | Verdicts capture changed | Capture overhead (median) |',
+    '| Repository | Runner | Commits (unreplayable) | Veyrum time run (median / mean) | Datadog-style (median / mean) | Hermetic tests: Veyrum / Datadog-style (mean) | Runner changed (median / mean) | Killed mutants + mainline flips | Veyrum escapes | Datadog-style escapes | Verdicts capture changed | Capture overhead (median) |',
   )
-  out.push('| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |')
+  out.push('| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |')
   let oraclesTotal = 0
   let escapesTotal = 0
   for (const input of inputs) {
@@ -55,6 +55,10 @@ export function renderSummary(inputs: readonly SummaryInput[]): string {
       const mean = shares.length === 0 ? Number.NaN : shares.reduce((a, b) => a + b, 0) / shares.length
       return `${pct(quantile(shares, 0.5))} / ${pct(mean)}`
     }
+    const hermetic = (name: BaselineName): string => {
+      const shares = hermeticShares(commits, name)
+      return pct(shares.length === 0 ? Number.NaN : shares.reduce((a, b) => a + b, 0) / shares.length)
+    }
     const overhead = input.lines
       .filter((l): l is CommitResult => l.kind === 'commit' && l.plainWallMs !== null)
       .map((c) => c.capture.wallMs / c.plainWallMs! - 1)
@@ -64,7 +68,7 @@ export function renderSummary(inputs: readonly SummaryInput[]): string {
     oraclesTotal += killed.length + flips
     escapesTotal += veyrumEscapes
     out.push(
-      `| ${input.name} | ${input.runner} | ${commits.length}${brokenCommits > 0 ? ` (${brokenCommits})` : ''} | ${cell('veyrum')} | ${cell('file-coverage')} | ${cell('runner-changed')} | ${killed.length} + ${flips} | ${veyrumEscapes} | ${escapes('file-coverage')} | ${divergent} | ${pct(quantile(overhead, 0.5))} |`,
+      `| ${input.name} | ${input.runner} | ${commits.length}${brokenCommits > 0 ? ` (${brokenCommits})` : ''} | ${cell('veyrum')} | ${cell('file-coverage')} | ${hermetic('veyrum')} / ${hermetic('file-coverage')} | ${cell('runner-changed')} | ${killed.length} + ${flips} | ${veyrumEscapes} | ${escapes('file-coverage')} | ${divergent} | ${pct(quantile(overhead, 0.5))} |`,
     )
   }
   out.push('')

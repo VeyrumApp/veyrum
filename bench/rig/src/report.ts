@@ -6,6 +6,7 @@ import {
   type CommitResult,
   type MutantResult,
   type ResultLine,
+  UNOBSERVED_CHANNELS,
 } from './replay.ts'
 
 export function readLines(file: string): ResultLine[] {
@@ -153,6 +154,14 @@ export function renderReport(title: string, lines: readonly ResultLine[]): strin
     `Veyrum mutant escape rate: ${veyrum.mutantEscapes} of ${killed.length}; 95% upper bound ${pct(upperBound95(veyrum.mutantEscapes, killed.length))}.`,
     '',
   )
+  const hermetic = (name: BaselineName): string => {
+    const shares = hermeticShares(commits, name)
+    return `${pct(quantile(shares, 0.5))} / ${pct(shares.reduce((a, b) => a + b, 0) / Math.max(1, shares.length))}`
+  }
+  out.push(
+    `On hermetic test files (leaving out those using the internet or programs Veyrum cannot observe, which every sound selector must run), share of test time run, median / mean: Veyrum ${hermetic('veyrum')}, file-coverage ${hermetic('file-coverage')}.`,
+    '',
+  )
 
   out.push('## Selection by change type (median share of test time run)', '')
   const types = new Map<string, CommitResult[]>()
@@ -282,4 +291,36 @@ function extraOverCoverage(commits: readonly CommitResult[]): string[] {
   }
   out.push('')
   return out
+}
+
+/**
+ * Files Veyrum ran at a commit because they used channels it cannot observe. Older results lack
+ * the list; it is then read from the recorded reason details, which name the file.
+ */
+function unobservable(c: CommitResult): ReadonlySet<string> {
+  if (c.veyrumUnobservable) return new Set(c.veyrumUnobservable)
+  const out = new Set<string>()
+  for (const detail of Object.values(c.veyrumReasons ?? {}).flatMap((r) => r.details)) {
+    const at = detail.indexOf(': ')
+    if (at > 0 && detail.includes(UNOBSERVED_CHANNELS) && c.outcomes[detail.slice(0, at)])
+      out.add(detail.slice(0, at))
+  }
+  return out
+}
+
+/**
+ * Each commit's share of test time a selector ran, over hermetic test files only: those Veyrum
+ * could observe completely. Files whose outcome depends on the internet or untraced programs must
+ * run under any sound selector, so they are left out of both the selection and the total.
+ */
+export function hermeticShares(commits: readonly CommitResult[], name: BaselineName): number[] {
+  return commits.flatMap((c) => {
+    const b = c.baselines?.[name]
+    if (!b || b.selected === null) return []
+    const open = unobservable(c)
+    const ms = (f: string): number => c.outcomes[f]?.[1] ?? 0
+    const openMs = [...open].reduce((n, f) => n + ms(f), 0)
+    const selectedOpenMs = b.selected.filter((f) => open.has(f)).reduce((n, f) => n + ms(f), 0)
+    return [(b.selectedMs - selectedOpenMs) / Math.max(1, c.totalMs - openMs)]
+  })
 }

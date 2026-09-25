@@ -36,6 +36,9 @@ export interface BaselineScore {
   readonly missedFailing: readonly string[]
 }
 
+/** How the planner words a decision blocked by channels capture cannot observe. */
+export const UNOBSERVED_CHANNELS = 'channels Veyrum does not observe'
+
 export interface CommitResult {
   readonly kind: 'commit'
   readonly index: number
@@ -60,6 +63,12 @@ export interface CommitResult {
   >
   /** Why Veyrum ran each file file-coverage skipped: its decision's first detail, or its reason. */
   readonly veyrumExtra?: Readonly<Record<string, string>>
+  /**
+   * Files Veyrum ran because they used channels it cannot observe (remote network, untraced
+   * programs): their outcome can change with no change to the repository, so no sound selector
+   * may skip them.
+   */
+  readonly veyrumUnobservable?: readonly string[]
   readonly capture: { readonly runMs: number; readonly recordMs: number; readonly wallMs: number }
   /** Wall time of an uninstrumented full run, measured on sampled commits for overhead. */
   readonly plainWallMs: number | null
@@ -309,6 +318,7 @@ export async function replay(corpus: Corpus, benchRoot: string, options: ReplayO
         let veyrumPlanMs: number | null = null
         let veyrumReasons: Record<string, { count: number; details: string[] }> | undefined
         let veyrumExtra: Record<string, string> | undefined
+        let veyrumUnobservable: string[] | undefined
         let checks: CheckRef[] = []
         if (parent) {
           const p = veyrumPlan(corpus, paths.testRoot, paths.store, paths.scratch)
@@ -326,6 +336,9 @@ export async function replay(corpus: Corpus, benchRoot: string, options: ReplayO
             }
           }
           checks = p.decisions.map((d) => d.check)
+          veyrumUnobservable = p.decisions
+            .filter((d) => d.action === 'run' && d.details.some((x) => x.includes(UNOBSERVED_CHANNELS)))
+            .map((d) => d.check.path)
           const veyrumSelection = new Set(
             p.decisions.filter((d) => d.action === 'run').map((d) => d.check.path),
           )
@@ -431,6 +444,7 @@ export async function replay(corpus: Corpus, benchRoot: string, options: ReplayO
           veyrumPlanMs,
           ...(veyrumReasons ? { veyrumReasons } : {}),
           ...(veyrumExtra ? { veyrumExtra } : {}),
+          ...(veyrumUnobservable ? { veyrumUnobservable } : {}),
           capture: { runMs: capture.runMs, recordMs: capture.recordMs, wallMs: capture.wallMs },
           plainWallMs,
         }
