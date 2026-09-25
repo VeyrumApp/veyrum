@@ -592,5 +592,6 @@ function mainObservations(
     loadedPackages: [...new Set(mains.flatMap((m) => m.observations.loadedPackages))],
     loadedFiles: [...new Set(mains.flatMap((m) => m.observations.loadedFiles))].filter((f) => !own(f)),
     loadsObserved: mains.every((m) => m.observations.loadsObserved),
+    writes: mains.flatMap((m) => m.observations.writes ?? []),
   }
 }

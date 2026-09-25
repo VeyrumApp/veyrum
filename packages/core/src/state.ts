@@ -99,7 +99,7 @@ const NOT_A_FILE = 'not-a-file'
  */
 export class CurrentState {
   private readonly files = new Map<string, Digest | null>()
-  private readonly dirs = new Map<string, Digest | null>()
+  private readonly dirs = new Map<string, string[] | null>()
   private readonly manifests = new Map<string, Digest | null>()
   private readonly stats = new Map<string, StatType>()
   private packageNames: Map<string, string[]> | undefined
@@ -167,17 +167,27 @@ export class CurrentState {
     return value
   }
 
-  dirDigest(repoPath: string): Digest | null {
+  /** The names in a directory, or null when it cannot be listed. */
+  dirNames(repoPath: string): readonly string[] | null {
     const cached = this.dirs.get(repoPath)
     if (cached !== undefined) return cached
-    let value: Digest | null
+    let value: string[] | null
     try {
-      value = hashDirNames(this.fs.readdirSync(fromRepoPath(this.root, repoPath)) as string[])
+      value = this.fs.readdirSync(fromRepoPath(this.root, repoPath)) as string[]
     } catch {
       value = null
     }
     this.dirs.set(repoPath, value)
     return value
+  }
+
+  /** Digest of a directory's names, without the `excluded` ones; null when it cannot be listed. */
+  dirDigest(repoPath: string, excluded?: readonly string[]): Digest | null {
+    const names = this.dirNames(repoPath)
+    if (names === null) return null
+    if (!excluded || excluded.length === 0) return hashDirNames(names)
+    const skip = new Set(excluded)
+    return hashDirNames(names.filter((n) => !skip.has(n)))
   }
 
   /**
