@@ -271,6 +271,11 @@ export function assemble(input: AssembleInput): Assembled {
   const mainWrites = input.main.writes ?? []
   const testWrites = new Set(payloads.flatMap((p) => p.writes))
   const mainCreated = withAncestors(mainWrites)
+  // What any test created. Whether another test's product exists when a test lists a directory
+  // depends on how the runner scheduled them, not on the repository, and a fresh checkout never
+  // holds it: a listing leaves such entries out (reading their content is still an input).
+  const runCreated = new Set([...withAncestors(testWrites), ...mainCreated])
+  const runWrites = new Set([...testWrites, ...mainWrites])
   const testFiles = new Set(
     [...outcomes.map((o) => o.file), ...(input.testFiles ?? [])].map(normalizeAbsolute),
   )
@@ -442,22 +447,24 @@ export function assemble(input: AssembleInput): Assembled {
           add(`manifest:${mp}`, { k: 'manifest', p: mp, h: state.manifestDigest(mp) })
         }
       }
-      const runWrites = mainWrites.length === 0 ? checkWrites : new Set([...checkWrites, ...mainWrites])
-      const created = new Set([...withAncestors(checkWrites), ...mainCreated])
+      const ownWrites = mainWrites.length === 0 ? checkWrites : new Set([...checkWrites, ...mainWrites])
       for (const obs of payload.paths) {
         if (ignored(obs.p)) continue
         // A path this test or the main process created is their product, whatever its kind.
-        if (obs.type !== 'absent' && createdDuringRun(runWrites, obs.p)) continue
+        if (obs.type !== 'absent' && createdDuringRun(ownWrites, obs.p)) continue
         const p = toRepoPath(root, obs.p)
         if (obs.kind === 'dir') {
           if (obs.type !== 'dir') {
             add(`dir:${p}`, { k: 'dir', p, h: null })
             continue
           }
+          // The listing of a directory another test created, like its entries below, depends on
+          // scheduling.
+          if (createdDuringRun(runWrites, obs.p)) continue
           // Entries the run created in a listed directory are left out of its listing.
           const x = (state.dirNames(p) ?? []).filter((n) => {
             const entry = path.join(obs.p, n)
-            return created.has(entry) && newDuringRun(entry)
+            return runCreated.has(entry) && newDuringRun(entry)
           })
           add(
             `dir:${p}`,
