@@ -5,7 +5,8 @@ import { coverageHub, type ScriptCoverage } from '../src/coverage.ts'
 
 /**
  * Under Veyrum's own capture (the shadow-mode CI run), this worker's coverage already belongs to
- * that capture's hub: these scenarios need a hub of their own.
+ * that capture's hub: these scenarios need a hub of their own, so they skip. A captured run is
+ * then no evidence of them. veyrum: always-run
  */
 const captured = Symbol.for('veyrum.coverageHub') in globalThis
 

@@ -81,6 +81,10 @@ execution (`--record-all` records every file). On Linux (x64 and arm64) and macO
 a test starts are traced too, statically linked and Go programs and macOS's protected system
 programs included (see `docs/design/soundness.md`).
 
+A test file whose outcome Veyrum cannot see from its execution, such as one that behaves
+differently under capture, can opt out of reuse with a `veyrum: always-run` comment anywhere in
+the file.
+
 Evidence is stored in `.veyrum/store.sqlite`. It holds digests, repository paths, test names,
 outcomes and durations, never source code or environment variable values.
 

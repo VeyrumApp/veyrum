@@ -297,6 +297,7 @@ export function assemble(input: AssembleInput): Assembled {
   for (const outcome of outcomes) {
     const check = toRepoPath(root, outcome.file)
     const flags = new Set<string>()
+    if (declaresAlwaysRun(input.fs, outcome.file)) flags.add(FLAGS.alwaysRun)
     const closure: ClosureEntry[] = []
     const candidates = byTestFile.get(normalizeAbsolute(outcome.file)) ?? []
     // A file can run more than once in a run (repeats); the last payload describes the final attempt.
@@ -655,4 +656,15 @@ export function assemble(input: AssembleInput): Assembled {
 
 function entryKey(e: ClosureEntry): string {
   return e.k === 'env' || e.k === 'pkgname' ? `${e.k}:${e.n}` : `${e.k}:${e.p}`
+}
+
+/** The comment by which a test file declares it must always run (see FLAGS.alwaysRun). */
+const ALWAYS_RUN = /\bveyrum:\s*always-run\b/
+
+function declaresAlwaysRun(fs: RawFs, file: string): boolean {
+  try {
+    return ALWAYS_RUN.test(String(fs.readFileSync(file, 'utf8')))
+  } catch {
+    return false
+  }
 }

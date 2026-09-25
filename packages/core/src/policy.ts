@@ -28,6 +28,7 @@ export const DEFAULT_POLICY: Policy = {
     FLAGS.captureIncomplete,
     FLAGS.browserUnobserved,
     FLAGS.serverUnobserved,
+    FLAGS.alwaysRun,
   ]),
   maxCandidates: 20,
 }
