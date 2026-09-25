@@ -103,6 +103,7 @@ Flags record channels the closure cannot fully observe.
 | `capture-incomplete` | capture failed for the file | not evidence |
 | `browser-unobserved` | Playwright ran a browser other than Chromium | blocks reuse |
 | `server-unobserved` | Playwright traffic reached a local server Veyrum did not observe | blocks reuse |
+| `always-run` | the test file declares it (a `veyrum: always-run` comment) | blocks reuse |
 | `source-observed` | code read function source text that could not be located | compare raw source |
 | `positions-observed` | a snapshot embeds source positions | compare raw source |
 | `net-local` | loopback connection | allowed |
@@ -609,3 +610,7 @@ variable, here) is in its closure like any input.
 
 The audit (full runs on the main branch, plus sampled re-execution of reused files) is the
 backstop for every assumption. Its escape rate is the real safety number.
+13. **Tests that observe capture.** A test that behaves differently when it is captured (for
+   example one that detects Veyrum and skips itself) records evidence of what it did under
+   capture, which says nothing about a plain run. Such a test declares `veyrum: always-run` in a
+   comment, and it is never reused.

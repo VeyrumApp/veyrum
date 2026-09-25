@@ -335,6 +335,19 @@ describe('dependencies and configuration', () => {
     expect(sandbox.actions()).toEqual({ 'test/a.test.ts': 'skip', 'test/b.test.ts': 'run' })
   })
 
+  test('a test file that declares always-run is never reused', () => {
+    sandbox = new Sandbox('always-run')
+      .write('test/declared.test.ts', `// veyrum: always-run\n${PLAIN_TEST}`)
+      .write('test/plain.test.ts', PLAIN_TEST)
+    sandbox.capture()
+    const plan = sandbox.plan()
+    expect(plan['test/declared.test.ts']?.action).toBe('run')
+    expect(plan['test/declared.test.ts']?.details.join(' ')).toContain(
+      'always-run (declared in the test file)',
+    )
+    expect(plan['test/plain.test.ts']?.action).toBe('skip')
+  })
+
   test('a Vitest config change reruns everything', () => {
     sandbox = new Sandbox('config').write('test/plain.test.ts', PLAIN_TEST)
     sandbox.capture()

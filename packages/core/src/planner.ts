@@ -410,6 +410,7 @@ function sharedDigest(run: RunInfo): Digest {
 
 /** A blocking flag with what it was about, when the record names it (`net-remote (host:443)`). */
 function describeChannel(flag: string, record: EvidenceRecord): string {
+  if (flag === 'always-run') return 'always-run (declared in the test file)'
   const channels = record.channels
   const named =
     flag === 'net-remote'

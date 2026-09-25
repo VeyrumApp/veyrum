@@ -94,6 +94,11 @@ export const FLAGS = {
    * running, or was started in a way that cannot be traced. What it read is unknown.
    */
   serverUnobserved: 'server-unobserved',
+  /**
+   * The test file declares itself unobservable (a `veyrum: always-run` comment): what it depends on
+   * cannot be seen from its execution, as when it behaves differently under capture.
+   */
+  alwaysRun: 'always-run',
 } as const
 
 export type Flag = (typeof FLAGS)[keyof typeof FLAGS]
