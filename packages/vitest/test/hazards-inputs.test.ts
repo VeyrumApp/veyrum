@@ -320,6 +320,21 @@ describe('dependencies and configuration', () => {
     expect(sandbox.actions()).toEqual({ 'a/a.test.ts': 'run', 'b/b.test.ts': 'skip' })
   })
 
+  test('a test file that ran without capture is not an input of the others', () => {
+    sandbox = new Sandbox('uncaptured-test-file')
+      .write('test/a.test.ts', PLAIN_TEST)
+      .write('test/b.test.ts', "import { expect, test } from 'vitest'\ntest('b', () => expect(2).toBe(2))\n")
+    sandbox.capture()
+    // A full run records only where evidence is stale: a runs captured, b runs without capture.
+    sandbox.write('test/a.test.ts', `${PLAIN_TEST}test('more', () => expect(3).toBe(3))\n`)
+    sandbox.capture()
+    sandbox.write(
+      'test/b.test.ts',
+      "import { expect, test } from 'vitest'\ntest('b', () => expect(4).toBe(4))\n",
+    )
+    expect(sandbox.actions()).toEqual({ 'test/a.test.ts': 'skip', 'test/b.test.ts': 'run' })
+  })
+
   test('a Vitest config change reruns everything', () => {
     sandbox = new Sandbox('config').write('test/plain.test.ts', PLAIN_TEST)
     sandbox.capture()

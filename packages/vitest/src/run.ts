@@ -482,6 +482,7 @@ export async function runVitest(options: VitestRunOptions): Promise<VitestRunRes
           ),
           main,
           files,
+          testFiles: allSpecs.map((s) => s.moduleId),
           store: options.store,
           fs: rawFs,
           runner: {
