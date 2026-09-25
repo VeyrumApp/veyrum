@@ -7,7 +7,7 @@ import {
   type Store,
   stem,
 } from '@veyrum/core'
-import { exec } from './exec.ts'
+import { childEnv, exec } from './exec.ts'
 
 export interface SelectionContext {
   readonly repo: string
@@ -65,6 +65,8 @@ export async function selectFileClosure(ctx: SelectionContext, runtimeKey: strin
     checks: ctx.checks,
     runtimeKey,
     files: listRepoFiles(ctx.repo),
+    // The environment the recorded runs had: the rig starts every run with it.
+    env: childEnv(),
   })
   return new Set(decisions.filter((d) => d.action === 'run').map((d) => d.check.path))
 }
