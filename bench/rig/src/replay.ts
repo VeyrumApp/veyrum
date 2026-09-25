@@ -55,6 +55,8 @@ export interface CommitResult {
    * Each is a Veyrum bug; like flaky files, they are left out of safety scoring.
    */
   readonly divergent?: readonly string[]
+  /** Why each divergent file failed under capture: first failing test and message. */
+  readonly divergentWhy?: Readonly<Record<string, string>>
   readonly baselines: Partial<Record<BaselineName, BaselineScore>> | null
   readonly veyrumPlanMs: number | null
   /** Why Veyrum ran files: count per reason, and the first details of each (diagnostics). */
@@ -171,11 +173,12 @@ function classifyFailures(
   repo: string,
   scratch: string,
   outcomes: Outcomes,
-): { flaky: Set<string>; divergent: Set<string> } {
+): { flaky: Set<string>; divergent: Set<string>; why: Record<string, string> } {
   const failing = [...outcomes].filter(([, o]) => o.verdict === 'fail').map(([f]) => f)
   const flaky = new Set<string>()
   const divergent = new Set<string>()
-  if (failing.length === 0) return { flaky, divergent }
+  const why: Record<string, string> = {}
+  if (failing.length === 0) return { flaky, divergent, why }
   const passes = new Map<string, number>()
   for (let attempt = 0; attempt < 2; attempt++) {
     const rerun = plainRun(corpus, repo, scratch, failing)
@@ -187,11 +190,13 @@ function classifyFailures(
   if (suspects.length > 0) {
     const again = captureRerun(corpus, repo, scratch, suspects)
     for (const f of suspects) {
-      if (again.get(f)?.verdict === 'fail') divergent.add(f)
-      else flaky.add(f)
+      if (again.get(f)?.verdict === 'fail') {
+        divergent.add(f)
+        why[f] = again.get(f)?.failure ?? outcomes.get(f)?.failure ?? ''
+      } else flaky.add(f)
     }
   }
-  return { flaky, divergent }
+  return { flaky, divergent, why }
 }
 
 function durationOf(outcomes: Outcomes, files: Iterable<string>): number {
@@ -396,7 +401,11 @@ export async function replay(corpus: Corpus, benchRoot: string, options: ReplayO
           plainWallMs = runPlain()
         }
         const outcomes = capture.outcomes
-        const { flaky, divergent } = classifyFailures(corpus, paths.testRoot, paths.scratch, outcomes)
+        const {
+          flaky,
+          divergent,
+          why: divergentWhy,
+        } = classifyFailures(corpus, paths.testRoot, paths.scratch, outcomes)
         if (divergent.size > 0)
           log(`  CAPTURE CHANGED VERDICTS (fail under Veyrum, pass without): ${[...divergent].join(', ')}`)
         const unscored = new Set([...flaky, ...divergent])
@@ -440,6 +449,7 @@ export async function replay(corpus: Corpus, benchRoot: string, options: ReplayO
           flips,
           flaky: [...flaky],
           divergent: [...divergent],
+          ...(divergent.size > 0 ? { divergentWhy } : {}),
           baselines,
           veyrumPlanMs,
           ...(veyrumReasons ? { veyrumReasons } : {}),

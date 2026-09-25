@@ -1,5 +1,5 @@
 import type { BaselineName, CommitResult, MutantResult, ResultLine } from './replay.ts'
-import { hermeticShares, upperBound95 } from './report.ts'
+import { changeType, hermeticShare, hermeticShares, upperBound95 } from './report.ts'
 
 /** One replayed corpus, for the cross-repository summary. */
 export interface SummaryInput {
@@ -76,5 +76,77 @@ export function renderSummary(inputs: readonly SummaryInput[]): string {
     `Veyrum escapes across all repositories: ${escapesTotal} of ${oraclesTotal} killed mutants and mainline flips; 95% upper bound on the escape rate ${pct(upperBound95(escapesTotal, oraclesTotal))}.`,
     '',
   )
+  out.push(...renderGate(inputs, escapesTotal, oraclesTotal))
   return out.join('\n')
+}
+
+/** The plan's final gate (section 37), per repository and overall. */
+const GATE = {
+  oracles: 1500,
+  escapeBound: 0.0025,
+  ratioVsCoverage: 0.65,
+  reposPassingRatio: 4,
+  sourceMedian: 0.3,
+  dependencyMedian: 0.6,
+  overhead: 0.15,
+} as const
+
+function renderGate(inputs: readonly SummaryInput[], escapes: number, oracles: number): string[] {
+  const mark = (ok: boolean): string => (ok ? 'pass' : 'FAIL')
+  const out = ['## Release gate (plan section 37)', '']
+  out.push(
+    'Shares are of hermetic test time (files that used the internet or untraced programs run under any sound selector), median over the commits of each kind. Source commits change only source and test files.',
+    '',
+  )
+  out.push(
+    '| Repository | Source commits | Veyrum | File-coverage | Ratio | Dependency commits | Veyrum on them | Capture overhead |',
+  )
+  out.push('| --- | --- | --- | --- | --- | --- | --- | --- |')
+  let ratioPasses = 0
+  let sourcePasses = 0
+  let dependencyPasses = 0
+  let overheadPasses = 0
+  for (const input of inputs) {
+    const commits = input.lines.filter((l): l is CommitResult => l.kind === 'commit' && l.baselines !== null)
+    const median = (list: readonly CommitResult[], name: BaselineName): number =>
+      quantile(
+        list.flatMap((c) => {
+          const s = hermeticShare(c, name)
+          return s === null ? [] : [s]
+        }),
+        0.5,
+      )
+    const source = commits.filter((c) => ['source', 'tests', 'source+tests'].includes(changeType(c.changed)))
+    const dependency = commits.filter((c) => changeType(c.changed) === 'dependencies')
+    const v = median(source, 'veyrum')
+    const fc = median(source, 'file-coverage')
+    const ratio = fc > 0 ? v / fc : v === 0 ? 0 : Number.POSITIVE_INFINITY
+    const dep = median(dependency, 'veyrum')
+    const overhead = quantile(
+      input.lines
+        .filter((l): l is CommitResult => l.kind === 'commit' && l.plainWallMs !== null)
+        .map((c) => c.capture.wallMs / c.plainWallMs! - 1),
+      0.5,
+    )
+    const ratioOk = source.length > 0 && ratio <= GATE.ratioVsCoverage
+    if (ratioOk) ratioPasses++
+    if (source.length > 0 && v <= GATE.sourceMedian) sourcePasses++
+    if (dependency.length === 0 || dep <= GATE.dependencyMedian) dependencyPasses++
+    if (!Number.isNaN(overhead) && overhead <= GATE.overhead) overheadPasses++
+    const ratioCell = Number.isFinite(ratio) ? `${ratio.toFixed(2)}x` : '-'
+    out.push(
+      `| ${input.name} | ${source.length} | ${pct(v)} | ${pct(fc)} | ${ratioCell} | ${dependency.length} | ${pct(dep)} | ${pct(overhead)} |`,
+    )
+  }
+  const bound = upperBound95(escapes, oracles)
+  out.push('')
+  out.push(
+    `- Escapes: ${escapes} over ${oracles} oracles (gate: 0 over at least ${GATE.oracles}), 95% bound ${(bound * 100).toFixed(2)}% (gate: at most ${(GATE.escapeBound * 100).toFixed(2)}%): ${mark(escapes === 0 && oracles >= GATE.oracles && bound <= GATE.escapeBound)}`,
+    `- Ratio to file-coverage on source commits at most ${GATE.ratioVsCoverage}x: ${ratioPasses} of ${inputs.length} repositories (gate: at least ${GATE.reposPassingRatio}): ${mark(ratioPasses >= GATE.reposPassingRatio)}`,
+    `- Veyrum median on source commits at most ${pct(GATE.sourceMedian)}: ${sourcePasses} of ${inputs.length} repositories`,
+    `- Veyrum median on dependency commits at most ${pct(GATE.dependencyMedian)}: ${dependencyPasses} of ${inputs.length} repositories`,
+    `- Capture overhead at most ${pct(GATE.overhead)}: ${overheadPasses} of ${inputs.length} repositories`,
+    '',
+  )
+  return out
 }

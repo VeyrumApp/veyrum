@@ -39,6 +39,8 @@ export interface CheckOutcome {
   readonly retries: number
   /** Snapshot writes reported by the runner, when the worker cannot observe them. */
   readonly snapshot?: { readonly added: number; readonly updated: number }
+  /** On failure, the first failing test and its first error message (for diagnostics). */
+  readonly failure?: string
 }
 
 export interface AssembleInput {

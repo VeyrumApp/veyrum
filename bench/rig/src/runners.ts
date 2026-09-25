@@ -145,7 +145,12 @@ export function captureRun(corpus: Corpus, repo: string, store: string, scratch:
   }>(json)
   // Files whose evidence was still valid ran without capture; every file that ran has an outcome.
   const outcomes: Outcomes = new Map()
-  for (const o of data.outcomes) outcomes.set(o.check.path, { verdict: o.verdict, durationMs: o.durationMs })
+  for (const o of data.outcomes)
+    outcomes.set(o.check.path, {
+      verdict: o.verdict,
+      durationMs: o.durationMs,
+      ...(o.failure ? { failure: o.failure } : {}),
+    })
   return { outcomes, runMs: data.timings.runMs, recordMs: data.timings.recordMs, wallMs: r.ms }
 }
 
@@ -169,7 +174,12 @@ export function captureRerun(
     )
   const data = readOutput<{ outcomes: CheckOutcomeSummary[] }>(json)
   const outcomes: Outcomes = new Map()
-  for (const o of data.outcomes) outcomes.set(o.check.path, { verdict: o.verdict, durationMs: o.durationMs })
+  for (const o of data.outcomes)
+    outcomes.set(o.check.path, {
+      verdict: o.verdict,
+      durationMs: o.durationMs,
+      ...(o.failure ? { failure: o.failure } : {}),
+    })
   return outcomes
 }
 

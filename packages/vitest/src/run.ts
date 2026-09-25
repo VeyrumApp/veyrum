@@ -464,7 +464,13 @@ export async function runVitest(options: VitestRunOptions): Promise<VitestRunRes
     const pool = String((vitest.config as unknown as { pool?: string }).pool ?? '')
     const outcomes: CheckOutcomeSummary[] = [...reporter.outcomes.values()].map((o) => {
       const check = { path: toRepoPath(root, o.file), project: o.project }
-      return { check, verdict: o.verdict, durationMs: o.durationMs, captured: captured(check) }
+      return {
+        check,
+        verdict: o.verdict,
+        durationMs: o.durationMs,
+        captured: captured(check),
+        ...(o.failure ? { failure: o.failure } : {}),
+      }
     })
     const recording = recordEvidence(options.strict, () => {
       // One transaction: assembly caches a digest for every file it reads.
