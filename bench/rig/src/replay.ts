@@ -163,10 +163,11 @@ function prepare(corpus: Corpus, repo: string): void {
 }
 
 /**
- * Reruns the files that failed under capture twice without Veyrum. A file that passes once and
- * fails once is flaky. One that passes both times is run under capture again: failing again, its
- * verdict depends on capture (divergent); passing, it is flaky. Both are excluded from safety
- * scoring.
+ * Reruns the files that failed under capture three times without Veyrum. A file that fails in any
+ * of them and passes in another is flaky. One that passes every time is run under capture twice
+ * more: failing both times, its verdict depends on capture (divergent); passing once, it is flaky.
+ * Both are excluded from safety scoring. A flaky file that happens to pass a few plain runs must
+ * not be blamed on capture, hence the extra runs.
  */
 function classifyFailures(
   corpus: Corpus,
@@ -180,22 +181,24 @@ function classifyFailures(
   const why: Record<string, string> = {}
   if (failing.length === 0) return { flaky, divergent, why }
   const passes = new Map<string, number>()
-  for (let attempt = 0; attempt < 2; attempt++) {
+  const PLAIN_RUNS = 3
+  for (let attempt = 0; attempt < PLAIN_RUNS; attempt++) {
     const rerun = plainRun(corpus, repo, scratch, failing)
     for (const f of failing)
       if (rerun.outcomes.get(f)?.verdict === 'pass') passes.set(f, (passes.get(f) ?? 0) + 1)
   }
-  const suspects = failing.filter((f) => passes.get(f) === 2)
-  for (const f of failing) if (passes.get(f) === 1) flaky.add(f)
-  if (suspects.length > 0) {
+  let suspects = failing.filter((f) => passes.get(f) === PLAIN_RUNS)
+  for (const f of failing) if ((passes.get(f) ?? 0) > 0 && passes.get(f) !== PLAIN_RUNS) flaky.add(f)
+  for (let attempt = 0; attempt < 2 && suspects.length > 0; attempt++) {
     const again = captureRerun(corpus, repo, scratch, suspects)
     for (const f of suspects) {
-      if (again.get(f)?.verdict === 'fail') {
-        divergent.add(f)
-        why[f] = again.get(f)?.failure ?? outcomes.get(f)?.failure ?? ''
-      } else flaky.add(f)
+      if (again.get(f)?.verdict === 'fail') why[f] ??= again.get(f)?.failure ?? outcomes.get(f)?.failure ?? ''
+      else flaky.add(f)
     }
+    suspects = suspects.filter((f) => !flaky.has(f))
   }
+  for (const f of suspects) divergent.add(f)
+  for (const f of Object.keys(why)) if (!divergent.has(f)) delete why[f]
   return { flaky, divergent, why }
 }
 
