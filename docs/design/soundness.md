@@ -614,3 +614,8 @@ backstop for every assumption. Its escape rate is the real safety number.
    example one that detects Veyrum and skips itself) records evidence of what it did under
    capture, which says nothing about a plain run. Such a test declares `veyrum: always-run` in a
    comment, and it is never reused.
+14. **Other tests' products in listings.** A directory entry that another test created during the
+   run is left out of a listing, and so is the listing of a directory another test created:
+   whether it exists when a test lists the directory depends on scheduling, and a fresh checkout
+   never holds it. An outcome that depends on it is order-dependent, which flake detection and the
+   audit handle. Reading such a file, or checking that it exists, is still an input.

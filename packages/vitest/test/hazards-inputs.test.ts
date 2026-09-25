@@ -93,6 +93,25 @@ describe('files and directories', () => {
     expect(sandbox.actions()['test/listing.test.ts']).toBe('run')
   })
 
+  test("another test's output in a shared fixture is not an input of a listing; a new file is", () => {
+    sandbox = new Sandbox('sibling-products')
+      .write('fixtures/app/index.txt', 'app')
+      .write(
+        'test/build.test.ts',
+        "import fs from 'node:fs'\nimport { expect, test } from 'vitest'\ntest('builds', () => {\n  fs.mkdirSync('fixtures/app/out', { recursive: true })\n  fs.writeFileSync('fixtures/app/out/bundle.txt', 'built')\n  expect(fs.readFileSync('fixtures/app/index.txt', 'utf8')).toBe('app')\n})\n",
+      )
+      .write(
+        'test/list.test.ts',
+        "import fs from 'node:fs'\nimport { expect, test } from 'vitest'\ntest('lists', async () => {\n  // Waits for the build, as a test that races another one sees it or not.\n  for (let i = 0; i < 100 && !fs.readdirSync('fixtures/app').includes('out'); i++) await new Promise((r) => setTimeout(r, 50))\n  expect(fs.readdirSync('fixtures/app')).toContain('index.txt')\n})\n",
+      )
+    sandbox.capture()
+    // A fresh checkout: the build output is not there.
+    sandbox.remove('fixtures/app/out')
+    expect(sandbox.actions()).toEqual({ 'test/build.test.ts': 'skip', 'test/list.test.ts': 'skip' })
+    sandbox.write('fixtures/app/other.txt', 'new')
+    expect(sandbox.actions()['test/list.test.ts']).toBe('run')
+  })
+
   test('a repository inside the OS temporary directory still records its fixture reads', () => {
     sandbox = new Sandbox('in-tmp', { base: fs.mkdtempSync(path.join(os.tmpdir(), 'veyrum-')) })
       .write('fixtures/data.json', '{"n": 1}\n')
