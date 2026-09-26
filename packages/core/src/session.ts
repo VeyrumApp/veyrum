@@ -180,20 +180,32 @@ export interface Execution {
  * without capture records it anyway, so a check recovers once it becomes reusable.
  */
 export interface CapturePolicy {
+  /** Plans in a row of churn from volatile inputs before recording stops. */
   readonly churnStreak: number
+  /** The same for churn from a blocked channel or evidence that does not count, which recurs. */
+  readonly blockedStreak: number
   readonly minReuse: number
   readonly reuseWeight: number
+  /** Runs in a row without capture before a probe records the check anyway... */
   readonly probeEvery: number
+  /** ...multiplied by this for each probe since the check was last reused, up to probeMax. */
+  readonly probeBackoff: number
+  readonly probeMax: number
 }
 
-// Chosen by simulating policies over recorded replays (veyrum-bench simulate): the lowest total
-// cost across corpora, recording rarely enough that a suite nothing can reuse costs about what
-// running it without Veyrum does.
+// Chosen by simulating policies over recorded replays (veyrum-bench simulate), in steady state:
+// the lowest total cost among policies that make no corpus costlier than recording everything,
+// with which a suite nothing can reuse costs what running it without Veyrum does. A slow reuse
+// average rides out bursts of invalidation (a run of dependency upgrades); frequent early probes
+// find a check that has become reusable, backing off for one that never does.
 export const CAPTURE_POLICY: CapturePolicy = {
-  churnStreak: 3,
+  churnStreak: 2,
+  blockedStreak: 1,
   minReuse: 0.05,
-  reuseWeight: 0.3,
-  probeEvery: 10,
+  reuseWeight: 0.1,
+  probeEvery: 3,
+  probeBackoff: 2,
+  probeMax: 40,
 }
 
 export function selectExecution(
@@ -226,7 +238,8 @@ export function selectExecution(
   const uncapturedChurn = new Set<string>()
   if (!options.recordAll) for (const d of reusable) capture.delete(checkKey(d.check))
   const store = options.store
-  const { churnStreak, minReuse, reuseWeight, probeEvery } = options.capturePolicy ?? CAPTURE_POLICY
+  const { churnStreak, blockedStreak, minReuse, reuseWeight, probeEvery, probeBackoff, probeMax } =
+    options.capturePolicy ?? CAPTURE_POLICY
   if (store) {
     store.transaction(() => {
       for (const d of decisions) {
@@ -238,28 +251,35 @@ export function selectExecution(
           d.reason !== 'no-evidence' &&
           d.reason !== 'runtime-changed' &&
           d.reason !== 'forced'
-        let { streak, reuse, skipped } = before
+        let { streak, reuse, skipped, probes } = before
         if (d.action === 'skip') {
           streak = 0
+          probes = 0
           reuse = reuse * (1 - reuseWeight) + reuseWeight
         } else if (invalidated) {
-          streak = d.churn ? streak + 1 : 0
-          reuse *= 1 - reuseWeight
+          // Only evidence recorded last time says anything about reuse: a check that ran without
+          // capture runs again on stale evidence because of that choice, not because it changed.
+          const informative = before.skipped === 0
+          streak = !d.churn ? 0 : informative ? streak + 1 : streak
+          if (informative) reuse *= 1 - reuseWeight
         }
+        const blocked = d.reason === 'blocked-flag' || d.reason === 'not-reusable'
         const lowValue =
-          invalidated && ((d.churn === true && before.streak >= churnStreak) || reuse < minReuse)
-        if (
-          lowValue &&
-          capture.has(key) &&
-          !verified.has(key) &&
-          !options.recordAll &&
-          skipped + 1 < probeEvery
-        ) {
-          capture.delete(key)
-          uncapturedChurn.add(key)
-          skipped++
+          invalidated &&
+          ((d.churn === true && before.streak >= (blocked ? blockedStreak : churnStreak)) || reuse < minReuse)
+        const interval = Math.min(probeMax, probeEvery * probeBackoff ** probes)
+        if (lowValue && capture.has(key) && !verified.has(key) && !options.recordAll) {
+          if (skipped + 1 < interval) {
+            capture.delete(key)
+            uncapturedChurn.add(key)
+            skipped++
+          } else {
+            // A probe: recorded anyway, in case the check has become reusable.
+            skipped = 0
+            probes++
+          }
         } else if (capture.has(key)) skipped = 0
-        store.setCaptureValue(d.check, { streak, reuse, skipped })
+        store.setCaptureValue(d.check, { streak, reuse, skipped, probes })
       }
     })
   }

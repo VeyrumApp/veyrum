@@ -43,9 +43,11 @@ export interface CaptureValue {
   readonly streak: number
   readonly reuse: number
   readonly skipped: number
+  /** Probes since the check was last reused. */
+  readonly probes: number
 }
 
-const FRESH_CAPTURE_VALUE: CaptureValue = { streak: 0, reuse: 1, skipped: 0 }
+const FRESH_CAPTURE_VALUE: CaptureValue = { streak: 0, reuse: 1, skipped: 0, probes: 0 }
 
 export class Store {
   readonly file: string
@@ -100,7 +102,7 @@ export class Store {
         );
         CREATE TABLE IF NOT EXISTS churn (
           check_path TEXT NOT NULL, project TEXT NOT NULL, streak INTEGER NOT NULL,
-          reuse REAL NOT NULL DEFAULT 1, skipped INTEGER NOT NULL DEFAULT 0,
+          reuse REAL NOT NULL DEFAULT 1, skipped INTEGER NOT NULL DEFAULT 0, probes INTEGER NOT NULL DEFAULT 0,
           PRIMARY KEY (check_path, project)
         );
       `)
@@ -121,6 +123,7 @@ export class Store {
       addColumn(db, 'blobs', 'base', 'TEXT')
       addColumn(db, 'churn', 'reuse', 'REAL NOT NULL DEFAULT 1')
       addColumn(db, 'churn', 'skipped', 'INTEGER NOT NULL DEFAULT 0')
+      addColumn(db, 'churn', 'probes', 'INTEGER NOT NULL DEFAULT 0')
       if (row?.value !== String(SCHEMA_VERSION))
         db.prepare('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)').run(
           'schema',
@@ -366,24 +369,25 @@ export class Store {
   /**
    * What recording a check has been worth (see selectExecution): how many plans in a row found its
    * evidence unusable for a reason that recurs on its own (`streak`), how often its evidence was
-   * reused, as a weighted average of recent plans (`reuse`), and how many runs in a row it ran
-   * without capture (`skipped`).
+   * reused, as a weighted average of recent plans (`reuse`), how many runs in a row it ran
+   * without capture (`skipped`), and how many probes it had since it was last reused (`probes`).
    */
   captureValue(check: CheckRef): CaptureValue {
-    const row = this.sql('SELECT streak, reuse, skipped FROM churn WHERE check_path = ? AND project = ?').get(
-      check.path,
-      check.project,
-    ) as CaptureValue | undefined
-    return row ? { streak: row.streak, reuse: row.reuse, skipped: row.skipped } : FRESH_CAPTURE_VALUE
+    const row = this.sql(
+      'SELECT streak, reuse, skipped, probes FROM churn WHERE check_path = ? AND project = ?',
+    ).get(check.path, check.project) as CaptureValue | undefined
+    return row
+      ? { streak: row.streak, reuse: row.reuse, skipped: row.skipped, probes: row.probes }
+      : FRESH_CAPTURE_VALUE
   }
 
   setCaptureValue(check: CheckRef, value: CaptureValue): void {
-    if (value.streak === 0 && value.reuse === 1 && value.skipped === 0)
+    if (value.streak === 0 && value.reuse === 1 && value.skipped === 0 && value.probes === 0)
       this.sql('DELETE FROM churn WHERE check_path = ? AND project = ?').run(check.path, check.project)
     else
       this.sql(
-        'INSERT OR REPLACE INTO churn (check_path, project, streak, reuse, skipped) VALUES (?, ?, ?, ?, ?)',
-      ).run(check.path, check.project, value.streak, value.reuse, value.skipped)
+        'INSERT OR REPLACE INTO churn (check_path, project, streak, reuse, skipped, probes) VALUES (?, ?, ?, ?, ?, ?)',
+      ).run(check.path, check.project, value.streak, value.reuse, value.skipped, value.probes)
   }
 
   putVerification(
@@ -573,18 +577,22 @@ export class Store {
           insert.run(v.run_id!, v.check_path!, v.project!, v.record_id!, v.kind!, v.outcome!, v.created_at!)
         // Parallel jobs plan disjoint files; where both saw a file, the longer streak stands.
         const churn = this.sql(
-          `INSERT INTO churn (check_path, project, streak, reuse, skipped) VALUES (?, ?, ?, ?, ?)
+          `INSERT INTO churn (check_path, project, streak, reuse, skipped, probes) VALUES (?, ?, ?, ?, ?, ?)
              ON CONFLICT (check_path, project) DO UPDATE SET streak = max(streak, excluded.streak),
-               reuse = min(reuse, excluded.reuse), skipped = max(skipped, excluded.skipped)`,
+               reuse = min(reuse, excluded.reuse), skipped = max(skipped, excluded.skipped),
+               probes = max(probes, excluded.probes)`,
         )
-        for (const c of other.sql('SELECT check_path, project, streak, reuse, skipped FROM churn').all() as {
+        for (const c of other
+          .sql('SELECT check_path, project, streak, reuse, skipped, probes FROM churn')
+          .all() as {
           check_path: string
           project: string
           streak: number
           reuse: number
           skipped: number
+          probes: number
         }[])
-          churn.run(c.check_path, c.project, c.streak, c.reuse, c.skipped)
+          churn.run(c.check_path, c.project, c.streak, c.reuse, c.skipped, c.probes)
         const generation = this.generation()
         const unit = this.sql('INSERT OR IGNORE INTO unit_cache (key, units, used) VALUES (?, ?, ?)')
         for (const u of other.sql('SELECT key, units FROM unit_cache').all() as {
