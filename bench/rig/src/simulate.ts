@@ -21,6 +21,8 @@ export interface CaptureCost {
   /** Share of all test time that ran only because the policy had left evidence stale. */
   readonly lostReuseShare: number
   readonly overhead: number
+  /** Test time each file ran only because the policy had left its evidence stale. */
+  readonly lostByFile: Readonly<Record<string, number>>
 }
 
 export function simulateCapture(lines: readonly ResultLine[], capturePolicy?: CapturePolicy): CaptureCost {
@@ -40,6 +42,7 @@ export function simulateCapture(lines: readonly ResultLine[], capturePolicy?: Ca
   const policy: number[] = []
   let uncapturedMs = 0
   let lostMs = 0
+  const lostByFile: Record<string, number> = {}
   let totalMs = 0
   for (const c of commits) {
     // Each shard begins with a warm-up commit and a store of its own. What the policy learned about
@@ -51,6 +54,7 @@ export function simulateCapture(lines: readonly ResultLine[], capturePolicy?: Ca
     const ran = new Set(c.baselines.veyrum?.selected ?? [])
     for (const details of [c.veyrumReasons?.['blocked-flag'], c.veyrumReasons?.['not-reusable']])
       for (const d of details?.details ?? []) churned.add(d.slice(0, d.indexOf(': ')))
+    for (const f of c.veyrumUnobservable ?? []) churned.add(f)
     const files = Object.keys(c.outcomes)
     const checks: CheckRef[] = files.map((path) => ({ path, project: '' }))
     const decisions: Decision[] = checks.map((check) => {
@@ -82,7 +86,10 @@ export function simulateCapture(lines: readonly ResultLine[], capturePolicy?: Ca
       const f = d.check.path
       const captured = execution.capture.has(`${d.check.project}\u0000${f}`)
       if (ran.has(f)) replayed += ms(f)
-      else lostMs += ms(f)
+      else {
+        lostMs += ms(f)
+        lostByFile[f] = (lostByFile[f] ?? 0) + ms(f)
+      }
       withPolicy += ms(f) * (1 + (captured ? overhead : 0))
       if (!captured) uncapturedMs += ms(f)
       if (captured) stale.delete(f)
@@ -105,6 +112,7 @@ export function simulateCapture(lines: readonly ResultLine[], capturePolicy?: Ca
     uncapturedShare: uncapturedMs / Math.max(1, totalMs),
     lostReuseShare: lostMs / Math.max(1, totalMs),
     overhead,
+    lostByFile,
   }
 }
 

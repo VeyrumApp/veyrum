@@ -386,9 +386,9 @@ describe('dependencies and configuration', () => {
       const result = sandbox.capture({ CHURN_VALUE: String(i) })
       recorded.push(Object.fromEntries(result.outcomes.map((o) => [o.check.path, o.captured])))
     }
-    // The first run records both. From the fifth run, three plans in a row have found the
-    // environment test's evidence invalidated by the environment alone.
-    expect(recorded.map((r) => r['test/env.test.ts'])).toEqual([true, true, true, true, false, false])
+    // The first run records both. After two plans in a row found the environment test's evidence
+    // invalidated by the environment alone, it runs without recording; the sixth run is a probe.
+    expect(recorded.map((r) => r['test/env.test.ts'])).toEqual([true, true, true, false, false, true])
     expect(recorded.map((r) => r['test/code.test.ts'])).toEqual([true, true, true, true, true, true])
     expect(sandbox.cli(['run', '--full'], { CHURN_VALUE: '9' }).output).toContain('ran without recording')
   })
