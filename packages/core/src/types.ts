@@ -211,4 +211,10 @@ export interface Decision {
   readonly flagsRelied: readonly string[]
   /** Duration of the reused or most recent record, for savings estimates. */
   readonly durationMs: number
+  /**
+   * Set when the check runs for a reason that recurs without any change to its code: a channel
+   * Veyrum does not observe, or inputs that change on their own (the environment, directory
+   * listings, the repository's .git). Recording it again would likely not make it reusable.
+   */
+  readonly churn?: boolean
 }

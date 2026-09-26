@@ -16,7 +16,7 @@ import {
   Store,
 } from '@veyrum/core'
 import { openStoreOrReset, runPlain } from './fallback.ts'
-import { markdownSummary } from './summary.ts'
+import { markdownSummary, uncapturedChurn } from './summary.ts'
 
 const HELP = `veyrum - run only the tests whose evidence is no longer valid
 
@@ -347,9 +347,14 @@ function summarize(result: RunResult, mode: RunMode): string {
   const savedMs = reused.reduce((sum, d) => sum + d.durationMs, 0)
   if (mode === 'full') {
     const recorded = result.outcomes.filter((o) => o.captured).length
+    const churn = uncapturedChurn(result)
     const { planMs, runMs, recordMs } = result.timings
+    const others =
+      churn > 0
+        ? `${churn} would not become reusable and ran without recording, the others already had valid evidence`
+        : 'the others already had valid evidence'
     return [
-      `veyrum: ${result.decisions.length} test files, ran ${result.outcomes.length}, recorded evidence for ${recorded} (the others already had valid evidence)`,
+      `veyrum: ${result.decisions.length} test files, ran ${result.outcomes.length}, recorded evidence for ${recorded} (${others})`,
       `veyrum: plan ${formatMs(planMs)}, run ${formatMs(runMs)}, record ${formatMs(recordMs)}`,
     ].join('\n')
   }

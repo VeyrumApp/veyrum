@@ -163,16 +163,26 @@ export interface Execution {
   readonly capture: ReadonlySet<string>
   /** Reuse decisions that are executed anyway, keyed by checkKey. */
   readonly verified: ReadonlyMap<string, { readonly decision: Decision; readonly kind: Verification['kind'] }>
+  /** Keys of checks that run without capture because recording them would not pay off (churn). */
+  readonly uncapturedChurn: ReadonlySet<string>
 }
 
 /**
  * Chooses what to execute: every check in a full run, the checks that must run otherwise, plus the
  * reuse decisions to verify (all of them in an audit, a sample seeded by `seed` as canaries).
  */
+/**
+ * Churn: after this many plans in a row found a check's evidence unusable for a reason that recurs
+ * on its own, it runs without capture, since recording it again would not make it reusable. It is
+ * still captured on every PROBE_EVERY-th such plan, so it recovers once the cause goes away.
+ */
+export const CHURN_STREAK = 3
+export const PROBE_EVERY = 5
+
 export function selectExecution(
   checks: readonly CheckRef[],
   decisions: readonly Decision[],
-  options: Pick<RunOptions, 'mode' | 'audit' | 'canary' | 'recordAll'>,
+  options: Pick<RunOptions, 'mode' | 'audit' | 'canary' | 'recordAll'> & { readonly store?: Store },
   seed: string,
 ): Execution {
   const toRun = new Set(decisions.filter((d) => d.action === 'run').map((d) => checkKey(d.check)))
@@ -192,8 +202,31 @@ export function selectExecution(
   for (const key of verified.keys()) toRun.add(key)
   if (options.mode === 'full') for (const c of checks) toRun.add(checkKey(c))
   const capture = new Set(toRun)
+  const uncapturedChurn = new Set<string>()
   if (!options.recordAll) for (const d of reusable) capture.delete(checkKey(d.check))
-  return { toRun, capture, verified }
+  const store = options.store
+  if (store) {
+    store.transaction(() => {
+      for (const d of decisions) {
+        const before = store.churnStreak(d.check)
+        // Reused, or run for a change to its code: the check is worth recording again.
+        const after = d.action === 'skip' ? 0 : d.churn ? before + 1 : d.reason === 'no-evidence' ? before : 0
+        if (after !== before) store.setChurnStreak(d.check, after)
+        const key = checkKey(d.check)
+        if (
+          !options.recordAll &&
+          d.churn &&
+          before >= CHURN_STREAK &&
+          after % PROBE_EVERY !== 0 &&
+          !verified.has(key)
+        ) {
+          capture.delete(key)
+          uncapturedChurn.add(key)
+        }
+      }
+    })
+  }
+  return { toRun, capture, verified, uncapturedChurn }
 }
 
 /** Pairs verified decisions with the outcomes of their executions and stores them. */

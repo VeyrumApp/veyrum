@@ -368,6 +368,31 @@ describe('dependencies and configuration', () => {
     expect(sandbox.actions()).toEqual({ 'test/a.test.ts': 'skip', 'test/b.test.ts': 'run' })
   })
 
+  test('a test whose inputs change on their own stops being recorded; one whose code changes does not', () => {
+    sandbox = new Sandbox('churn')
+      .write('src/value.ts', 'export const value = 0\n')
+      .write(
+        'test/env.test.ts',
+        "import { expect, test } from 'vitest'\ntest('env', () => expect(process.env.CHURN_VALUE).toBeDefined())\n",
+      )
+      .write(
+        'test/code.test.ts',
+        "import { expect, test } from 'vitest'\nimport { value } from '../src/value.ts'\ntest('code', () => expect(value).toBeGreaterThanOrEqual(0))\n",
+      )
+    const recorded: Record<string, boolean>[] = []
+    for (let i = 0; i < 6; i++) {
+      // Each run sees a new value (a build number, a timestamp) and new code.
+      sandbox.write('src/value.ts', `export const value = ${i}\n`)
+      const result = sandbox.capture({ CHURN_VALUE: String(i) })
+      recorded.push(Object.fromEntries(result.outcomes.map((o) => [o.check.path, o.captured])))
+    }
+    // The first run records both. From the fifth run, three plans in a row have found the
+    // environment test's evidence invalidated by the environment alone; the sixth is a probe.
+    expect(recorded.map((r) => r['test/env.test.ts'])).toEqual([true, true, true, true, false, true])
+    expect(recorded.map((r) => r['test/code.test.ts'])).toEqual([true, true, true, true, true, true])
+    expect(sandbox.cli(['run', '--full'], { CHURN_VALUE: '9' }).output).toContain('ran without recording')
+  })
+
   test('a test file that declares always-run is never reused', () => {
     sandbox = new Sandbox('always-run')
       .write('test/declared.test.ts', `// veyrum: always-run\n${PLAIN_TEST}`)

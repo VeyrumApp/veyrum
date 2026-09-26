@@ -164,13 +164,23 @@ export async function plan(options: PlanOptions): Promise<Decision[]> {
     return pending
   }
 
-  const evaluate = async (record: EvidenceRecord, check: CheckRef): Promise<string[]> => {
+  /**
+   * The changes that invalidate a record. `kinds.stable` is set when one of them is to code, a
+   * dependency or configuration: a change the next run's evidence would not see again. Changes
+   * only to volatile inputs (environment, listings, existence, the repository's own .git) recur.
+   */
+  const evaluate = async (
+    record: EvidenceRecord,
+    check: CheckRef,
+    kinds: { stable: boolean },
+  ): Promise<string[]> => {
     const changes: string[] = []
     if (record.runtimeKey !== options.runtimeKey)
       return ['runtime changed (Node, platform, runner or locale)']
     const run = getRun(record.runId)
     if (!run) return ['run metadata missing']
     changes.push(...sharedChanges(run))
+    if (changes.some((c) => !c.startsWith('runner input environment variable'))) kinds.stable = true
     if (changes.length > 0) return changes
     // A project configuration governs the files below its scope's directories: the check's own
     // modules, which it transforms and resolves imports from, and anything else the check read.
@@ -178,7 +188,10 @@ export async function plan(options: PlanOptions): Promise<Decision[]> {
       if (isWithin(check.path, dirs) || record.closure.some((e) => 'p' in e && isWithin(e.p, dirs)))
         changes.push(change)
     }
-    if (changes.length > 0) return changes
+    if (changes.length > 0) {
+      kinds.stable = true
+      return changes
+    }
     const scoped = scopedAdditions(run)
     if (scoped.length > 0) {
       const under = (p: string, dir: string): boolean => p === dir || p.startsWith(`${dir}/`)
@@ -186,7 +199,10 @@ export async function plan(options: PlanOptions): Promise<Decision[]> {
         if (under(check.path, dir) || record.closure.some((e) => 'p' in e && under(e.p, dir)))
           changes.push(`new configuration-like file ${added}`)
       }
-      if (changes.length > 0) return changes
+      if (changes.length > 0) {
+        kinds.stable = true
+        return changes
+      }
     }
 
     const strict = record.flags.some((f) => STRICT_SOURCE_FLAGS.has(f))
@@ -200,10 +216,16 @@ export async function plan(options: PlanOptions): Promise<Decision[]> {
           strict || entry.raw === true ? 'observed' : entry.raw === 'whole' ? 'raw' : null,
           run,
         )
-        if (change) changes.push(change)
+        if (change) {
+          changes.push(change)
+          kinds.stable = true
+        }
       } else {
         const change = checkPlainEntry(entry, state, listFiles, run.injectedEnv, run.injectedVaryingEnv)
-        if (change) changes.push(change)
+        if (change) {
+          changes.push(change)
+          if (!isVolatile(entry)) kinds.stable = true
+        }
       }
       if (changes.length >= MAX_DETAILS) return changes
     }
@@ -211,6 +233,7 @@ export async function plan(options: PlanOptions): Promise<Decision[]> {
       const shadowed = modStems.get(stem(added))
       if (shadowed && shadowed !== added) {
         changes.push(`new file ${added} may shadow ${shadowed} during module resolution`)
+        kinds.stable = true
         if (changes.length >= MAX_DETAILS) break
       }
     }
@@ -247,9 +270,16 @@ export async function plan(options: PlanOptions): Promise<Decision[]> {
 
   const decide = async (check: CheckRef): Promise<Decision> => {
     let latest: EvidenceRecord | undefined
-    let firstRejection: { reason: Decision['reason']; record: EvidenceRecord; details: string[] } | undefined
-    const reject = (reason: Decision['reason'], record: EvidenceRecord, details: string[]): void => {
-      if (!firstRejection) firstRejection = { reason, record, details }
+    let firstRejection:
+      | { reason: Decision['reason']; record: EvidenceRecord; details: string[]; churn: boolean }
+      | undefined
+    const reject = (
+      reason: Decision['reason'],
+      record: EvidenceRecord,
+      details: string[],
+      churn = false,
+    ): void => {
+      if (!firstRejection) firstRejection = { reason, record, details, churn }
     }
     for (const record of options.store.candidates(check, options.runtimeKey, policy.maxCandidates)) {
       latest ??= record
@@ -260,17 +290,23 @@ export async function plan(options: PlanOptions): Promise<Decision[]> {
         continue
       }
       if (!record.reusable) {
-        reject('not-reusable', record, [`the passing run is not evidence (${record.flags.join(', ')})`])
+        reject('not-reusable', record, [`the passing run is not evidence (${record.flags.join(', ')})`], true)
         continue
       }
       const blocked = record.flags.filter((f) => policy.blockingFlags.has(f))
       if (blocked.length > 0) {
-        reject('blocked-flag', record, [
-          `the check uses channels Veyrum does not observe: ${blocked.map((f) => describeChannel(f, record)).join(', ')}`,
-        ])
+        reject(
+          'blocked-flag',
+          record,
+          [
+            `the check uses channels Veyrum does not observe: ${blocked.map((f) => describeChannel(f, record)).join(', ')}`,
+          ],
+          true,
+        )
         continue
       }
-      const changes = await evaluate(record, check)
+      const kinds = { stable: false }
+      const changes = await evaluate(record, check, kinds)
       if (changes.length === 0) {
         return decision(
           check,
@@ -288,21 +324,24 @@ export async function plan(options: PlanOptions): Promise<Decision[]> {
         : changes[0]?.startsWith('runner input') || changes[0]?.startsWith('new configuration-like')
           ? 'shared-inputs-changed'
           : 'inputs-changed'
-      reject(reason, record, changes)
+      reject(reason, record, changes, reason !== 'runtime-changed' && !kinds.stable)
     }
     if (!latest || !firstRejection)
       return decision(check, 'run', 'no-evidence', null, ['no evidence recorded for this check'], 0, [], 0)
     const r = firstRejection
-    return decision(
-      check,
-      'run',
-      r.reason,
-      r.record,
-      r.details,
-      r.record.closure.length,
-      [],
-      latest.durationMs,
-    )
+    return {
+      ...decision(
+        check,
+        'run',
+        r.reason,
+        r.record,
+        r.details,
+        r.record.closure.length,
+        [],
+        latest.durationMs,
+      ),
+      ...(r.churn ? { churn: true } : {}),
+    }
   }
 
   // Bounded concurrency: checks wait on transforms, but each holds its candidate records in memory.
@@ -442,4 +481,10 @@ export function describeUnit(unit: string): string {
       return ordinal && ordinal !== '0' ? `${bare}#${ordinal}` : bare
     })
     .join(' > ')
+}
+
+/** Entries whose changes recur without any change to the code (see `evaluate`). */
+function isVolatile(entry: ClosureEntry): boolean {
+  if (entry.k === 'env' || entry.k === 'dir' || entry.k === 'stat') return true
+  return 'p' in entry && (entry.p === '.git' || entry.p.startsWith('.git/'))
 }
