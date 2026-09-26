@@ -81,7 +81,7 @@ execution (`--record-all` records every file). Recording also stops where it wou
 file whose evidence is rarely reused (for example an integration test that depends on most of the
 code, which almost every commit changes), or keeps being invalidated by something that changes on
 its own (the environment, a directory listing, `.git`) or by a channel Veyrum cannot observe, runs
-at full speed. Every fifth such run records it anyway, so it becomes reusable again once that
+at full speed. Every tenth such run records it anyway, so it becomes reusable again once that
 changes. On a suite where nothing can be reused, Veyrum converges to the speed of running it
 without Veyrum. On Linux (x64 and arm64) and macOS, child processes
 a test starts are traced too, statically linked and Go programs and macOS's protected system
