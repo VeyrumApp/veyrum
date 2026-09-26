@@ -65,7 +65,7 @@ export async function runNodeTest(options: NodeTestRunOptions): Promise<RunResul
   const scratch = path.join(root, '.veyrum', 'tmp', runId)
   const files = listRepoFiles(root)
   const here = path.dirname(fileURLToPath(import.meta.url))
-  const ignored = [...veyrumDirs(here), scratch + path.sep, ...storeFiles(options.store.file)]
+  const ignored = [...veyrumDirs(here), path.dirname(scratch), ...storeFiles(options.store.file)]
   const facts = runtimeFacts({ runner: 'node-test' })
   const runtimeKey = runtimeKeyOf(facts)
   const recorder = new MainRecorder({ root, ignoredPrefixes: ignored, volatileEnv: VOLATILE_ENV })

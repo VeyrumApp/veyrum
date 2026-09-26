@@ -82,7 +82,7 @@ export async function runPytest(options: PytestRunOptions): Promise<RunResult> {
     options.python && /[\\/]/.test(options.python)
       ? path.resolve(options.python)
       : (options.python ?? 'python3')
-  const ignored = [...veyrumDirs(here), scratch + path.sep, ...storeFiles(options.store.file)]
+  const ignored = [...veyrumDirs(here), path.dirname(scratch), ...storeFiles(options.store.file)]
   const recorder = new MainRecorder({ root, ignoredPrefixes: ignored, volatileEnv: VOLATILE_ENV })
 
   recorder.start()

@@ -285,6 +285,18 @@ describe('coverage', () => {
 })
 
 describe('inputs', () => {
+  test('a runner other than jest-runner runs its files without capture, and never reuses them', () => {
+    // A runner of its own that loads no test environment, as jest-light-runner does.
+    const s = jest('other-runner')
+      .write('jest.config.js', "module.exports = { runner: '<rootDir>/runner.js' }\n")
+      .write('runner.js', "module.exports = require('jest-runner')\n")
+      .write('test/plain.test.js', PLAIN_TEST)
+    const result = s.capture()
+    expect(result.output).toContain('loads no test environment for Veyrum to capture in')
+    expect(result.outcomes.map((o) => o.captured)).toEqual([false])
+    expect(s.actions()).toEqual({ 'test/plain.test.js': 'run' })
+  })
+
   test('drawing random numbers in the test context is flagged but does not block reuse', () => {
     const s = jest('random')
       .write('test/random.test.js', "test('random', () => expect(Math.random()).toBeLessThan(1))\n")

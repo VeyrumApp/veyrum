@@ -103,6 +103,8 @@ interface HookState {
   rootPrefix: string | null
   /** Callers whose reads are the runner loading modules (see InstallOptions.runnerReaders). */
   runnerReaders: RegExp[]
+  /** Whether reads by Node's own module loader are told apart (InstallOptions.classifyLoaderReads). */
+  classifyLoaderReads: boolean
   /** Callers that read package manifests for known fields (see InstallOptions.manifestReaders). */
   manifestReaders: RegExp[]
 }
@@ -122,6 +124,7 @@ function sharedState(): HookState {
     aliases: [],
     rootPrefix: null,
     runnerReaders: [],
+    classifyLoaderReads: false,
     manifestReaders: [],
   }
   g[STATE_KEY] = created
@@ -287,7 +290,8 @@ function observePath(p: unknown, kind: PathKind): void {
   state.depth++
   try {
     const isManifest = state.manifestReaders.length > 0 && path.basename(absolute) === 'package.json'
-    const classify = kind === 'read' && (state.runnerReaders.length > 0 || isManifest)
+    const classify =
+      kind === 'read' && (state.runnerReaders.length > 0 || state.classifyLoaderReads || isManifest)
     const reader = classify ? classifyReader(isManifest) : 'other'
     state.sink.path(absolute, kind, typeOf(absolute), reader)
   } finally {
@@ -999,6 +1003,11 @@ export interface InstallOptions {
    * Their reads of package.json are reported as `manifest`, to be compared as manifests.
    */
   readonly manifestReaders?: readonly RegExp[]
+  /**
+   * Tell reads by Node's own module loader apart (reported as `node-loader`), for a recorder that
+   * records what that loader loads in another way (Vitest's natively loaded modules, by function).
+   */
+  readonly classifyLoaderReads?: boolean
 }
 
 /** Installs every hook once per isolate. Subsequent calls only update ignored prefixes. */
@@ -1011,6 +1020,7 @@ export function installHooks(options: InstallOptions = {}): void {
   state.rootPrefix = options.root ? path.resolve(options.root) + path.sep : null
   state.ignoredPrefixes = [...new Set(['/proc/', '/dev/', '/sys/', ...(options.ignoredPrefixes ?? [])])]
   if (options.runnerReaders) state.runnerReaders = [...options.runnerReaders]
+  if (options.classifyLoaderReads) state.classifyLoaderReads = true
   if (options.manifestReaders) state.manifestReaders = [...options.manifestReaders]
   if (state.installed) return
   state.installed = true

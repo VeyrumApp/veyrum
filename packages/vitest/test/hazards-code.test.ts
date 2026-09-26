@@ -36,6 +36,26 @@ function mathProject(name: string): Sandbox {
 }
 
 describe('code edits', () => {
+  test('a repository module Node loads itself is compared by the functions the test ran', () => {
+    // Required through Node's own loader, as an externalized workspace package's build is.
+    sandbox = new Sandbox('native-module')
+      .write(
+        'lib/helper.cjs',
+        'exports.used = function used() { return 1 }\nexports.unused = function unused() { return 2 }\n',
+      )
+      .write(
+        'test/native.test.ts',
+        "import { createRequire } from 'node:module'\nimport { expect, test } from 'vitest'\nconst { used } = createRequire(import.meta.url)('../lib/helper.cjs')\ntest('native', () => expect(used()).toBe(1))\n",
+      )
+    sandbox.capture()
+    sandbox.edit('lib/helper.cjs', 'return 2', 'return 3')
+    expect(sandbox.actions()['test/native.test.ts']).toBe('skip')
+    sandbox.edit('lib/helper.cjs', 'return 1', 'return 1 + 0')
+    const decision = sandbox.plan()['test/native.test.ts']
+    expect(decision?.action).toBe('run')
+    expect(decision?.details.join(' ')).toContain('lib/helper.cjs: used')
+  })
+
   test('nothing changed: every test file is reused', () => {
     const sb = mathProject('unchanged')
     expect(sb.actions()).toEqual({

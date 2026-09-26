@@ -68,6 +68,7 @@ export {
   type EvidenceRecord,
   FLAGS,
   type Flag,
+  NATIVE_ENV,
   type RecordChannels,
   type RunInfo,
   type TestOutcome,

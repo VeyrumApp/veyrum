@@ -57,6 +57,12 @@ export type ClosureKind = ClosureEntry['k']
  * Flags record channels the closure cannot fully observe, or facts that affect reuse.
  * The policy decides which flags block reuse.
  */
+/**
+ * The transform environment of modules Node loaded itself (an externalized workspace package under
+ * Vitest): they ran as their source reads, so a transformer fingerprints the file as it is.
+ */
+export const NATIVE_ENV = 'native'
+
 export const FLAGS = {
   /** Opened a network connection to a non-loopback host. */
   netRemote: 'net-remote',

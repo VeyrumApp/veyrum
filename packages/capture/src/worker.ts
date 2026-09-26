@@ -8,6 +8,7 @@ import { threadId } from 'node:worker_threads'
 import { digest } from '@veyrum/core/hash'
 import { isInside, normalizeAbsolute } from '@veyrum/core/paths'
 import { hashEnvValue } from '@veyrum/core/state'
+import { NATIVE_ENV } from '@veyrum/core/types'
 import { coverageHub } from './coverage.ts'
 import {
   type EnvScope,
@@ -457,7 +458,8 @@ export function prepareWorkerHooks(options: WorkerCaptureOptions): void {
       ? { runnerReaders: [JEST_RUNTIME_FRAME] }
       : options.layout === 'node'
         ? { runnerReaders: [NODE_LOADER_FRAME, ...(options.runnerReaders ?? [])] }
-        : {}),
+        : // Under Vitest, what Node's loader loads is recorded from coverage and the load hook.
+          { classifyLoaderReads: true }),
   })
   const isolate: IsolateState = {
     session: null,
@@ -475,6 +477,9 @@ export function prepareWorkerHooks(options: WorkerCaptureOptions): void {
     isolate.toolchainObserved = recordToolchain(isolate.toolchain, isolate.toolchainFiles)
   }
   if (options.layout === 'node') isolate.toolchainObserved = recordLoadedSources(isolate, options)
+  // Under Vitest, repository modules Node loads itself (an externalized workspace package, such as
+  // a build the tests import) are recorded from their source by function, like the runner's own.
+  if ((options.layout ?? 'vitest') === 'vitest') recordLoadedSources(isolate, options)
 }
 
 const scopes = new Map<string, string | null>()
@@ -802,7 +807,7 @@ export async function beginWorkerCapture(options: WorkerCaptureOptions): Promise
         unobserved(() => fs.mkdirSync(blobDir, { recursive: true }))
         const byKey = new Map<
           string,
-          { path: string; code: string; executed: Map<string, [number, number]> }
+          { path: string; code: string; executed: Map<string, [number, number]>; native: boolean }
         >()
         for (const script of coverage.result) {
           const url = script.url
@@ -833,11 +838,18 @@ export async function beginWorkerCapture(options: WorkerCaptureOptions): Promise
               : layout === 'node'
                 ? await nodeCode(absolute, script.scriptId, scriptLength)
                 : await moduleCode(absolute, script.scriptId, scriptLength)
-          if (!found) {
+          // A repository module Node loaded natively runs as its loader read it: its source (CommonJS
+          // modules Node's loader reads itself, so the file, when it is what ran).
+          const native =
+            !found && layout === 'vitest'
+              ? (state.loaded?.get(absolute)?.find((source) => source.length === scriptLength) ??
+                sourceIfLength(absolute, scriptLength))
+              : undefined
+          if (!found && native === undefined) {
             natives.add(absolute)
             continue
           }
-          const { code, offset } = found
+          const { code, offset } = found ?? { code: native!, offset: 0 }
           const codeDigest = digest(code)
           const blob = path.join(blobDir, `${codeDigest}.js`)
           unobserved(() => {
@@ -846,7 +858,7 @@ export async function beginWorkerCapture(options: WorkerCaptureOptions): Promise
           const key = `${absolute}\u0000${codeDigest}`
           let mod = byKey.get(key)
           if (!mod) {
-            mod = { path: absolute, code: codeDigest, executed: new Map() }
+            mod = { path: absolute, code: codeDigest, executed: new Map(), native: native !== undefined }
             byKey.set(key, mod)
           }
           for (const fn of script.functions) {
@@ -876,7 +888,12 @@ export async function beginWorkerCapture(options: WorkerCaptureOptions): Promise
           else natives.add(where.absolute)
         }
         for (const mod of byKey.values())
-          modules.push({ path: mod.path, code: mod.code, executed: [...mod.executed.values()] })
+          modules.push({
+            path: mod.path,
+            code: mod.code,
+            executed: [...mod.executed.values()],
+            ...(mod.native ? { env: NATIVE_ENV } : {}),
+          })
       } catch (error) {
         errors.push(error instanceof Error ? (error.stack ?? error.message) : String(error))
       }
@@ -959,5 +976,15 @@ export async function beginWorkerCapture(options: WorkerCaptureOptions): Promise
         fs.writeFileSync(path.join(dir, name), JSON.stringify(payload))
       })
     },
+  }
+}
+
+/** A file's text when its length is the given script length (the script is the file as it reads). */
+function sourceIfLength(absolute: string, length: number): string | undefined {
+  try {
+    const text = unobserved(() => fs.readFileSync(absolute, 'utf8'))
+    return text.length === length ? text : undefined
+  } catch {
+    return undefined
   }
 }

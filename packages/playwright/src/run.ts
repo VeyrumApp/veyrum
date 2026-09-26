@@ -175,7 +175,7 @@ export async function runPlaywright(options: PlaywrightRunOptions): Promise<RunR
   const scratch = path.join(root, '.veyrum', 'tmp', runId)
   const files = listRepoFiles(root)
   const here = path.dirname(fileURLToPath(import.meta.url))
-  const ignored = [...veyrumDirs(here), scratch + path.sep, ...storeFiles(options.store.file)]
+  const ignored = [...veyrumDirs(here), path.dirname(scratch), ...storeFiles(options.store.file)]
   const install = resolvePlaywright(root)
   const facts = runtimeFacts({
     runner: 'playwright',

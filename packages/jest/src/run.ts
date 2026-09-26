@@ -227,7 +227,7 @@ export async function runJest(options: JestRunOptions): Promise<RunResult> {
   const files = listRepoFiles(root)
   const target = resolveTargetJest(root)
   const here = path.dirname(fileURLToPath(import.meta.url))
-  const ignored = [...veyrumDirs(here), scratch + path.sep, ...storeFiles(options.store.file)]
+  const ignored = [...veyrumDirs(here), path.dirname(scratch), ...storeFiles(options.store.file)]
   const ownRequire = createRequire(import.meta.url)
 
   // The wrappers live under a node_modules directory so no project transform applies to them, at a
@@ -389,7 +389,20 @@ export async function runJest(options: JestRunOptions): Promise<RunResult> {
 
     const execution = selectExecution(checks, decisions, options, runId)
     const selected = selectedSpecs.filter((s) => execution.toRun.has(checkKey(s.check)))
-    const captured = (check: CheckRef): boolean => execution.capture.has(checkKey(check))
+    // Capture wraps the test environments jest-runner loads. Another runner (jest-light-runner runs
+    // test files in bare child processes) loads none: its files run without capture, at full
+    // speed, and so are never reused.
+    const uncapturable = new Map<string, string>()
+    for (const [project, config] of configsByProject) {
+      const runner = (config as unknown as { runner?: string }).runner ?? 'jest-runner'
+      if (!/(^|[\\/])jest-runner([\\/]|$)/.test(runner)) uncapturable.set(project, runner)
+    }
+    for (const runner of new Set(uncapturable.values()))
+      process.stderr.write(
+        `veyrum: the Jest runner ${runner} loads no test environment for Veyrum to capture in: its test files run without capture and are never reused\n`,
+      )
+    const captured = (check: CheckRef): boolean =>
+      execution.capture.has(checkKey(check)) && !uncapturable.has(check.project)
     fs.mkdirSync(scratch, { recursive: true })
     fs.writeFileSync(
       path.join(scratch, UNCAPTURED_FILE),
