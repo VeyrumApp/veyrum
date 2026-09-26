@@ -34,9 +34,9 @@ function timeShares(commits: readonly CommitResult[], name: BaselineName): numbe
 export function renderSummary(inputs: readonly SummaryInput[]): string {
   const out: string[] = ['# Veyrum replay summary', '']
   out.push(
-    '| Repository | Runner | Commits (unreplayable) | Veyrum time run (median / mean) | Datadog-style (median / mean) | Hermetic tests: Veyrum / Datadog-style (mean) | Runner changed (median / mean) | Killed mutants + mainline flips | Veyrum escapes | Datadog-style escapes | Verdicts capture changed | Capture overhead (median) |',
+    '| Repository | Runner | Commits (unreplayable) | Veyrum time run (median / mean) | Datadog-style (median / mean) | Hermetic tests: Veyrum / Datadog-style (mean) | Runner changed (median / mean) | Killed mutants + mainline flips | Veyrum escapes | Datadog-style escapes | Verdicts capture changed | Capture overhead (median) | Net vs running everything (mean) |',
   )
-  out.push('| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |')
+  out.push('| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |')
   let oraclesTotal = 0
   let escapesTotal = 0
   let randomTotal = 0
@@ -63,6 +63,11 @@ export function renderSummary(inputs: readonly SummaryInput[]): string {
     const overhead = input.lines
       .filter((l): l is CommitResult => l.kind === 'commit' && l.plainWallMs !== null)
       .map((c) => c.capture.wallMs / c.plainWallMs! - 1)
+    // What Veyrum costs against running every file: the share of test time it runs, slowed by
+    // recording. An upper bound: files that run without capture (churn) pay no overhead.
+    const shares = timeShares(commits, 'veyrum')
+    const meanShare = shares.length === 0 ? Number.NaN : shares.reduce((a, b) => a + b, 0) / shares.length
+    const net = meanShare * (1 + Math.max(0, quantile(overhead, 0.5) || 0))
     const brokenCommits = input.lines.filter((l) => l.kind === 'broken').length
     const veyrumEscapes = escapes('veyrum')
     // Escapes whose reused evidence relied on random draws: the test exercised other code under
@@ -75,7 +80,7 @@ export function renderSummary(inputs: readonly SummaryInput[]): string {
     oraclesTotal += killed.length + flips
     escapesTotal += veyrumEscapes
     out.push(
-      `| ${input.name} | ${input.runner} | ${commits.length}${brokenCommits > 0 ? ` (${brokenCommits})` : ''} | ${cell('veyrum')} | ${cell('file-coverage')} | ${hermetic('veyrum')} / ${hermetic('file-coverage')} | ${cell('runner-changed')} | ${killed.length} + ${flips} | ${veyrumEscapes} | ${escapes('file-coverage')} | ${divergent} | ${pct(quantile(overhead, 0.5))} |`,
+      `| ${input.name} | ${input.runner} | ${commits.length}${brokenCommits > 0 ? ` (${brokenCommits})` : ''} | ${cell('veyrum')} | ${cell('file-coverage')} | ${hermetic('veyrum')} / ${hermetic('file-coverage')} | ${cell('runner-changed')} | ${killed.length} + ${flips} | ${veyrumEscapes} | ${escapes('file-coverage')} | ${divergent} | ${pct(quantile(overhead, 0.5))} | ${pct(net)} |`,
     )
   }
   out.push('')

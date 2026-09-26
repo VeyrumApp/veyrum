@@ -77,7 +77,11 @@ evidence reports coverage of the files that ran; a full run reports everything.
 
 Recording is what costs time, so a full run records only where it is needed: a file whose
 evidence is still valid runs at full speed, and its existing record already describes that
-execution (`--record-all` records every file). On Linux (x64 and arm64) and macOS, child processes
+execution (`--record-all` records every file). A file whose evidence keeps being invalidated by something that
+changes on its own (the environment, a directory listing, `.git`) or by a channel Veyrum cannot
+observe also runs at full speed after three such runs, since recording it again would not make it
+reusable; every fifth such run records it anyway, so it becomes reusable again once the cause is
+gone. On Linux (x64 and arm64) and macOS, child processes
 a test starts are traced too, statically linked and Go programs and macOS's protected system
 programs included (see `docs/design/soundness.md`).
 

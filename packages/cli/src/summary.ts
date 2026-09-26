@@ -58,8 +58,10 @@ export function markdownSummary(result: RunResult, context: SummaryContext): str
     )
   } else if (context.mode === 'full') {
     const recorded = result.outcomes.filter((o) => o.captured).length
+    const churn = uncapturedChurn(result)
+    const valid = result.outcomes.length - recorded - churn
     out.push(
-      `Full run: every test file ran (${decisions.length} test files). Evidence was recorded for **${recorded}**; the other ${result.outcomes.length - recorded} already had valid evidence.`,
+      `Full run: every test file ran (${decisions.length} test files). Evidence was recorded for **${recorded}**; ${churn > 0 ? `${valid} already had valid evidence, and ${churn} ran without recording because their evidence keeps being invalidated by inputs that change on their own, or by channels Veyrum does not observe` : `the other ${valid} already had valid evidence`}.`,
     )
   } else {
     const verb = context.mode === 'plan' ? 'would run' : 'ran'
@@ -104,4 +106,13 @@ export function markdownSummary(result: RunResult, context: SummaryContext): str
   const { planMs, runMs, recordMs } = result.timings
   out.push(`Plan ${duration(planMs)}, run ${duration(runMs)}, record ${duration(recordMs)}.`)
   return `${out.join('\n')}\n`
+}
+
+/** Checks that ran without capture because recording them would not have made them reusable. */
+export function uncapturedChurn(result: RunResult): number {
+  const churn = new Set(
+    result.decisions.filter((d) => d.churn).map((d) => `${d.check.project}\u0000${d.check.path}`),
+  )
+  return result.outcomes.filter((o) => !o.captured && churn.has(`${o.check.project}\u0000${o.check.path}`))
+    .length
 }

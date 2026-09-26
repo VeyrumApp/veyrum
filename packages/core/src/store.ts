@@ -89,6 +89,10 @@ export class Store {
           kind TEXT NOT NULL, outcome TEXT NOT NULL, created_at TEXT NOT NULL,
           PRIMARY KEY (run_id, check_path, project)
         );
+        CREATE TABLE IF NOT EXISTS churn (
+          check_path TEXT NOT NULL, project TEXT NOT NULL, streak INTEGER NOT NULL,
+          PRIMARY KEY (check_path, project)
+        );
       `)
       const row = db.prepare('SELECT value FROM meta WHERE key = ?').get('schema') as
         | { value: string }
@@ -347,6 +351,29 @@ export class Store {
    * Records that a reuse decision was checked by running the file anyway. A failing outcome is an
    * escape: the file would have been reused although it fails.
    */
+  /**
+   * How many plans in a row found a check's evidence unusable for a reason that recurs on its own
+   * (Decision.churn): capture skips it until a probe (see selectExecution).
+   */
+  churnStreak(check: CheckRef): number {
+    const row = this.sql('SELECT streak FROM churn WHERE check_path = ? AND project = ?').get(
+      check.path,
+      check.project,
+    ) as { streak: number } | undefined
+    return row?.streak ?? 0
+  }
+
+  setChurnStreak(check: CheckRef, streak: number): void {
+    if (streak === 0)
+      this.sql('DELETE FROM churn WHERE check_path = ? AND project = ?').run(check.path, check.project)
+    else
+      this.sql('INSERT OR REPLACE INTO churn (check_path, project, streak) VALUES (?, ?, ?)').run(
+        check.path,
+        check.project,
+        streak,
+      )
+  }
+
   putVerification(
     runId: string,
     check: CheckRef,
@@ -532,6 +559,17 @@ export class Store {
           string
         >[])
           insert.run(v.run_id!, v.check_path!, v.project!, v.record_id!, v.kind!, v.outcome!, v.created_at!)
+        // Parallel jobs plan disjoint files; where both saw a file, the longer streak stands.
+        const churn = this.sql(
+          `INSERT INTO churn (check_path, project, streak) VALUES (?, ?, ?)
+             ON CONFLICT (check_path, project) DO UPDATE SET streak = max(streak, excluded.streak)`,
+        )
+        for (const c of other.sql('SELECT check_path, project, streak FROM churn').all() as {
+          check_path: string
+          project: string
+          streak: number
+        }[])
+          churn.run(c.check_path, c.project, c.streak)
         const generation = this.generation()
         const unit = this.sql('INSERT OR IGNORE INTO unit_cache (key, units, used) VALUES (?, ?, ?)')
         for (const u of other.sql('SELECT key, units FROM unit_cache').all() as {
