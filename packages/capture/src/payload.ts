@@ -31,6 +31,8 @@ export interface WorkerPayload {
    */
   readonly toolchainEnv: readonly { readonly n: string; readonly h: string | null }[]
   readonly envEnumerated: boolean
+  /** Drew random numbers: what it exercised can differ from run to run (see FLAGS.random). */
+  readonly random?: boolean
   readonly envWritten: readonly string[]
   readonly net: readonly { readonly host: string; readonly port: number | null; readonly local: boolean }[]
   readonly spawns: readonly string[]

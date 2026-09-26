@@ -285,6 +285,17 @@ describe('coverage', () => {
 })
 
 describe('inputs', () => {
+  test('drawing random numbers in the test context is flagged but does not block reuse', () => {
+    const s = jest('random')
+      .write('test/random.test.js', "test('random', () => expect(Math.random()).toBeLessThan(1))\n")
+      .write('test/plain.test.js', PLAIN_TEST)
+    s.capture()
+    const plan = s.plan()
+    expect(plan['test/random.test.js']?.action).toBe('skip')
+    expect(plan['test/random.test.js']?.flagsRelied).toContain('random')
+    expect(plan['test/plain.test.js']?.flagsRelied ?? []).not.toContain('random')
+  })
+
   test('a JSON module required by a test is an input', () => {
     const s = jest('json-module')
       .write('fixtures/data.json', '{"n": 1}\n')

@@ -1,13 +1,5 @@
-import {
-  type CheckRef,
-  type EvidenceRecord,
-  listRepoFiles,
-  plan,
-  type RunInfo,
-  type Store,
-  stem,
-} from '@veyrum/core'
-import { childEnv, exec } from './exec.ts'
+import { type CheckRef, type EvidenceRecord, type RunInfo, type Store, stem } from '@veyrum/core'
+import { exec } from './exec.ts'
 
 export interface SelectionContext {
   readonly repo: string
@@ -52,23 +44,6 @@ export function selectNaive(ctx: SelectionContext): Set<string> {
     for (const t of byStem.get(base) ?? []) selected.add(t)
   }
   return selected
-}
-
-/**
- * Closure identity with whole-file comparison of modules (Veyrum without unit fingerprints).
- * Isolates how much of Veyrum's reduction comes from function-level precision.
- */
-export async function selectFileClosure(ctx: SelectionContext, runtimeKey: string): Promise<Set<string>> {
-  const decisions = await plan({
-    root: ctx.repo,
-    store: ctx.store,
-    checks: ctx.checks,
-    runtimeKey,
-    files: listRepoFiles(ctx.repo),
-    // The environment the recorded runs had: the rig starts every run with it.
-    env: childEnv(),
-  })
-  return new Set(decisions.filter((d) => d.action === 'run').map((d) => d.check.path))
 }
 
 /**

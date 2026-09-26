@@ -196,6 +196,20 @@ describe('environment', () => {
     expect(decision?.action).toBe('skip')
     expect(decision?.flagsRelied).toContain('env-enumerated')
   })
+
+  test('drawing random numbers is flagged but does not block reuse', () => {
+    sandbox = new Sandbox('random')
+      .write(
+        'test/random.test.ts',
+        "import { randomUUID } from 'node:crypto'\nimport { expect, test } from 'vitest'\ntest('random', () => {\n  expect(Math.random()).toBeLessThan(1)\n  expect(randomUUID()).toHaveLength(36)\n})\n",
+      )
+      .write('test/plain.test.ts', PLAIN_TEST)
+    sandbox.capture()
+    const plan = sandbox.plan()
+    expect(plan['test/random.test.ts']?.action).toBe('skip')
+    expect(plan['test/random.test.ts']?.flagsRelied).toContain('random')
+    expect(plan['test/plain.test.ts']?.flagsRelied ?? []).not.toContain('random')
+  })
 })
 
 describe('dependencies and configuration', () => {

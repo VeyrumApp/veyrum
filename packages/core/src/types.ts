@@ -70,6 +70,11 @@ export const FLAGS = {
   evalCode: 'eval',
   /** Enumerated process.env. */
   envEnumerated: 'env-enumerated',
+  /**
+   * Drew random numbers. A test whose inputs are random (property-based tests without a fixed seed)
+   * exercises different code from run to run, and its evidence covers only what one run exercised.
+   */
+  random: 'random',
   /** Called Function.prototype.toString on non-native code; raw source is compared. */
   sourceObserved: 'source-observed',
   /** A snapshot contains file positions; raw source is compared. */

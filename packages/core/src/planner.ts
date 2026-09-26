@@ -143,7 +143,8 @@ export async function plan(options: PlanOptions): Promise<Decision[]> {
     srcNow: Digest,
     run: RunInfo,
   ): Promise<Readonly<Record<string, Digest>> | null> => {
-    const transformer = options.transformer
+    // Diagnostics (the benchmark's file-closure baseline): modules compared whole, not by function.
+    const transformer = process.env.VEYRUM_WHOLE_MODULES === '1' ? undefined : options.transformer
     if (!transformer) return Promise.resolve(null)
     const key = `${entry.p}\u0000${srcNow}\u0000${entry.env}\u0000${project}\u0000${run.runtimeKey}\u0000${sharedDigest(run)}`
     let pending = unitMemo.get(key)

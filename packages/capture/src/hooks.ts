@@ -1,4 +1,5 @@
 import childProcess from 'node:child_process'
+import nodeCrypto from 'node:crypto'
 import fs from 'node:fs'
 import { syncBuiltinESMExports } from 'node:module'
 import net from 'node:net'
@@ -62,6 +63,8 @@ export interface HookSink {
   dlopen(absolute: string): void
   /** Code read the source text of a (non-native) function: that text. */
   sourceObserved(text: string): void
+  /** Code drew random numbers (Math.random, crypto): its inputs can differ from run to run. */
+  random?(): void
 }
 
 const noop: HookSink = {
@@ -1016,6 +1019,7 @@ export function installHooks(options: InstallOptions = {}): void {
   installNetHooks()
   installProcessHooks()
   installWorkerThreadHook()
+  hookRandom(globalThis)
   if (options.observeSource) observeSourceIn(Function)
   syncBuiltinESMExports()
 }
@@ -1028,4 +1032,39 @@ function safeRealpath(p: string): string {
       return p
     }
   })
+}
+
+const RANDOM_HOOKED = Symbol.for('veyrum.randomHooked')
+
+/**
+ * Reports random draws in a realm: Math.random and the random functions of its Web Crypto object,
+ * and, for the realm Node's crypto module belongs to, that module's. A test runner that runs tests
+ * in contexts of their own (Jest) hooks each context's global.
+ */
+export function hookRandom(global: typeof globalThis): void {
+  const g = global as unknown as Record<symbol, boolean>
+  if (g[RANDOM_HOOKED]) return
+  g[RANDOM_HOOKED] = true
+  const report = (): void => {
+    if (recording()) state.sink.random?.()
+  }
+  const wrapMethod = (target: object | undefined, name: string): void => {
+    const original = target ? (target as Record<string, unknown>)[name] : undefined
+    if (typeof original !== 'function') return
+    const wrapped = function (this: unknown, ...args: unknown[]) {
+      report()
+      return (original as (...a: unknown[]) => unknown).apply(this, args)
+    }
+    Object.defineProperty(wrapped, 'name', { value: original.name })
+    ;(target as Record<string, unknown>)[name] = wrapped
+  }
+  wrapMethod(global.Math, 'random')
+  const webCrypto = (global as unknown as { crypto?: object }).crypto
+  wrapMethod(webCrypto, 'getRandomValues')
+  wrapMethod(webCrypto, 'randomUUID')
+  if (global === globalThis) {
+    for (const name of ['randomBytes', 'randomFillSync', 'randomFill', 'randomInt', 'randomUUID'])
+      wrapMethod(nodeCrypto, name)
+    syncBuiltinESMExports()
+  }
 }

@@ -158,6 +158,8 @@ function captured(
   if (testProcess) testProcess.env = index.observeEnv(testProcess.env, 'test')
   // Functions defined in the test context inherit that realm's Function.prototype.
   if (env.global.Function) index.observeSourceIn(env.global.Function)
+  // So do its Math and crypto.
+  index.hookRandom(env.global as unknown as typeof globalThis)
 
   let pending: Promise<CaptureWorker.WorkerCapture> | null = null
   const setup = env.setup.bind(env)

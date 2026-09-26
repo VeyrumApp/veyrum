@@ -276,6 +276,7 @@ function mergePayloads(list: readonly WorkerPayload[]): WorkerPayload {
       (e) => `${e.n}\u0000${e.h}`,
     ),
     envEnumerated: list.some((p) => p.envEnumerated),
+    random: list.some((p) => p.random),
     envWritten: [...new Set(all('envWritten').flat())],
     net: union(
       list.flatMap((p) => p.net),

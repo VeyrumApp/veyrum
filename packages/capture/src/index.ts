@@ -2,6 +2,7 @@ export {
   type EnvScope,
   getSink,
   type HookSink,
+  hookRandom,
   installHooks,
   observeEnv,
   observeSourceIn,
