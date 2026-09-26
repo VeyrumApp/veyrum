@@ -94,6 +94,12 @@ export interface Assembled {
 /** A snapshot line such as `src/a.ts:12:3` means the test observes source positions. */
 const POSITION_PATTERN = /\.[cm]?[jt]sx?:\d+:\d+/
 
+/**
+ * A call of import.meta.glob (with type arguments or not), whose transform depends on the files it
+ * matches. Text that only mentions it (an error message, documentation) changes nothing.
+ */
+const GLOB_CALL = /\bimport\.meta\.glob(?:Eager)?\s*(?:<[\s\S]*?>\s*)?\(/
+
 export function readPayloads(outDir: string): WorkerPayload[] {
   const dir = path.join(outDir, 'payloads')
   let names: string[]
@@ -200,7 +206,7 @@ export function assemble(input: AssembleInput): Assembled {
     let d = dynCache.get(absolute)
     if (d === undefined) {
       try {
-        d = input.fs.readFileSync(absolute, 'utf8').includes('import.meta.glob')
+        d = GLOB_CALL.test(input.fs.readFileSync(absolute, 'utf8'))
       } catch {
         d = false
       }

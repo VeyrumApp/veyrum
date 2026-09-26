@@ -284,6 +284,20 @@ describe('module loading', () => {
     expect(sandbox.actions()['test/registry.test.ts']).toBe('run')
   })
 
+  test('a module that only mentions import.meta.glob is reused unchanged', () => {
+    sandbox = new Sandbox('glob-mention')
+      .write(
+        'src/meta.ts',
+        'export function glob(): never {\n  throw new Error(\'"import.meta.glob" is replaced at build time\')\n}\n',
+      )
+      .write(
+        'test/meta.test.ts',
+        "import { expect, test } from 'vitest'\nimport { glob } from '../src/meta'\ntest('source', () => expect(glob.toString()).toContain('throw'))\n",
+      )
+    sandbox.capture()
+    expect(sandbox.actions()['test/meta.test.ts']).toBe('skip')
+  })
+
   test('a new file that would win module resolution invalidates importers', () => {
     sandbox = new Sandbox('shadow')
       .write('src/util.ts', 'export const kind = "ts"\n')
