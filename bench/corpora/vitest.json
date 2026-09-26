@@ -4,7 +4,16 @@
   "branch": "main",
   "commits": 40,
   "cwd": "test/unit",
-  "install": ["env", "PNPM_CONFIG_TRUST_LOCKFILE=true", "pnpm", "install", "--frozen-lockfile", "--prefer-offline", "--filter", "!docs"],
+  "install": [
+    "env",
+    "PNPM_CONFIG_TRUST_LOCKFILE=true",
+    "pnpm",
+    "install",
+    "--frozen-lockfile",
+    "--prefer-offline",
+    "--filter",
+    "!docs"
+  ],
   "prepare": ["env", "pnpm_config_verify_deps_before_run=warn", "pnpm", "run", "build"],
   "lockfiles": ["pnpm-lock.yaml"],
   "runnerArgs": ["--project", "threads"],

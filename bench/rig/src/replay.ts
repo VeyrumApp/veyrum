@@ -65,6 +65,8 @@ export interface CommitResult {
   >
   /** Why Veyrum ran each file file-coverage skipped: its decision's first detail, or its reason. */
   readonly veyrumExtra?: Readonly<Record<string, string>>
+  /** Why Veyrum ran each file it ran: reason code, then its decision's first detail. */
+  readonly veyrumWhy?: Readonly<Record<string, string>>
   /**
    * Files Veyrum ran because they used channels it cannot observe (remote network, untraced
    * programs): their outcome can change with no change to the repository, so no sound selector
@@ -331,6 +333,7 @@ export async function replay(corpus: Corpus, benchRoot: string, options: ReplayO
         let veyrumPlanMs: number | null = null
         let veyrumReasons: Record<string, { count: number; details: string[] }> | undefined
         let veyrumExtra: Record<string, string> | undefined
+        let veyrumWhy: Record<string, string> | undefined
         let veyrumUnobservable: string[] | undefined
         let checks: CheckRef[] = []
         if (parent) {
@@ -349,6 +352,10 @@ export async function replay(corpus: Corpus, benchRoot: string, options: ReplayO
             }
           }
           checks = p.decisions.map((d) => d.check)
+          veyrumWhy = {}
+          for (const d of p.decisions)
+            if (d.action === 'run')
+              veyrumWhy[d.check.path] = `${d.reason}: ${d.details[0] ?? ''}`.slice(0, 300)
           veyrumUnobservable = p.decisions
             .filter((d) => d.action === 'run' && d.details.some((x) => x.includes(UNOBSERVED_CHANNELS)))
             .map((d) => d.check.path)
@@ -453,6 +460,7 @@ export async function replay(corpus: Corpus, benchRoot: string, options: ReplayO
           veyrumPlanMs,
           ...(veyrumReasons ? { veyrumReasons } : {}),
           ...(veyrumExtra ? { veyrumExtra } : {}),
+          ...(veyrumWhy ? { veyrumWhy } : {}),
           ...(veyrumUnobservable ? { veyrumUnobservable } : {}),
           capture: { runMs: capture.runMs, recordMs: capture.recordMs, wallMs: capture.wallMs },
           plainWallMs,
