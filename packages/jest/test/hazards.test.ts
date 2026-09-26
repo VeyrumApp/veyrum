@@ -1,3 +1,4 @@
+import { createRequire } from 'node:module'
 import { afterEach, describe, expect, test } from 'vitest'
 import { Sandbox } from '../../../test/support/sandbox.ts'
 import { TRACED_PLATFORMS } from '../../capture/src/trace.ts'
@@ -17,6 +18,10 @@ const jest = (name: string, workers = 1, modules: readonly string[] = []): Sandb
 
 const MATH =
   'function add(a, b) { return a + b }\nfunction mul(a, b) { return a * b }\nmodule.exports = { add, mul }\n'
+/** Jest's default runner, as Jest resolves it (it is not a dependency of this package). */
+const JEST_RUNNER = createRequire(createRequire(import.meta.url).resolve('jest-config')).resolve(
+  'jest-runner',
+)
 const ADD_TEST = "const { add } = require('../src/math')\ntest('adds', () => expect(add(1, 2)).toBe(3))\n"
 const MUL_TEST = "const { mul } = require('../src/math')\ntest('muls', () => expect(mul(2, 3)).toBe(6))\n"
 const PLAIN_TEST = "test('plain', () => expect(1).toBe(1))\n"
@@ -289,7 +294,7 @@ describe('inputs', () => {
     // A runner of its own that loads no test environment, as jest-light-runner does.
     const s = jest('other-runner')
       .write('jest.config.js', "module.exports = { runner: '<rootDir>/runner.js' }\n")
-      .write('runner.js', "module.exports = require('jest-runner')\n")
+      .write('runner.js', `module.exports = require(${JSON.stringify(JEST_RUNNER)})\n`)
       .write('test/plain.test.js', PLAIN_TEST)
     const result = s.capture()
     expect(result.output).toContain('loads no test environment for Veyrum to capture in')
