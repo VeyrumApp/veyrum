@@ -1,0 +1,17 @@
+{
+  "name": "svelte",
+  "repo": "https://github.com/sveltejs/svelte.git",
+  "branch": "main",
+  "commits": 40,
+  "install": [
+    "bash",
+    "-c",
+    "pnpm install --frozen-lockfile --prefer-offline && pnpm playwright install chromium"
+  ],
+  "lockfiles": ["pnpm-lock.yaml"],
+  "runnerArgs": [],
+  "maxWorkers": 2,
+  "mutationSources": ["^packages/svelte/src/(?!.*\\.d\\.ts$).+\\.js$"],
+  "mutantsPerCommit": 6,
+  "mutationEvery": 4
+}

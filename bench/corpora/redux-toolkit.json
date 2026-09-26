@@ -1,0 +1,14 @@
+{
+  "name": "redux-toolkit",
+  "repo": "https://github.com/reduxjs/redux-toolkit.git",
+  "branch": "master",
+  "commits": 40,
+  "install": ["pnpm", "install", "--frozen-lockfile", "--prefer-offline"],
+  "lockfiles": ["pnpm-lock.yaml"],
+  "cwd": "packages/toolkit",
+  "runnerArgs": [],
+  "maxWorkers": 2,
+  "mutationSources": ["^packages/toolkit/src/(?!.*/tests/)(?!.*\\.test)(?!.*\\.d\\.ts$).+\\.ts$"],
+  "mutantsPerCommit": 6,
+  "mutationEvery": 4
+}
