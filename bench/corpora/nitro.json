@@ -1,0 +1,14 @@
+{
+  "name": "nitro",
+  "repo": "https://github.com/nitrojs/nitro.git",
+  "branch": "main",
+  "commits": 40,
+  "install": ["pnpm", "install", "--frozen-lockfile", "--prefer-offline"],
+  "prepare": ["env", "pnpm_config_verify_deps_before_run=warn", "pnpm", "run", "build"],
+  "lockfiles": ["pnpm-lock.yaml"],
+  "runnerArgs": [],
+  "maxWorkers": 2,
+  "mutationSources": ["^src/(?!types/)(?!presets/_(?:all|types)\\.gen\\.ts$).+(?<!\\.d)\\.ts$"],
+  "mutantsPerCommit": 6,
+  "mutationEvery": 4
+}

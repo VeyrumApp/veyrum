@@ -1,0 +1,16 @@
+{
+  "name": "prettier",
+  "repo": "https://github.com/prettier/prettier.git",
+  "branch": "main",
+  "commits": 40,
+  "runner": "jest",
+  "install": ["yarn", "install", "--immutable"],
+  "lockfiles": ["yarn.lock"],
+  "runnerArgs": [],
+  "maxWorkers": 2,
+  "mutationSources": [
+    "^src/(?!plugins/|standalone\\.js$|index\\.cjs$|document/debug\\.js$|universal/[^/]+\\.browser\\.js$|utilities/unexpected-node-error\\.js$).+\\.js$"
+  ],
+  "mutantsPerCommit": 6,
+  "mutationEvery": 4
+}
