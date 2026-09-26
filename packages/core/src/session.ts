@@ -172,11 +172,16 @@ export interface Execution {
  * reuse decisions to verify (all of them in an audit, a sample seeded by `seed` as canaries).
  */
 /**
- * Churn: after this many plans in a row found a check's evidence unusable for a reason that recurs
- * on its own, it runs without capture, since recording it again would not make it reusable. It is
- * still captured on every PROBE_EVERY-th such plan, so it recovers once the cause goes away.
+ * Recording a check costs time (capture overhead) and pays off only if its evidence is reused. A
+ * check runs without capture when that looks unlikely: after CHURN_STREAK plans in a row found its
+ * evidence unusable for a reason that recurs on its own (Decision.churn), or once its reuse rate, a
+ * weighted average over recent plans, falls below MIN_REUSE (about the capture overhead: below it,
+ * the expected saving is smaller than the recording cost). Every PROBE_EVERY-th run in a row
+ * without capture records it anyway, so a check recovers once it becomes reusable.
  */
 export const CHURN_STREAK = 3
+export const MIN_REUSE = 0.15
+export const REUSE_WEIGHT = 0.3
 export const PROBE_EVERY = 5
 
 export function selectExecution(
@@ -208,21 +213,36 @@ export function selectExecution(
   if (store) {
     store.transaction(() => {
       for (const d of decisions) {
-        const before = store.churnStreak(d.check)
-        // Reused, or run for a change to its code: the check is worth recording again.
-        const after = d.action === 'skip' ? 0 : d.churn ? before + 1 : d.reason === 'no-evidence' ? before : 0
-        if (after !== before) store.setChurnStreak(d.check, after)
+        const before = store.captureValue(d.check)
         const key = checkKey(d.check)
+        // Evidence refused for what it recorded, not for missing or a new runtime.
+        const invalidated =
+          d.action === 'run' &&
+          d.reason !== 'no-evidence' &&
+          d.reason !== 'runtime-changed' &&
+          d.reason !== 'forced'
+        let { streak, reuse, skipped } = before
+        if (d.action === 'skip') {
+          streak = 0
+          reuse = reuse * (1 - REUSE_WEIGHT) + REUSE_WEIGHT
+        } else if (invalidated) {
+          streak = d.churn ? streak + 1 : 0
+          reuse *= 1 - REUSE_WEIGHT
+        }
+        const lowValue =
+          invalidated && ((d.churn === true && before.streak >= CHURN_STREAK) || reuse < MIN_REUSE)
         if (
+          lowValue &&
+          capture.has(key) &&
+          !verified.has(key) &&
           !options.recordAll &&
-          d.churn &&
-          before >= CHURN_STREAK &&
-          after % PROBE_EVERY !== 0 &&
-          !verified.has(key)
+          skipped + 1 < PROBE_EVERY
         ) {
           capture.delete(key)
           uncapturedChurn.add(key)
-        }
+          skipped++
+        } else if (capture.has(key)) skipped = 0
+        store.setCaptureValue(d.check, { streak, reuse, skipped })
       }
     })
   }
