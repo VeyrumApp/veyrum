@@ -151,6 +151,27 @@ function checkout(repo: string, sha: string): void {
   git(repo, 'clean', '-ffdxq', '-e', 'node_modules', '-e', '.veyrum')
 }
 
+/** Untracked paths (files, or directories wholly untracked) outside node_modules and .veyrum. */
+function untracked(repo: string): Set<string> {
+  const out = git(repo, 'clean', '-ndx', '-e', 'node_modules', '-e', '.veyrum')
+  return new Set(
+    out
+      .split('\n')
+      .filter((l) => l.startsWith('Would remove '))
+      .map((l) => l.slice('Would remove '.length)),
+  )
+}
+
+/**
+ * Removes what earlier runs at this commit created (a build's output, generated fixtures), so each
+ * measured run starts from the tree install and prepare left, as a CI job does. A run that starts
+ * among another run's products records them as inputs, which the next commit's clean then removes.
+ */
+function removeRunProducts(repo: string, prepared: ReadonlySet<string>): void {
+  for (const p of untracked(repo))
+    if (!prepared.has(p)) fs.rmSync(path.join(repo, p), { recursive: true, force: true })
+}
+
 function install(corpus: Corpus, repo: string): void {
   const [cmd, ...args] = corpus.install
   if (!cmd) return
@@ -322,6 +343,7 @@ export async function replay(corpus: Corpus, benchRoot: string, options: ReplayO
         // (postinstall steps such as `nuxt prepare`), and a state CI never sees skews every selector.
         install(corpus, paths.repo)
         prepare(corpus, paths.repo)
+        const prepared = untracked(paths.repo)
 
         const parent = prev?.sha ?? null
         const changed = parent
@@ -385,16 +407,20 @@ export async function replay(corpus: Corpus, benchRoot: string, options: ReplayO
             ? `${index}-${sha.slice(0, 8)}`
             : null
         if (profile) profiledCommits++
-        const runCapture = (): CaptureResult =>
-          profile
+        const runCapture = (): CaptureResult => {
+          removeRunProducts(paths.repo, prepared)
+          return profile
             ? profiled(`${profile}/veyrum`, () =>
                 captureRun(corpus, paths.testRoot, paths.store, paths.scratch),
               )
             : captureRun(corpus, paths.testRoot, paths.store, paths.scratch)
-        const runPlain = (): number =>
-          profile
+        }
+        const runPlain = (): number => {
+          removeRunProducts(paths.repo, prepared)
+          return profile
             ? profiled(`${profile}/plain`, () => plainRun(corpus, paths.testRoot, paths.scratch).wallMs)
             : plainRun(corpus, paths.testRoot, paths.scratch).wallMs
+        }
         let capture: CaptureResult
         let plainWallMs: number | null = null
         if (!measureOverhead) {

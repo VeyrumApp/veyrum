@@ -1,4 +1,5 @@
-import { type Digest, fingerprintModule, type ModuleTransformer } from '@veyrum/core'
+import fs from 'node:fs'
+import { type Digest, fingerprintModule, type ModuleTransformer, NATIVE_ENV } from '@veyrum/core'
 import type { Vitest } from 'vitest/node'
 
 /**
@@ -12,6 +13,8 @@ export function createTransformer(vitest: Vitest, root: string): ModuleTransform
       env: string,
       projectName: string,
     ): Promise<Record<string, Digest> | null> {
+      // Node loaded it itself, as its source reads (an externalized workspace package's build).
+      if (env === NATIVE_ENV) return fingerprintSource(fs.readFileSync(absolutePath, 'utf8'), root)
       const project = vitest.projects.find((p) => p.name === projectName) ?? vitest.getRootProject()
       const environment = project.vite.environments[env]
       if (!environment) return null
@@ -19,10 +22,14 @@ export function createTransformer(vitest: Vitest, root: string): ModuleTransform
       if (node) environment.moduleGraph.invalidateModule(node)
       const result = await environment.transformRequest(absolutePath)
       if (!result) return null
-      const m = fingerprintModule(result.code, { root })
-      const out: Record<string, Digest> = {}
-      for (const [path, unit] of m.units) out[path] = unit.fp
-      return out
+      return fingerprintSource(result.code, root)
     },
   }
+}
+
+function fingerprintSource(code: string, root: string): Record<string, Digest> {
+  const m = fingerprintModule(code, { root })
+  const out: Record<string, Digest> = {}
+  for (const [path, unit] of m.units) out[path] = unit.fp
+  return out
 }

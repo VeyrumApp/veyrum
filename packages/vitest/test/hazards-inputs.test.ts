@@ -112,6 +112,15 @@ describe('files and directories', () => {
     expect(sandbox.actions()['test/list.test.ts']).toBe('run')
   })
 
+  test("Veyrum's own scratch space is not an input, even when a test lists it", () => {
+    sandbox = new Sandbox('own-scratch').write(
+      'test/scan.test.ts',
+      "import fs from 'node:fs'\nimport { expect, test } from 'vitest'\ntest('scans', () => expect(fs.readdirSync('.veyrum/tmp').length).toBeGreaterThanOrEqual(0))\n",
+    )
+    sandbox.capture()
+    expect(sandbox.actions()['test/scan.test.ts']).toBe('skip')
+  })
+
   test('a repository inside the OS temporary directory still records its fixture reads', () => {
     sandbox = new Sandbox('in-tmp', { base: fs.mkdtempSync(path.join(os.tmpdir(), 'veyrum-')) })
       .write('fixtures/data.json', '{"n": 1}\n')

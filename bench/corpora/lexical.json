@@ -1,0 +1,13 @@
+{
+  "name": "lexical",
+  "repo": "https://github.com/facebook/lexical.git",
+  "branch": "main",
+  "commits": 40,
+  "install": ["pnpm", "install", "--frozen-lockfile", "--prefer-offline"],
+  "lockfiles": ["pnpm-lock.yaml"],
+  "runnerArgs": ["--project", "unit", "--project", "scripts-unit"],
+  "maxWorkers": 2,
+  "mutationSources": ["^packages/lexical[^/]*/src/(?!.*__tests__/)(?!.*\\.d\\.ts$).+\\.tsx?$"],
+  "mutantsPerCommit": 6,
+  "mutationEvery": 4
+}

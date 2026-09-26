@@ -36,6 +36,26 @@ function mathProject(name: string): Sandbox {
 }
 
 describe('code edits', () => {
+  test('a repository module Node loads itself is compared by the functions the test ran', () => {
+    // Required through Node's own loader, as an externalized workspace package's build is.
+    sandbox = new Sandbox('native-module')
+      .write(
+        'lib/helper.cjs',
+        'exports.used = function used() { return 1 }\nexports.unused = function unused() { return 2 }\n',
+      )
+      .write(
+        'test/native.test.ts',
+        "import { createRequire } from 'node:module'\nimport { expect, test } from 'vitest'\nconst { used } = createRequire(import.meta.url)('../lib/helper.cjs')\ntest('native', () => expect(used()).toBe(1))\n",
+      )
+    sandbox.capture()
+    sandbox.edit('lib/helper.cjs', 'return 2', 'return 3')
+    expect(sandbox.actions()['test/native.test.ts']).toBe('skip')
+    sandbox.edit('lib/helper.cjs', 'return 1', 'return 1 + 0')
+    const decision = sandbox.plan()['test/native.test.ts']
+    expect(decision?.action).toBe('run')
+    expect(decision?.details.join(' ')).toContain('lib/helper.cjs: used')
+  })
+
   test('nothing changed: every test file is reused', () => {
     const sb = mathProject('unchanged')
     expect(sb.actions()).toEqual({
@@ -262,6 +282,20 @@ describe('module loading', () => {
     expect(sandbox.actions()['test/registry.test.ts']).toBe('skip')
     sandbox.write('src/items/c.ts', 'export default 3\n')
     expect(sandbox.actions()['test/registry.test.ts']).toBe('run')
+  })
+
+  test('a module that only mentions import.meta.glob is reused unchanged', () => {
+    sandbox = new Sandbox('glob-mention')
+      .write(
+        'src/meta.ts',
+        'export function glob(): never {\n  throw new Error(\'"import.meta.glob" is replaced at build time\')\n}\n',
+      )
+      .write(
+        'test/meta.test.ts',
+        "import { expect, test } from 'vitest'\nimport { glob } from '../src/meta'\ntest('source', () => expect(glob.toString()).toContain('throw'))\n",
+      )
+    sandbox.capture()
+    expect(sandbox.actions()['test/meta.test.ts']).toBe('skip')
   })
 
   test('a new file that would win module resolution invalidates importers', () => {

@@ -79,7 +79,7 @@ export async function runMocha(options: MochaRunOptions): Promise<RunResult> {
   const scratch = path.join(root, '.veyrum', 'tmp', runId)
   const files = listRepoFiles(root)
   const here = path.dirname(fileURLToPath(import.meta.url))
-  const ignored = [...veyrumDirs(here), scratch + path.sep, ...storeFiles(options.store.file)]
+  const ignored = [...veyrumDirs(here), path.dirname(scratch), ...storeFiles(options.store.file)]
   const target = resolveTargetMocha(root)
   const facts = runtimeFacts({ runner: 'mocha', mocha: target.version })
   const runtimeKey = runtimeKeyOf(facts)

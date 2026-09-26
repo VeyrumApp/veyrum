@@ -29,6 +29,10 @@
     "./state": {
       "types": "./dist/state.d.ts",
       "default": "./dist/state.js"
+    },
+    "./types": {
+      "types": "./dist/types.d.ts",
+      "default": "./dist/types.js"
     }
   },
   "files": [

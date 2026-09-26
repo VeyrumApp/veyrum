@@ -1,0 +1,22 @@
+{
+  "name": "hono",
+  "repo": "https://github.com/honojs/hono.git",
+  "branch": "main",
+  "commits": 40,
+  "install": ["pnpm", "install", "--frozen-lockfile", "--prefer-offline"],
+  "lockfiles": ["pnpm-lock.yaml"],
+  "runnerArgs": [
+    "--project",
+    "main",
+    "--project",
+    "jsx-runtime-default",
+    "--project",
+    "jsx-runtime-dom",
+    "--project",
+    "node"
+  ],
+  "maxWorkers": 2,
+  "mutationSources": ["^src/(?!.*\\.test\\.)(?!.*/types\\.ts$)(?!.*\\.d\\.ts$).+\\.ts$"],
+  "mutantsPerCommit": 6,
+  "mutationEvery": 4
+}
