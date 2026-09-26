@@ -39,6 +39,7 @@ export function renderSummary(inputs: readonly SummaryInput[]): string {
   out.push('| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |')
   let oraclesTotal = 0
   let escapesTotal = 0
+  let randomTotal = 0
   for (const input of inputs) {
     const commits = input.lines.filter((l): l is CommitResult => l.kind === 'commit' && l.baselines !== null)
     const killed = input.lines.filter(
@@ -64,6 +65,12 @@ export function renderSummary(inputs: readonly SummaryInput[]): string {
       .map((c) => c.capture.wallMs / c.plainWallMs! - 1)
     const brokenCommits = input.lines.filter((l) => l.kind === 'broken').length
     const veyrumEscapes = escapes('veyrum')
+    // Escapes whose reused evidence relied on random draws: the test exercised other code under
+    // other random inputs (plan section 37 allows these, explained by a flag, within a budget).
+    randomTotal += killed.filter((m) => {
+      const escaped = m.baselines.veyrum?.escapes ?? []
+      return escaped.length > 0 && escaped.every((f) => m.escapeFlags?.[f]?.includes('random'))
+    }).length
     const divergent = commits.reduce((n, c) => n + (c.divergent?.length ?? 0), 0)
     oraclesTotal += killed.length + flips
     escapesTotal += veyrumEscapes
@@ -76,7 +83,7 @@ export function renderSummary(inputs: readonly SummaryInput[]): string {
     `Veyrum escapes across all repositories: ${escapesTotal} of ${oraclesTotal} killed mutants and mainline flips; 95% upper bound on the escape rate ${pct(upperBound95(escapesTotal, oraclesTotal))}.`,
     '',
   )
-  out.push(...renderGate(inputs, escapesTotal, oraclesTotal))
+  out.push(...renderGate(inputs, escapesTotal - randomTotal, randomTotal, oraclesTotal))
   return out.join('\n')
 }
 
@@ -84,6 +91,7 @@ export function renderSummary(inputs: readonly SummaryInput[]): string {
 const GATE = {
   oracles: 1500,
   escapeBound: 0.0025,
+  explainedRate: 0.003,
   ratioVsCoverage: 0.65,
   ratioVsClosure: 1 / 1.2,
   reposPassingRatio: 4,
@@ -92,7 +100,12 @@ const GATE = {
   overhead: 0.15,
 } as const
 
-function renderGate(inputs: readonly SummaryInput[], escapes: number, oracles: number): string[] {
+function renderGate(
+  inputs: readonly SummaryInput[],
+  escapes: number,
+  randomEscapes: number,
+  oracles: number,
+): string[] {
   const mark = (ok: boolean): string => (ok ? 'pass' : 'FAIL')
   const out = ['## Release gate (plan section 37)', '']
   out.push(
@@ -153,9 +166,11 @@ function renderGate(inputs: readonly SummaryInput[], escapes: number, oracles: n
     )
   }
   const bound = upperBound95(escapes, oracles)
+  const randomRate = randomEscapes / Math.max(1, oracles)
   out.push('')
   out.push(
-    `- Escapes: ${escapes} over ${oracles} oracles (gate: 0 over at least ${GATE.oracles}), 95% bound ${(bound * 100).toFixed(2)}% (gate: at most ${(GATE.escapeBound * 100).toFixed(2)}%): ${mark(escapes === 0 && oracles >= GATE.oracles && bound <= GATE.escapeBound)}`,
+    `- Unexplained escapes: ${escapes} over ${oracles} oracles (gate: 0 over at least ${GATE.oracles}), 95% bound ${(bound * 100).toFixed(2)}% (gate: at most ${(GATE.escapeBound * 100).toFixed(2)}%): ${mark(escapes === 0 && oracles >= GATE.oracles && bound <= GATE.escapeBound)}`,
+    `- Escapes explained by the random flag: ${randomEscapes} (${(randomRate * 100).toFixed(2)}%; gate: flaky and random combined at most ${(GATE.explainedRate * 100).toFixed(1)}%): ${mark(randomRate <= GATE.explainedRate)}`,
     `- Ratio to file-coverage on source commits at most ${GATE.ratioVsCoverage}x: ${ratioPasses} of ${inputs.length} repositories (gate: at least ${GATE.reposPassingRatio}): ${mark(ratioPasses >= GATE.reposPassingRatio)}`,
     `- Veyrum at least 1.2x better than file-closure identity (median, all commits): ${closurePasses} of ${inputs.length} repositories (gate: at least 4): ${mark(closurePasses >= GATE.reposPassingRatio)}`,
     `- Veyrum median on source commits at most ${pct(GATE.sourceMedian)}: ${sourcePasses} of ${inputs.length} repositories`,

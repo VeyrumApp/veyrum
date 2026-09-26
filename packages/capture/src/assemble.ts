@@ -315,6 +315,7 @@ export function assemble(input: AssembleInput): Assembled {
       if (payload.isolateReused || input.sharedWorkerProjects.has(outcome.project))
         flags.add(FLAGS.sharedWorker)
       if (payload.envEnumerated) flags.add(FLAGS.envEnumerated)
+      if (payload.random) flags.add(FLAGS.random)
       if (payload.evalScripts > 0) flags.add(FLAGS.evalCode)
       if (payload.spawns.length > 0) flags.add(FLAGS.spawn)
       if (payload.dlopen.length > 0) flags.add(FLAGS.native)

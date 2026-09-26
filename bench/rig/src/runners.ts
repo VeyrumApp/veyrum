@@ -21,7 +21,14 @@ export interface CaptureResult {
   readonly wallMs: number
 }
 
-function veyrum(corpus: Corpus, repo: string, store: string, args: readonly string[], json: string) {
+function veyrum(
+  corpus: Corpus,
+  repo: string,
+  store: string,
+  args: readonly string[],
+  json: string,
+  env: NodeJS.ProcessEnv = {},
+) {
   return exec(
     process.execPath,
     [
@@ -47,7 +54,7 @@ function veyrum(corpus: Corpus, repo: string, store: string, args: readonly stri
       ...projectArgs(corpus),
       ...(corpus.forceIsolation ? ['--isolate'] : []),
     ],
-    { cwd: repo, env: childEnv() },
+    { cwd: repo, env: { ...childEnv(), ...env } },
   )
 }
 
@@ -189,10 +196,11 @@ export function veyrumPlan(
   repo: string,
   store: string,
   scratch: string,
+  env: NodeJS.ProcessEnv = {},
 ): { decisions: Decision[]; runtimeKey: string; planMs: number; wallMs: number } {
   const json = path.join(scratch, 'plan.json')
   fs.rmSync(json, { force: true })
-  const r = veyrum(corpus, repo, store, ['plan'], json)
+  const r = veyrum(corpus, repo, store, ['plan'], json, env)
   if (!fs.existsSync(json))
     throw new Error(
       `veyrum plan produced no output (exit ${r.code}, signal ${r.signal ?? 'none'}):\n${r.stdout}\n${r.stderr}`,

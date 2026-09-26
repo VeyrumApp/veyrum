@@ -282,6 +282,7 @@ class FileRecorder implements HookSink {
   readonly toolchainEnv = new Map<string, string | null>()
   readonly envWritten = new Set<string>()
   envEnumeratedFlag = false
+  randomFlag = false
   readonly netEvents = new Map<string, { host: string; port: number | null; local: boolean }>()
   readonly spawns = new Set<string>()
   readonly packageNames = new Set<string>()
@@ -350,6 +351,9 @@ class FileRecorder implements HookSink {
     if (this.envWritten.has(name) || this.volatileEnv.test(name)) return
     const into = this.testScopeOnly && scope === 'process' ? this.toolchainEnv : this.envReads
     if (!into.has(name)) into.set(name, hashEnvValue(value))
+  }
+  random(): void {
+    this.randomFlag = true
   }
   envEnumerated(scope: EnvScope): void {
     if (this.testScopeOnly && scope === 'process') return
@@ -907,6 +911,7 @@ export async function beginWorkerCapture(options: WorkerCaptureOptions): Promise
         toolchainEnv: [...recorder.toolchainEnv].map(([n, h]) => ({ n, h })),
         envBaseline,
         envEnumerated: recorder.envEnumeratedFlag,
+        random: recorder.randomFlag,
         envWritten: [...recorder.envWritten],
         net: [...recorder.netEvents.values()],
         spawns: [...recorder.spawns],

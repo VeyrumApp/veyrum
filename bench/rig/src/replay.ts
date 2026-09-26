@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { type CheckRef, Store } from '@veyrum/core'
-import { type SelectionContext, selectFileClosure, selectFileCoverage, selectNaive } from './baselines.ts'
+import { type SelectionContext, selectFileCoverage, selectNaive } from './baselines.ts'
 import type { Corpus } from './corpus.ts'
 import { exec, git, KilledError, profiled } from './exec.ts'
 import { applyMutant, type Mutant, mutationSites, rng } from './mutate.ts'
@@ -85,6 +85,8 @@ export interface MutantResult {
   readonly killed: readonly string[]
   /** Why each killed file failed on its confirming rerun (first failing test and message). */
   readonly why?: Readonly<Record<string, string>>
+  /** Flags the evidence Veyrum reused relied on, for each killing file it skipped. */
+  readonly escapeFlags?: Readonly<Record<string, readonly string[]>>
   readonly timedOut: boolean
   readonly baselines: Partial<
     Record<
@@ -216,8 +218,6 @@ async function selectAll(
   changed: readonly string[],
   since: string | null,
   veyrumSelection: Set<string>,
-  /** The runtime key Veyrum planned with: whole-file closure identity must honor it too. */
-  runtimeKey: string,
 ): Promise<Record<BaselineName, Set<string> | null>> {
   // Git paths are relative to the repository; selectors work relative to the test root.
   const relative = changed.map((f) =>
@@ -238,7 +238,12 @@ async function selectAll(
     naive: selectNaive(ctx),
     'runner-changed': runnerChanged(corpus, paths.testRoot, paths.scratch, since),
     'file-coverage': selectFileCoverage(ctx),
-    'file-closure': await selectFileClosure(ctx, runtimeKey),
+    // Veyrum without function-level precision: the same plan, modules compared whole.
+    'file-closure': new Set(
+      veyrumPlan(corpus, paths.testRoot, paths.store, paths.scratch, { VEYRUM_WHOLE_MODULES: '1' })
+        .decisions.filter((d) => d.action === 'run')
+        .map((d) => d.check.path),
+    ),
     veyrum: veyrumSelection,
   }
 }
@@ -350,16 +355,7 @@ export async function replay(corpus: Corpus, benchRoot: string, options: ReplayO
           const veyrumSelection = new Set(
             p.decisions.filter((d) => d.action === 'run').map((d) => d.check.path),
           )
-          selections = await selectAll(
-            corpus,
-            paths,
-            store,
-            checks,
-            changed,
-            parent,
-            veyrumSelection,
-            p.runtimeKey,
-          )
+          selections = await selectAll(corpus, paths, store, checks, changed, parent, veyrumSelection)
           const coverage = selections['file-coverage']
           if (coverage) {
             veyrumExtra = {}
@@ -549,7 +545,6 @@ function* runMutants(
           [m.file],
           null,
           veyrumSelection,
-          plan.runtimeKey,
         )
         let timedOut = false
         let killed: string[] = []
@@ -574,11 +569,30 @@ function* runMutants(
             if (flaky > 0)
               log(`  mutant ${m.file}:${m.line}: ${flaky} failing file(s) passed on rerun, not counted`)
           }
+          // Control: without the mutant (rebuilt as the commit was), a killing file must pass. One
+          // that fails anyway failed for another reason (a race under load, the rebuild itself).
+          if (killed.length > 0) {
+            fs.writeFileSync(absolute, original)
+            prepare(corpus, paths.repo)
+            const control = plainRun(corpus, paths.testRoot, paths.scratch, killed)
+            const spurious = killed.filter((f) => control.outcomes.get(f)?.verdict !== 'pass')
+            if (spurious.length > 0) {
+              log(
+                `  mutant ${m.file}:${m.line}: ${spurious.join(', ')} failed without the mutant too, not counted`,
+              )
+              killed = killed.filter((f) => !spurious.includes(f))
+              for (const f of spurious) delete why[f]
+            }
+          }
         } catch (error) {
           if (error instanceof KilledError) throw error
           timedOut = true
           log(`  mutant run failed: ${String(error).slice(0, 600)}`)
         }
+        const escapeFlags: Record<string, readonly string[]> = {}
+        for (const f of killed)
+          if (!veyrumSelection.has(f))
+            escapeFlags[f] = plan.decisions.find((d) => d.check.path === f)?.flagsRelied ?? []
         const baselines: MutantResult['baselines'] = {}
         for (const name of BASELINES) {
           const sel = selections[name]
@@ -598,6 +612,7 @@ function* runMutants(
           mutant: { file: m.file, line: m.line, kind: m.kind },
           pool,
           killed,
+          ...(Object.keys(escapeFlags).length > 0 ? { escapeFlags } : {}),
           timedOut,
           ...(Object.keys(why).length > 0 ? { why } : {}),
           baselines,
