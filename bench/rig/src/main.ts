@@ -8,6 +8,7 @@ import { EXIT_KILLED, KilledError } from './exec.ts'
 import { pathsFor, replay } from './replay.ts'
 import { readLines, renderReport } from './report.ts'
 import { rescoreFileCoverage } from './rescore.ts'
+import { simulateCapture } from './simulate.ts'
 import { renderSummary } from './summary.ts'
 
 const HELP = `veyrum-bench - replay history and mutants to compare Veyrum with baseline selectors
@@ -18,6 +19,7 @@ Usage:
   veyrum-bench report <corpus.json> [--bench <dir>]
   veyrum-bench rescore <corpus.json> [--bench <dir>]   Recompute the Datadog-style baseline of a finished replay
   veyrum-bench summary <corpus.json>... [--bench <dir>] One table across replayed corpora
+  veyrum-bench simulate <corpus.json>... [--bench <dir>] Cost the capture policy on finished replays, in seconds
 
 Corpora live in bench/corpora. Work directories default to <repo>/.bench/<name>.
 `
@@ -44,6 +46,21 @@ async function main(argv: string[]): Promise<number> {
   if (values.help || !command || !corpusFile) {
     process.stdout.write(HELP)
     return values.help ? 0 : 2
+  }
+  if (command === 'simulate') {
+    const bench = path.resolve(values.bench ?? DEFAULT_BENCH)
+    const pct = (v: number): string => (Number.isNaN(v) ? '-' : `${(v * 100).toFixed(1)}%`)
+    process.stdout.write(
+      '| Repository | Commits | Run share | Overhead | Net, capturing all | Net, capture policy | Ran uncaptured | Reuse given up |\n| --- | --- | --- | --- | --- | --- | --- | --- |\n',
+    )
+    for (const file of positionals.slice(1)) {
+      const corpus = loadCorpus(file)
+      const s = simulateCapture(readLines(pathsFor(corpus, bench).results))
+      process.stdout.write(
+        `| ${corpus.name} | ${s.commits} | ${pct(s.runShare)} | ${pct(s.overhead)} | ${pct(s.netAlways)} | ${pct(s.netPolicy)} | ${pct(s.uncapturedShare)} | ${pct(s.lostReuseShare)} |\n`,
+      )
+    }
+    return 0
   }
   if (command === 'summary') {
     const bench = path.resolve(values.bench ?? DEFAULT_BENCH)

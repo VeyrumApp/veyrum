@@ -49,32 +49,18 @@ describe('capture skips churn', () => {
   const captured = (store: Store, decision: Decision): boolean =>
     selectExecution([check], [decision], { mode: 'affected', store }, 'seed').capture.has(checkKey(check))
 
-  test('after three plans of churn a check runs without capture, recorded on every fifth such run', () => {
+  test('after three plans of churn a check runs without capture, recorded on every tenth such run', () => {
     const store = Store.open(':memory:')
     const seen = Array.from({ length: 13 }, () => captured(store, churn))
-    expect(seen).toEqual([
-      true,
-      true,
-      true,
-      false,
-      false,
-      false,
-      false,
-      true,
-      false,
-      false,
-      false,
-      false,
-      true,
-    ])
+    expect(seen).toEqual([true, true, true, ...Array<boolean>(9).fill(false), true])
   })
 
   test('a check invalidated by code changes on every plan stops being recorded once reuse is rare', () => {
     const store = Store.open(':memory:')
     const code: Decision = { ...churn, churn: undefined, details: ['src/a.ts: add changed'] }
-    const seen = Array.from({ length: 10 }, () => captured(store, code))
-    // Reuse decays by 0.7 per plan: below 0.15 after six; the tenth is a probe.
-    expect(seen).toEqual([true, true, true, true, true, false, false, false, false, true])
+    const seen = Array.from({ length: 18 }, () => captured(store, code))
+    // Reuse decays by 0.7 per plan: below 0.05 after nine; the eighteenth is a probe.
+    expect(seen).toEqual([...Array<boolean>(8).fill(true), ...Array<boolean>(9).fill(false), true])
     // Reuse makes it worth recording again.
     selectExecution(
       [check],
