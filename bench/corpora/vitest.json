@@ -1,0 +1,19 @@
+{
+  "name": "vitest",
+  "repo": "https://github.com/vitest-dev/vitest.git",
+  "branch": "main",
+  "commits": 40,
+  "cwd": "test/unit",
+  "install": ["env", "PNPM_CONFIG_TRUST_LOCKFILE=true", "pnpm", "install", "--frozen-lockfile", "--prefer-offline", "--filter", "!docs"],
+  "prepare": ["env", "pnpm_config_verify_deps_before_run=warn", "pnpm", "run", "build"],
+  "lockfiles": ["pnpm-lock.yaml"],
+  "runnerArgs": ["--project", "threads"],
+  "maxWorkers": 2,
+  "mutationSources": [
+    "^packages/(expect|snapshot|spy|utils|pretty-format|web-worker)/src/.+(?<!\\.d)\\.ts$",
+    "^packages/mocker/src/(?!browser/).+(?<!\\.d)\\.ts$",
+    "^packages/vitest/src/(runtime|integrations)/.+(?<!\\.d)\\.ts$"
+  ],
+  "mutantsPerCommit": 6,
+  "mutationEvery": 4
+}

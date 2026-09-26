@@ -1,0 +1,19 @@
+{
+  "name": "vite",
+  "repo": "https://github.com/vitejs/vite.git",
+  "branch": "main",
+  "commits": 40,
+  "install": ["env", "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1", "pnpm", "install", "--frozen-lockfile", "--prefer-offline"],
+  "prepare": ["env", "pnpm_config_verify_deps_before_run=warn", "pnpm", "run", "build"],
+  "lockfiles": ["pnpm-lock.yaml"],
+  "runnerArgs": [],
+  "maxWorkers": 2,
+  "forceIsolation": true,
+  "mutationSources": [
+    "^packages/vite/src/(node|shared|module-runner)/(?!.*__tests(?:_dts)?__/).+(?<!\\.d)\\.ts$",
+    "^packages/plugin-legacy/src/(?!__tests__/).+(?<!\\.d)\\.ts$",
+    "^packages/create-vite/src/.+\\.ts$"
+  ],
+  "mutantsPerCommit": 6,
+  "mutationEvery": 4
+}

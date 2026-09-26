@@ -1,0 +1,15 @@
+{
+  "name": "zod",
+  "repo": "https://github.com/colinhacks/zod.git",
+  "branch": "main",
+  "commits": 40,
+  "install": ["npx", "--yes", "--package", "@nubjs/nub@0.8.3", "nub", "install", "--frozen-lockfile"],
+  "lockfiles": ["pnpm-lock.yaml"],
+  "runnerArgs": ["--project", "zod"],
+  "maxWorkers": 2,
+  "mutationSources": [
+    "^packages/zod/src/(?!.*/(?:tests|benchmarks)/)(?!v[34]/locales/(?!en\\.ts$)).+(?<!\\.test)(?<!\\.d)\\.ts$"
+  ],
+  "mutantsPerCommit": 6,
+  "mutationEvery": 4
+}

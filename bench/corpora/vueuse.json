@@ -1,0 +1,15 @@
+{
+  "name": "vueuse",
+  "repo": "https://github.com/vueuse/vueuse.git",
+  "branch": "main",
+  "commits": 40,
+  "install": ["pnpm", "install", "--frozen-lockfile", "--prefer-offline"],
+  "lockfiles": ["pnpm-lock.yaml"],
+  "runnerArgs": ["--project", "unit", "--project", "server"],
+  "maxWorkers": 2,
+  "mutationSources": [
+    "^packages/(core|shared|math|integrations|router|rxjs|firebase)/(?!_template/)[^/]+/(?!demo\\.)[^/]+(?<!\\.test)(?<!\\.d)\\.ts$"
+  ],
+  "mutantsPerCommit": 6,
+  "mutationEvery": 4
+}
