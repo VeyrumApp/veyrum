@@ -49,33 +49,62 @@ describe('capture skips churn', () => {
   const captured = (store: Store, decision: Decision): boolean =>
     selectExecution([check], [decision], { mode: 'affected', store }, 'seed').capture.has(checkKey(check))
 
-  test('after three plans of churn a check runs without capture, probed every fifth plan', () => {
+  test('after three plans of churn a check runs without capture, recorded on every fifth such run', () => {
     const store = Store.open(':memory:')
-    const seen = Array.from({ length: 11 }, () => captured(store, churn))
-    // Plans 1-3 capture; from the fourth, only every fifth (streaks 5 and 10) is a probe.
-    expect(seen).toEqual([true, true, true, false, true, false, false, false, false, true, false])
+    const seen = Array.from({ length: 13 }, () => captured(store, churn))
+    expect(seen).toEqual([
+      true,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      true,
+    ])
   })
 
-  test('reuse or a change to the code makes a check worth recording again', () => {
+  test('a check invalidated by code changes on every plan stops being recorded once reuse is rare', () => {
     const store = Store.open(':memory:')
-    for (let i = 0; i < 4; i++) captured(store, churn)
-    expect(store.churnStreak(check)).toBe(4)
-    expect(captured(store, { ...churn, churn: undefined, details: ['src/a.ts: add changed'] })).toBe(true)
-    expect(store.churnStreak(check)).toBe(0)
-    for (let i = 0; i < 4; i++) captured(store, churn)
+    const code: Decision = { ...churn, churn: undefined, details: ['src/a.ts: add changed'] }
+    const seen = Array.from({ length: 10 }, () => captured(store, code))
+    // Reuse decays by 0.7 per plan: below 0.15 after six; the tenth is a probe.
+    expect(seen).toEqual([true, true, true, true, true, false, false, false, false, true])
+    // Reuse makes it worth recording again.
     selectExecution(
       [check],
       [{ ...churn, action: 'skip', reason: 'reused', churn: undefined }],
       { mode: 'affected', store },
       's',
     )
-    expect(store.churnStreak(check)).toBe(0)
+    expect(captured(store, code)).toBe(true)
   })
 
-  test('a check with no evidence yet keeps its streak and is captured', () => {
+  test('a change to the code resets the churn streak; reuse resets it too', () => {
+    const store = Store.open(':memory:')
+    for (let i = 0; i < 4; i++) captured(store, churn)
+    expect(store.captureValue(check).streak).toBe(4)
+    expect(captured(store, { ...churn, churn: undefined, details: ['src/a.ts: add changed'] })).toBe(true)
+    expect(store.captureValue(check).streak).toBe(0)
+    for (let i = 0; i < 2; i++) captured(store, churn)
+    selectExecution(
+      [check],
+      [{ ...churn, action: 'skip', reason: 'reused', churn: undefined }],
+      { mode: 'affected', store },
+      's',
+    )
+    expect(store.captureValue(check).streak).toBe(0)
+  })
+
+  test('a check with no evidence yet keeps its history and is captured', () => {
     const store = Store.open(':memory:')
     for (let i = 0; i < 4; i++) captured(store, churn)
     expect(captured(store, { ...churn, reason: 'no-evidence', churn: undefined })).toBe(true)
-    expect(store.churnStreak(check)).toBe(4)
+    expect(store.captureValue(check).streak).toBe(4)
   })
 })

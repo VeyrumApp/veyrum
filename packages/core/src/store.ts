@@ -38,6 +38,15 @@ interface RecordRow {
  * Local evidence store. Everything in it is a digest, a repository-relative path, a test name, an
  * outcome or a duration: source code never enters the store.
  */
+/** See Store.captureValue. */
+export interface CaptureValue {
+  readonly streak: number
+  readonly reuse: number
+  readonly skipped: number
+}
+
+const FRESH_CAPTURE_VALUE: CaptureValue = { streak: 0, reuse: 1, skipped: 0 }
+
 export class Store {
   readonly file: string
   private readonly db: DatabaseSyncType
@@ -91,6 +100,7 @@ export class Store {
         );
         CREATE TABLE IF NOT EXISTS churn (
           check_path TEXT NOT NULL, project TEXT NOT NULL, streak INTEGER NOT NULL,
+          reuse REAL NOT NULL DEFAULT 1, skipped INTEGER NOT NULL DEFAULT 0,
           PRIMARY KEY (check_path, project)
         );
       `)
@@ -109,6 +119,8 @@ export class Store {
       // and stores closures as entry ids, as deltas against another closure (see putClosure).
       addColumn(db, 'unit_cache', 'used', 'INTEGER NOT NULL DEFAULT 0')
       addColumn(db, 'blobs', 'base', 'TEXT')
+      addColumn(db, 'churn', 'reuse', 'REAL NOT NULL DEFAULT 1')
+      addColumn(db, 'churn', 'skipped', 'INTEGER NOT NULL DEFAULT 0')
       if (row?.value !== String(SCHEMA_VERSION))
         db.prepare('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)').run(
           'schema',
@@ -352,26 +364,26 @@ export class Store {
    * escape: the file would have been reused although it fails.
    */
   /**
-   * How many plans in a row found a check's evidence unusable for a reason that recurs on its own
-   * (Decision.churn): capture skips it until a probe (see selectExecution).
+   * What recording a check has been worth (see selectExecution): how many plans in a row found its
+   * evidence unusable for a reason that recurs on its own (`streak`), how often its evidence was
+   * reused, as a weighted average of recent plans (`reuse`), and how many runs in a row it ran
+   * without capture (`skipped`).
    */
-  churnStreak(check: CheckRef): number {
-    const row = this.sql('SELECT streak FROM churn WHERE check_path = ? AND project = ?').get(
+  captureValue(check: CheckRef): CaptureValue {
+    const row = this.sql('SELECT streak, reuse, skipped FROM churn WHERE check_path = ? AND project = ?').get(
       check.path,
       check.project,
-    ) as { streak: number } | undefined
-    return row?.streak ?? 0
+    ) as CaptureValue | undefined
+    return row ? { streak: row.streak, reuse: row.reuse, skipped: row.skipped } : FRESH_CAPTURE_VALUE
   }
 
-  setChurnStreak(check: CheckRef, streak: number): void {
-    if (streak === 0)
+  setCaptureValue(check: CheckRef, value: CaptureValue): void {
+    if (value.streak === 0 && value.reuse === 1 && value.skipped === 0)
       this.sql('DELETE FROM churn WHERE check_path = ? AND project = ?').run(check.path, check.project)
     else
-      this.sql('INSERT OR REPLACE INTO churn (check_path, project, streak) VALUES (?, ?, ?)').run(
-        check.path,
-        check.project,
-        streak,
-      )
+      this.sql(
+        'INSERT OR REPLACE INTO churn (check_path, project, streak, reuse, skipped) VALUES (?, ?, ?, ?, ?)',
+      ).run(check.path, check.project, value.streak, value.reuse, value.skipped)
   }
 
   putVerification(
@@ -561,15 +573,18 @@ export class Store {
           insert.run(v.run_id!, v.check_path!, v.project!, v.record_id!, v.kind!, v.outcome!, v.created_at!)
         // Parallel jobs plan disjoint files; where both saw a file, the longer streak stands.
         const churn = this.sql(
-          `INSERT INTO churn (check_path, project, streak) VALUES (?, ?, ?)
-             ON CONFLICT (check_path, project) DO UPDATE SET streak = max(streak, excluded.streak)`,
+          `INSERT INTO churn (check_path, project, streak, reuse, skipped) VALUES (?, ?, ?, ?, ?)
+             ON CONFLICT (check_path, project) DO UPDATE SET streak = max(streak, excluded.streak),
+               reuse = min(reuse, excluded.reuse), skipped = max(skipped, excluded.skipped)`,
         )
-        for (const c of other.sql('SELECT check_path, project, streak FROM churn').all() as {
+        for (const c of other.sql('SELECT check_path, project, streak, reuse, skipped FROM churn').all() as {
           check_path: string
           project: string
           streak: number
+          reuse: number
+          skipped: number
         }[])
-          churn.run(c.check_path, c.project, c.streak)
+          churn.run(c.check_path, c.project, c.streak, c.reuse, c.skipped)
         const generation = this.generation()
         const unit = this.sql('INSERT OR IGNORE INTO unit_cache (key, units, used) VALUES (?, ?, ?)')
         for (const u of other.sql('SELECT key, units FROM unit_cache').all() as {
