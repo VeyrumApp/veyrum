@@ -185,6 +185,12 @@ export interface CapturePolicy {
   /** The same for churn from a blocked channel or evidence that does not count, which recurs. */
   readonly blockedStreak: number
   readonly minReuse: number
+  /**
+   * Recording pays off when the reuse it buys outweighs its cost: a check recorded on every run
+   * costs (1 - r)(1 + o) of running it plainly, at reuse rate r and capture overhead o, less than
+   * 1 only while r > o / (1 + o). Recording stops below that bar times this weight.
+   */
+  readonly overheadWeight: number
   readonly reuseWeight: number
   /** Runs in a row without capture before a probe records the check anyway... */
   readonly probeEvery: number
@@ -202,6 +208,7 @@ export const CAPTURE_POLICY: CapturePolicy = {
   churnStreak: 2,
   blockedStreak: 1,
   minReuse: 0.05,
+  overheadWeight: 1,
   reuseWeight: 0.1,
   probeEvery: 3,
   probeBackoff: 2,
@@ -215,6 +222,8 @@ export function selectExecution(
     readonly store?: Store
     /** The benchmark's simulations try others. */
     readonly capturePolicy?: CapturePolicy
+    /** Capture overhead measured on earlier runs (0.1 is 10% more time), when known. */
+    readonly overhead?: number
   },
   seed: string,
 ): Execution {
@@ -238,8 +247,18 @@ export function selectExecution(
   const uncapturedChurn = new Set<string>()
   if (!options.recordAll) for (const d of reusable) capture.delete(checkKey(d.check))
   const store = options.store
-  const { churnStreak, blockedStreak, minReuse, reuseWeight, probeEvery, probeBackoff, probeMax } =
-    options.capturePolicy ?? CAPTURE_POLICY
+  const {
+    churnStreak,
+    blockedStreak,
+    minReuse,
+    overheadWeight,
+    reuseWeight,
+    probeEvery,
+    probeBackoff,
+    probeMax,
+  } = options.capturePolicy ?? CAPTURE_POLICY
+  const overhead = Math.max(0, options.overhead ?? options.store?.overhead() ?? 0)
+  const reuseBar = Math.max(minReuse, overheadWeight * (overhead / (1 + overhead)))
   if (store) {
     store.transaction(() => {
       for (const d of decisions) {
@@ -266,7 +285,7 @@ export function selectExecution(
         const blocked = d.reason === 'blocked-flag' || d.reason === 'not-reusable'
         const lowValue =
           invalidated &&
-          ((d.churn === true && before.streak >= (blocked ? blockedStreak : churnStreak)) || reuse < minReuse)
+          ((d.churn === true && before.streak >= (blocked ? blockedStreak : churnStreak)) || reuse < reuseBar)
         const interval = Math.min(probeMax, probeEvery * probeBackoff ** probes)
         if (lowValue && capture.has(key) && !verified.has(key) && !options.recordAll) {
           if (skipped + 1 < interval) {
@@ -348,9 +367,39 @@ export function recordUncapturedFailures(
  * Records a run's evidence. Recording happens after the tests ran, so its failure must not change
  * their verdict: unless strict, the error is reported and the run simply leaves no evidence.
  */
+/** Capture's measured work in test processes (starting and collecting coverage, assembling each file's payload) and the captured files' test time. */
+export interface CaptureCost {
+  readonly captureMs: number
+  readonly testMs: number
+}
+
+/**
+ * Folds one run's capture overhead into the store's estimate, which the capture policy weighs reuse
+ * against. Measured parts only: capture's work in test processes relative to test time, and
+ * recording relative to the run. Hooks' cost inside test code is not timed, so the estimate is a
+ * floor, and the policy errs toward recording.
+ */
+export function noteOverhead(store: Store, cost: CaptureCost, recordMs: number, runMs: number): void {
+  if (cost.testMs <= 0 || runMs <= 0) return
+  const overhead = cost.captureMs / cost.testMs + recordMs / runMs
+  const before = store.overhead()
+  store.setOverhead(
+    before === undefined ? overhead : before * (1 - OVERHEAD_WEIGHT) + overhead * OVERHEAD_WEIGHT,
+  )
+}
+
+/** Weight of the latest run in the overhead estimate. */
+const OVERHEAD_WEIGHT = 0.3
+
 export function recordEvidence(
   strict: boolean | undefined,
-  record: () => { readonly records: readonly EvidenceRecord[]; readonly verifications: Verification[] },
+  record: () => {
+    readonly records: readonly EvidenceRecord[]
+    readonly verifications: Verification[]
+    readonly cost?: CaptureCost
+  },
+  /** Where to note the run's capture overhead, and how long its tests ran. */
+  measure?: { readonly store: Store; readonly runMs: number },
 ): {
   readonly records: readonly EvidenceRecord[]
   readonly verifications: Verification[]
@@ -359,7 +408,11 @@ export function recordEvidence(
   try {
     // Fault injection for the fail-open tests.
     if (process.env.VEYRUM_FAULT === 'record') throw new Error('injected fault while recording')
-    return { ...record(), recorded: true }
+    const started = performance.now()
+    const recorded = record()
+    if (measure && recorded.cost)
+      noteOverhead(measure.store, recorded.cost, performance.now() - started, measure.runMs)
+    return { records: recorded.records, verifications: recorded.verifications, recorded: true }
   } catch (error) {
     if (strict) throw error
     const message = error instanceof Error ? error.message : String(error)

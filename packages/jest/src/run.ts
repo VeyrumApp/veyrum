@@ -451,39 +451,47 @@ export async function runJest(options: JestRunOptions): Promise<RunResult> {
       const check = { path: toRepoPath(root, o.file), project: o.project }
       return { check, verdict: o.verdict, durationMs: o.durationMs, captured: captured(check) }
     })
-    const recording = recordEvidence(options.strict, () => {
-      // One transaction: assembly caches a digest for every file it reads.
-      const { run, records } = options.store.transaction(() =>
-        assemble({
-          root,
-          runId,
-          runtimeKey,
-          runtime: facts,
-          revision: options.revision ?? null,
-          createdAt,
-          outDir: scratch,
-          outcomes: ranOutcomes.filter((o) =>
-            captured({ path: toRepoPath(root, o.file), project: o.project }),
-          ),
-          main,
-          files,
-          testFiles: specs.map((s) => s.file),
-          store: options.store,
-          fs: rawFs,
-          runner: { name: 'jest', version: target.version, isolate: true, pool: 'workers' },
-          sharedWorkerProjects: new Set(),
-          ignored,
-          configFiles: [...configFiles],
-          manifestFiles,
-        }),
-      )
-      options.store.transaction(() => {
-        options.store.putRun(run)
-        for (const record of records) options.store.putRecord(record)
-      })
-      recordUncapturedFailures(options.store, runId, options.revision ?? null, decisions, outcomes)
-      return { records, verifications: recordVerifications(options.store, runId, execution, outcomes) }
-    })
+    const recording = recordEvidence(
+      options.strict,
+      () => {
+        // One transaction: assembly caches a digest for every file it reads.
+        const { run, records, cost } = options.store.transaction(() =>
+          assemble({
+            root,
+            runId,
+            runtimeKey,
+            runtime: facts,
+            revision: options.revision ?? null,
+            createdAt,
+            outDir: scratch,
+            outcomes: ranOutcomes.filter((o) =>
+              captured({ path: toRepoPath(root, o.file), project: o.project }),
+            ),
+            main,
+            files,
+            testFiles: specs.map((s) => s.file),
+            store: options.store,
+            fs: rawFs,
+            runner: { name: 'jest', version: target.version, isolate: true, pool: 'workers' },
+            sharedWorkerProjects: new Set(),
+            ignored,
+            configFiles: [...configFiles],
+            manifestFiles,
+          }),
+        )
+        options.store.transaction(() => {
+          options.store.putRun(run)
+          for (const record of records) options.store.putRecord(record)
+        })
+        recordUncapturedFailures(options.store, runId, options.revision ?? null, decisions, outcomes)
+        return {
+          records,
+          verifications: recordVerifications(options.store, runId, execution, outcomes),
+          cost,
+        }
+      },
+      { store: options.store, runMs },
+    )
     const { records, verifications } = recording
     const recordMs = performance.now() - recordStarted
     const ranKeys = new Set(outcomes.map((o) => checkKey(o.check)))

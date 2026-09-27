@@ -472,44 +472,52 @@ export async function runVitest(options: VitestRunOptions): Promise<VitestRunRes
         ...(o.failure ? { failure: o.failure } : {}),
       }
     })
-    const recording = recordEvidence(options.strict, () => {
-      // One transaction: assembly caches a digest for every file it reads.
-      const { run, records } = options.store.transaction(() =>
-        assemble({
-          root,
-          runId,
-          runtimeKey,
-          runtime: facts,
-          revision: options.revision ?? null,
-          createdAt,
-          outDir: scratch,
-          outcomes: [...reporter.outcomes.values()].filter((o) =>
-            captured({ path: toRepoPath(root, o.file), project: o.project }),
-          ),
-          main,
-          files,
-          testFiles: allSpecs.map((s) => s.moduleId),
-          store: options.store,
-          fs: rawFs,
-          runner: {
-            name: 'vitest',
-            version: target.version,
-            isolate: sharedWorkerProjects.size === 0,
-            pool,
-          },
-          sharedWorkerProjects,
-          ignored,
-          configFiles: [...configFiles],
-          projectConfigs: [...projectConfigs],
-        }),
-      )
-      options.store.transaction(() => {
-        options.store.putRun(run)
-        for (const record of records) options.store.putRecord(record)
-      })
-      recordUncapturedFailures(options.store, runId, options.revision ?? null, decisions, outcomes)
-      return { records, verifications: recordVerifications(options.store, runId, execution, outcomes) }
-    })
+    const recording = recordEvidence(
+      options.strict,
+      () => {
+        // One transaction: assembly caches a digest for every file it reads.
+        const { run, records, cost } = options.store.transaction(() =>
+          assemble({
+            root,
+            runId,
+            runtimeKey,
+            runtime: facts,
+            revision: options.revision ?? null,
+            createdAt,
+            outDir: scratch,
+            outcomes: [...reporter.outcomes.values()].filter((o) =>
+              captured({ path: toRepoPath(root, o.file), project: o.project }),
+            ),
+            main,
+            files,
+            testFiles: allSpecs.map((s) => s.moduleId),
+            store: options.store,
+            fs: rawFs,
+            runner: {
+              name: 'vitest',
+              version: target.version,
+              isolate: sharedWorkerProjects.size === 0,
+              pool,
+            },
+            sharedWorkerProjects,
+            ignored,
+            configFiles: [...configFiles],
+            projectConfigs: [...projectConfigs],
+          }),
+        )
+        options.store.transaction(() => {
+          options.store.putRun(run)
+          for (const record of records) options.store.putRecord(record)
+        })
+        recordUncapturedFailures(options.store, runId, options.revision ?? null, decisions, outcomes)
+        return {
+          records,
+          verifications: recordVerifications(options.store, runId, execution, outcomes),
+          cost,
+        }
+      },
+      { store: options.store, runMs },
+    )
     const { records, verifications } = recording
     const recordMs = performance.now() - recordStarted
     const failed =

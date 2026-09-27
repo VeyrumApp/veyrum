@@ -27,6 +27,7 @@ export { DEFAULT_POLICY, makePolicy, type Policy, STRICT_SOURCE_FLAGS } from './
 export { CAPTURE_VERSION, runtimeFacts, runtimeKeyOf } from './runtime.ts'
 export {
   CAPTURE_POLICY,
+  type CaptureCost,
   type CapturePolicy,
   type CheckOutcomeSummary,
   ConfigurationError,
@@ -35,6 +36,7 @@ export {
   forcedDecisions,
   inShard,
   needsPlan,
+  noteOverhead,
   parseShard,
   type RunMode,
   type RunOptions,

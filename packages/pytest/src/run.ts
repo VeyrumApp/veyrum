@@ -221,34 +221,42 @@ export async function runPytest(options: PytestRunOptions): Promise<RunResult> {
       ...CONFIG_FILES.map((f) => path.join(root, f)),
       ...(config ? [path.resolve(root, config)] : []),
     ]
-    const recording = recordEvidence(options.strict, () => {
-      const { run, records } = options.store.transaction(() =>
-        assemble({
-          root,
-          runId,
-          runtimeKey,
-          runtime: facts,
-          revision: options.revision ?? null,
-          createdAt,
-          outDir: scratch,
-          outcomes: ranOutcomes.filter((o) => captured({ path: toRepoPath(root, o.file), project: '' })),
-          main,
-          files,
-          store: options.store,
-          fs: rawFs,
-          runner: { name: 'pytest', version: info.pytest ?? '', isolate: true, pool: 'process' },
-          sharedWorkerProjects: new Set(),
-          ignored,
-          configFiles,
-        }),
-      )
-      options.store.transaction(() => {
-        options.store.putRun(run)
-        for (const record of records) options.store.putRecord(record)
-      })
-      recordUncapturedFailures(options.store, runId, options.revision ?? null, decisions, outcomes)
-      return { records, verifications: recordVerifications(options.store, runId, execution, outcomes) }
-    })
+    const recording = recordEvidence(
+      options.strict,
+      () => {
+        const { run, records, cost } = options.store.transaction(() =>
+          assemble({
+            root,
+            runId,
+            runtimeKey,
+            runtime: facts,
+            revision: options.revision ?? null,
+            createdAt,
+            outDir: scratch,
+            outcomes: ranOutcomes.filter((o) => captured({ path: toRepoPath(root, o.file), project: '' })),
+            main,
+            files,
+            store: options.store,
+            fs: rawFs,
+            runner: { name: 'pytest', version: info.pytest ?? '', isolate: true, pool: 'process' },
+            sharedWorkerProjects: new Set(),
+            ignored,
+            configFiles,
+          }),
+        )
+        options.store.transaction(() => {
+          options.store.putRun(run)
+          for (const record of records) options.store.putRecord(record)
+        })
+        recordUncapturedFailures(options.store, runId, options.revision ?? null, decisions, outcomes)
+        return {
+          records,
+          verifications: recordVerifications(options.store, runId, execution, outcomes),
+          cost,
+        }
+      },
+      { store: options.store, runMs },
+    )
     const { records, verifications } = recording
     const recordMs = performance.now() - recordStarted
     const failed =

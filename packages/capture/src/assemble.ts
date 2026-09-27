@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import {
+  type CaptureCost,
   type ClosureEntry,
   CurrentState,
   type Digest,
@@ -90,6 +91,8 @@ export interface AssembleInput {
 export interface Assembled {
   readonly run: RunInfo
   readonly records: readonly EvidenceRecord[]
+  /** Capture's own measured work in test processes, against the captured files' test time. */
+  readonly cost: CaptureCost
 }
 
 /** A snapshot line such as `src/a.ts:12:3` means the test observes source positions. */
@@ -682,7 +685,11 @@ export function assemble(input: AssembleInput): Assembled {
     files: input.files,
     runner: input.runner,
   }
-  return { run, records }
+  const cost: CaptureCost = {
+    captureMs: payloads.reduce((n, p) => n + (p.timings ? p.timings.beginMs + p.timings.finishMs : 0), 0),
+    testMs: outcomes.reduce((n, o) => n + o.durationMs, 0),
+  }
+  return { run, records, cost }
 }
 
 function entryKey(e: ClosureEntry): string {

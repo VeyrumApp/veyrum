@@ -73,7 +73,13 @@ export interface CommitResult {
    * may skip them.
    */
   readonly veyrumUnobservable?: readonly string[]
-  readonly capture: { readonly runMs: number; readonly recordMs: number; readonly wallMs: number }
+  readonly capture: {
+    readonly runMs: number
+    readonly recordMs: number
+    readonly wallMs: number
+    /** Veyrum's own overhead estimate after this run (Store.overhead), to compare with the measured. */
+    readonly overheadEstimate?: number
+  }
   /** Wall time of an uninstrumented full run, measured on sampled commits for overhead. */
   readonly plainWallMs: number | null
 }
@@ -433,6 +439,7 @@ export async function replay(corpus: Corpus, benchRoot: string, options: ReplayO
           plainWallMs = runPlain()
         }
         const outcomes = capture.outcomes
+        const overheadEstimate = store.overhead()
         const {
           flaky,
           divergent,
@@ -488,7 +495,12 @@ export async function replay(corpus: Corpus, benchRoot: string, options: ReplayO
           ...(veyrumExtra ? { veyrumExtra } : {}),
           ...(veyrumWhy ? { veyrumWhy } : {}),
           ...(veyrumUnobservable ? { veyrumUnobservable } : {}),
-          capture: { runMs: capture.runMs, recordMs: capture.recordMs, wallMs: capture.wallMs },
+          capture: {
+            runMs: capture.runMs,
+            recordMs: capture.recordMs,
+            wallMs: capture.wallMs,
+            ...(overheadEstimate !== undefined ? { overheadEstimate } : {}),
+          },
           plainWallMs,
         }
         write(result)
