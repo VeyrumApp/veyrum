@@ -2,7 +2,15 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { describe, expect, test } from 'vitest'
-import { checkKey, inShard, noteOverhead, parseShard, selectExecution, selectFiles } from '../src/session.ts'
+import {
+  CAPTURE_POLICY,
+  checkKey,
+  inShard,
+  noteOverhead,
+  parseShard,
+  selectExecution,
+  selectFiles,
+} from '../src/session.ts'
 import { Store } from '../src/store.ts'
 import type { Decision } from '../src/types.ts'
 
@@ -55,6 +63,7 @@ describe('capture skips churn', () => {
     blockedStreak: 3,
     minReuse: 0.05,
     overheadWeight: 1,
+    freshReuse: 1,
     reuseWeight: 0.3,
     probeEvery: 10,
     probeBackoff: 1,
@@ -117,6 +126,26 @@ describe('capture skips churn', () => {
         ).capture.size === 1,
     )
     expect(seen).toEqual([t, t, t, t, t])
+  })
+
+  test('by default a new check starts from modest reuse, so costly recording stops within a few plans', () => {
+    const code: Decision = { ...churn, churn: undefined, details: ['src/a.ts: add changed'] }
+    const store = Store.open(':memory:')
+    store.setOverhead(0.33)
+    // From 0.35, decaying by 0.9 per plan: below 0.33 / 1.33 on the fourth.
+    const seen = Array.from({ length: 4 }, () => captured(store, code, CAPTURE_POLICY))
+    expect(seen).toEqual([true, true, true, false])
+    // One that gets reused is recorded again right away, and keeps its climb.
+    const reused = Store.open(':memory:')
+    reused.setOverhead(0.33)
+    selectExecution(
+      [check],
+      [{ ...churn, action: 'skip', reason: 'reused', churn: undefined }],
+      { mode: 'affected', store: reused },
+      's',
+    )
+    expect(reused.captureValue(check).reuse).toBeCloseTo(0.35 * 0.9 + 0.1)
+    expect(captured(reused, code, CAPTURE_POLICY)).toBe(true)
   })
 
   test('each run folds its measured overhead into the estimate, which merged stores average', () => {

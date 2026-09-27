@@ -38,6 +38,11 @@ export interface CheckOutcome {
   readonly verdict: 'pass' | 'fail'
   readonly tests: readonly TestOutcome[]
   readonly durationMs: number
+  /**
+   * The whole time the file held a worker (environment, harness, imports, setup files and tests),
+   * where the runner reports more than its tests' duration: what capture's own work adds to.
+   */
+  readonly busyMs?: number
   readonly retries: number
   /** Snapshot writes reported by the runner, when the worker cannot observe them. */
   readonly snapshot?: { readonly added: number; readonly updated: number }
@@ -687,7 +692,7 @@ export function assemble(input: AssembleInput): Assembled {
   }
   const cost: CaptureCost = {
     captureMs: payloads.reduce((n, p) => n + (p.timings ? p.timings.beginMs + p.timings.finishMs : 0), 0),
-    testMs: outcomes.reduce((n, o) => n + o.durationMs, 0),
+    testMs: outcomes.reduce((n, o) => n + (o.busyMs ?? o.durationMs), 0),
   }
   return { run, records, cost }
 }

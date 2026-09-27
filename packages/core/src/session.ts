@@ -192,6 +192,12 @@ export interface CapturePolicy {
    */
   readonly overheadWeight: number
   readonly reuseWeight: number
+  /**
+   * The reuse average a check starts from, before any plan has shown whether it gets reused. Below
+   * certainty: where recording costs much, a check that is never reused stops being recorded after
+   * a few plans instead of a dozen, while one that is reused climbs back at once.
+   */
+  readonly freshReuse: number
   /** Runs in a row without capture before a probe records the check anyway... */
   readonly probeEvery: number
   /** ...multiplied by this for each probe since the check was last reused, up to probeMax. */
@@ -209,6 +215,7 @@ export const CAPTURE_POLICY: CapturePolicy = {
   blockedStreak: 1,
   minReuse: 0.05,
   overheadWeight: 1,
+  freshReuse: 0.35,
   reuseWeight: 0.1,
   probeEvery: 3,
   probeBackoff: 2,
@@ -253,6 +260,7 @@ export function selectExecution(
     minReuse,
     overheadWeight,
     reuseWeight,
+    freshReuse,
     probeEvery,
     probeBackoff,
     probeMax,
@@ -270,7 +278,8 @@ export function selectExecution(
           d.reason !== 'no-evidence' &&
           d.reason !== 'runtime-changed' &&
           d.reason !== 'forced'
-        let { streak, reuse, skipped, probes } = before
+        let { streak, skipped, probes } = before
+        let reuse = before.fresh ? freshReuse : before.reuse
         if (d.action === 'skip') {
           streak = 0
           probes = 0
