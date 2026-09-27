@@ -12,6 +12,7 @@ import {
   fingerprintModule,
   isInside,
   type ModuleUnits,
+  NATIVE_ENV,
   normalizeAbsolute,
   OPAQUE_UNIT,
   type RunInfo,
@@ -286,6 +287,18 @@ export function assemble(input: AssembleInput): Assembled {
     [...outcomes.map((o) => o.file), ...(input.testFiles ?? [])].map(normalizeAbsolute),
   )
 
+  /**
+   * The input for code the main process loaded through Node's loader: a repository file, or one
+   * outside the repository compared whole, as a dependency (the runner's own build when the
+   * project is a directory of the repository that builds it, as in a monorepo).
+   */
+  const loadedFileEntry = (absolute: string): ClosureEntry => {
+    const p = toRepoPath(root, absolute)
+    return isInside(root, absolute)
+      ? { k: 'file', p, h: state.fileDigest(p) }
+      : { k: 'dep', p, h: state.fileDigest(p) }
+  }
+
   /** The closure entry for a path the main process read, or null when it is not an input. */
   const mainPathEntry = (obs: MainObservations['paths'][number]): ClosureEntry | null => {
     if (ignored(obs.p) || obs.kind === 'dir') return null
@@ -383,8 +396,13 @@ export function assemble(input: AssembleInput): Assembled {
         if (!located) flags.add(FLAGS.sourceObserved)
       }
       const checkWrites = new Set(payload.writes)
+      // A module the test process loaded natively (outside Vite) was loaded by that process alone:
+      // the main process loading or reading the same file ran its own calls, which this module
+      // entry does not hold, so what the main process did with it stays an input.
+      const viaRunner = (absolute: string): boolean =>
+        modulesByPath.get(absolute)?.some((v) => v.env !== NATIVE_ENV) ?? false
       for (const [absolute, versions] of modulesByPath) {
-        allModulePaths.add(absolute)
+        if (viaRunner(absolute)) allModulePaths.add(absolute)
         if (createdDuringRun(checkWrites, absolute)) continue
         const repoPath = toRepoPath(root, absolute)
         const src = state.fileDigest(repoPath)
@@ -496,14 +514,14 @@ export function assemble(input: AssembleInput): Assembled {
       const scoped = input.main.scoped?.[outcome.project]
       if (scoped) {
         for (const obs of scoped.paths) {
-          const entry = modulesByPath.has(obs.p) ? null : mainPathEntry(obs)
+          const entry = viaRunner(obs.p) ? null : mainPathEntry(obs)
           if (entry) add(entryKey(entry), entry)
         }
         for (const e of scoped.env) add(`env:${e.n}`, { k: 'env', n: e.n, h: e.h })
         for (const absolute of scoped.loadedFiles) {
-          if (ignored(absolute) || !isInside(root, absolute) || modulesByPath.has(absolute)) continue
-          const p = toRepoPath(root, absolute)
-          add(`file:${p}`, { k: 'file', p, h: state.fileDigest(p) })
+          if (ignored(absolute) || viaRunner(absolute)) continue
+          const entry = loadedFileEntry(absolute)
+          add(entryKey(entry), entry)
         }
       }
       for (const n of payload.packageNames ?? [])
@@ -607,9 +625,8 @@ export function assemble(input: AssembleInput): Assembled {
     .map((absolute) => toRepoPath(root, absolute))
     .sort()
   for (const absolute of [...input.configFiles, ...input.main.loadedFiles, ...toolchainFiles]) {
-    if (ignored(absolute) || testFiles.has(absolute) || !isInside(root, absolute)) continue
-    const p = toRepoPath(root, absolute)
-    const entry: ClosureEntry = { k: 'file', p, h: state.fileDigest(p) }
+    if (ignored(absolute) || testFiles.has(absolute)) continue
+    const entry = loadedFileEntry(absolute)
     const key = entryKey(entry)
     if (sharedSeen.has(key)) continue
     sharedSeen.add(key)

@@ -78,6 +78,13 @@ interface IsolateState {
   compiled: Map<string, string[]> | null
   /** Node layout: sources Node's loader returned for repository modules, by filename. */
   loaded: Map<string, string[]> | null
+  /**
+   * Vitest layout: repository modules Node's loader loaded since the current file began. Only these
+   * are compared by the functions the file ran: a module an earlier file loaded stays in Node's
+   * cache with whatever that file's calls left in it (a memoized result, a registry), which this
+   * file may use without running the code that produced it.
+   */
+  loadedNow: Set<string> | null
   /** Jest layout: manifests of packages loaded natively by this process (the toolchain). */
   toolchain: Set<string>
   /** Jest layout: files outside node_modules loaded natively (local transformers and plugins). */
@@ -466,6 +473,7 @@ export function prepareWorkerHooks(options: WorkerCaptureOptions): void {
     files: 0,
     compiled: null,
     loaded: null,
+    loadedNow: null,
     toolchain: new Set(),
     toolchainFiles: new Set(),
     toolchainObserved: true,
@@ -516,6 +524,8 @@ function recordLoadedSources(isolate: IsolateState, options: WorkerCaptureOption
   if (!register) return false
   const loaded = new Map<string, string[]>()
   isolate.loaded = loaded
+  const loadedNow = new Set<string>()
+  isolate.loadedNow = loadedNow
   register({
     load: (
       url: string,
@@ -534,6 +544,7 @@ function recordLoadedSources(isolate: IsolateState, options: WorkerCaptureOption
           getSink()?.path(where.absolute, 'read', 'file', 'other')
           return result
         }
+        if (!where.ignored && where.repositoryModule) loadedNow.add(where.absolute)
         if (!where.ignored && where.repositoryModule && source != null) {
           const text =
             typeof source === 'string' ? source : Buffer.from(source as Uint8Array).toString('utf8')
@@ -682,6 +693,7 @@ export async function beginWorkerCapture(options: WorkerCaptureOptions): Promise
     if (CPU_PROFILE_DIR) await session.post('Profiler.start')
     startMs = performance.now() - started
   }
+  isolate.loadedNow?.clear()
   if (!options.deferCoverage) await startCoverage([])
   isolate.files++
   const reused = isolate.files > 1
@@ -838,10 +850,11 @@ export async function beginWorkerCapture(options: WorkerCaptureOptions): Promise
               : layout === 'node'
                 ? await nodeCode(absolute, script.scriptId, scriptLength)
                 : await moduleCode(absolute, script.scriptId, scriptLength)
-          // A repository module Node loaded natively runs as its loader read it: its source (CommonJS
-          // modules Node's loader reads itself, so the file, when it is what ran).
+          // A repository module Node loaded natively during this file runs as its loader read it: its
+          // source (CommonJS modules Node's loader reads itself, so the file, when it is what ran).
+          // One an earlier file loaded is compared whole, as a dependency (see IsolateState.loadedNow).
           const native =
-            !found && layout === 'vitest'
+            !found && layout === 'vitest' && state.loadedNow?.has(absolute)
               ? (state.loaded?.get(absolute)?.find((source) => source.length === scriptLength) ??
                 sourceIfLength(absolute, scriptLength))
               : undefined

@@ -1,3 +1,7 @@
+import fs from 'node:fs'
+import { createRequire } from 'node:module'
+import os from 'node:os'
+import path from 'node:path'
 import { afterEach, describe, expect, test } from 'vitest'
 import { Sandbox } from '../../../test/support/sandbox.ts'
 
@@ -54,6 +58,119 @@ describe('code edits', () => {
     const decision = sandbox.plan()['test/native.test.ts']
     expect(decision?.action).toBe('run')
     expect(decision?.details.join(' ')).toContain('lib/helper.cjs: used')
+  })
+
+  test('a natively loaded module an earlier file left state in is compared whole', () => {
+    // If a worker kept Node's module cache from one file to the next, b would read what a computed.
+    sandbox = new Sandbox('native-state')
+      .edit('vitest.config.ts', 'test: {}', 'test: { fileParallelism: false }')
+      .write(
+        'lib/cache.cjs',
+        'let cached\nexports.compute = function compute() { return 1 }\nexports.get = function get() { if (cached === undefined) cached = exports.compute(); return cached }\n',
+      )
+      .write(
+        'test/a.test.ts',
+        "import { createRequire } from 'node:module'\nimport { expect, test } from 'vitest'\nconst { get } = createRequire(import.meta.url)('../lib/cache.cjs')\n// Longer than b, so the sequencer runs it first.\ntest('fills the cache', () => {\n  expect(get()).toBe(1)\n  expect(get()).toBe(1)\n  expect(get()).toBe(1)\n})\n",
+      )
+      .write(
+        'test/b.test.ts',
+        "import { createRequire } from 'node:module'\nimport { expect, test } from 'vitest'\nconst { get } = createRequire(import.meta.url)('../lib/cache.cjs')\ntest('reads it', () => expect(get()).toBe(1))\n",
+      )
+    sandbox.capture()
+    sandbox.edit('lib/cache.cjs', 'return 1 }', 'return 2 }')
+    expect(sandbox.actions()).toEqual({ 'test/a.test.ts': 'run', 'test/b.test.ts': 'run' })
+  })
+
+  test('a module the main process and a test both load natively stays an input of the test', () => {
+    // A project's global setup runs one function of the module; the test process loads it too.
+    sandbox = new Sandbox('native-main')
+      .write(
+        'vitest.config.ts',
+        "import { defineConfig } from 'vitest/config'\nexport default defineConfig({ test: { projects: [{ test: { name: 'unit', include: ['test/**/*.test.ts'], globalSetup: ['setup/global.ts'] } }] } })\n",
+      )
+      .write(
+        'lib/shared.cjs',
+        'exports.seed = function seed() { return 1 }\nexports.twice = function twice(n) { return n * 2 }\n',
+      )
+      .write(
+        'setup/global.ts',
+        "import { createRequire } from 'node:module'\nexport default function setup({ provide }) {\n  provide('seed', createRequire(import.meta.url)('../lib/shared.cjs').seed())\n}\n",
+      )
+      .write(
+        'test/uses.test.ts',
+        "import { createRequire } from 'node:module'\nimport { expect, inject, test } from 'vitest'\nconst { twice } = createRequire(import.meta.url)('../lib/shared.cjs')\ntest('uses', () => expect(twice(inject('seed'))).toBe(2))\n",
+      )
+    sandbox.capture()
+    sandbox.edit('lib/shared.cjs', 'return 1 }', 'return 2 }')
+    expect(sandbox.actions()['test/uses.test.ts']).toBe('run')
+  })
+
+  test('code the main process loads from outside the project is an input', () => {
+    // The project is a directory of a monorepo whose own packages build its toolchain, as Vitest's
+    // tests are: the runner loads a package's build through Node's loader, from outside the root.
+    const mono = fs.mkdtempSync(path.join(os.tmpdir(), 'veyrum-mono-'))
+    try {
+      const plugin = path.join(mono, 'packages', 'plugin', 'index.cjs')
+      fs.mkdirSync(path.dirname(plugin), { recursive: true })
+      fs.writeFileSync(
+        plugin,
+        "exports.plugin = () => ({ name: 'value', transform: (code) => code.replace('__VALUE__', '1') })\n",
+      )
+      fs.mkdirSync(path.join(mono, 'apps'))
+      sandbox = new Sandbox('outside-root', { base: path.join(mono, 'apps') })
+        .write(
+          'vitest.config.ts',
+          `import { createRequire } from 'node:module'\nimport { defineConfig } from 'vitest/config'\nconst { plugin } = createRequire(import.meta.url)(${JSON.stringify(plugin)})\nexport default defineConfig({ plugins: [plugin()], test: {} })\n`,
+        )
+        .write(
+          'test/value.test.ts',
+          "import { expect, test } from 'vitest'\ntest('value', () => expect('__VALUE__').toBe('1'))\n",
+        )
+      sandbox.capture()
+      expect(sandbox.actions()['test/value.test.ts']).toBe('skip')
+      fs.writeFileSync(plugin, fs.readFileSync(plugin, 'utf8').replace("'1'", "'2'"))
+      expect(sandbox.actions()['test/value.test.ts']).toBe('run')
+    } finally {
+      sandbox?.dispose()
+      sandbox = undefined
+      fs.rmSync(mono, { recursive: true, force: true })
+    }
+  })
+
+  test('a runner the repository builds and links is an input, including code loaded before recording', () => {
+    // A monorepo testing its own runner links the build into node_modules: its files change with
+    // every edit while its manifest does not. The main process loads most of it before recording.
+    const mono = fs.mkdtempSync(path.join(os.tmpdir(), 'veyrum-mono-'))
+    try {
+      const installed = fs.realpathSync(
+        path.dirname(createRequire(import.meta.url).resolve('vitest/package.json')),
+      )
+      const built = path.join(mono, 'packages', 'vitest')
+      fs.cpSync(installed, built, { recursive: true })
+      // Its dependencies, where the workspace install would have put them.
+      fs.rmSync(path.join(built, 'node_modules'), { recursive: true, force: true })
+      fs.symlinkSync(path.dirname(installed), path.join(built, 'node_modules'), 'junction')
+      fs.mkdirSync(path.join(mono, 'apps'))
+      sandbox = new Sandbox('linked-runner', { base: path.join(mono, 'apps') })
+      fs.rmSync(path.join(sandbox.dir, 'node_modules', 'vitest'))
+      fs.symlinkSync(built, path.join(sandbox.dir, 'node_modules', 'vitest'), 'junction')
+      sandbox.write(
+        'test/plain.test.ts',
+        "import { expect, test } from 'vitest'\ntest('plain', () => expect(1).toBe(1))\n",
+      )
+      sandbox.capture()
+      expect(sandbox.actions()['test/plain.test.ts']).toBe('skip')
+      // The Node API's entry, which the adapter imports before recording starts.
+      const entry = path.join(built, 'dist', 'node.js')
+      fs.appendFileSync(entry, '\n// rebuilt\n')
+      const decision = sandbox.plan()['test/plain.test.ts']
+      expect(decision?.action).toBe('run')
+      expect(decision?.details.join(' ')).toContain('packages/vitest/dist/node.js')
+    } finally {
+      sandbox?.dispose()
+      sandbox = undefined
+      fs.rmSync(mono, { recursive: true, force: true })
+    }
   })
 
   test('nothing changed: every test file is reused', () => {
