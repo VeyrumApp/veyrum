@@ -3,8 +3,12 @@
   "repo": "https://github.com/honojs/hono.git",
   "branch": "main",
   "commits": 40,
-  "install": ["pnpm", "install", "--frozen-lockfile", "--prefer-offline"],
-  "lockfiles": ["pnpm-lock.yaml"],
+  "install": [
+    "bash",
+    "-c",
+    "if [ -f pnpm-lock.yaml ]; then pnpm install --frozen-lockfile --prefer-offline; else npx -y bun@1 install --frozen-lockfile; fi"
+  ],
+  "lockfiles": ["pnpm-lock.yaml", "bun.lock"],
   "runnerArgs": [
     "--project",
     "main",
