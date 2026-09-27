@@ -744,9 +744,10 @@ export async function beginWorkerCapture(options: WorkerCaptureOptions): Promise
       ): Promise<{ code: string; offset: number } | null> => {
         // The script is WRAPPER_START + args + WRAPPER_OPEN + code + WRAPPER_CLOSE.
         const evaluated = sources?.(absolute)
-        // A file the runner never evaluated was loaded natively (an externalized workspace package,
-        // for example): it is no wrapped module, and asking the Debugger to confirm is costly.
-        if (sources && evaluated === undefined) return null
+        // A file the runner never evaluated, or evaluated without code (it externalized the file, so
+        // Node loaded it: a workspace package's build, for example), is no wrapped module, and asking
+        // the Debugger to confirm is costly (vite's own build, in every test process of vite's suite).
+        if (sources && (evaluated === undefined || evaluated.length === 0)) return null
         for (const code of evaluated ?? []) {
           const offset = scriptLength - WRAPPER_CLOSE.length - code.length
           if (offset > WRAPPER_START.length + WRAPPER_OPEN.length) return { code, offset }

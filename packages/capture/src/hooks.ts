@@ -283,6 +283,9 @@ function classifyReader(isManifest: boolean): Reader {
   return 'other'
 }
 
+/** Files Node's loader runs as JavaScript. */
+const LOADABLE = /\.(?:[cm]?js|[cm]?ts|jsx|tsx)$/
+
 function observePath(p: unknown, kind: PathKind): void {
   if (!recording()) return
   const absolute = toAbsolute(p)
@@ -290,8 +293,13 @@ function observePath(p: unknown, kind: PathKind): void {
   state.depth++
   try {
     const isManifest = state.manifestReaders.length > 0 && path.basename(absolute) === 'package.json'
-    const classify =
-      kind === 'read' && (state.runnerReaders.length > 0 || state.classifyLoaderReads || isManifest)
+    // Telling Node's loader apart takes a stack walk: under classifyLoaderReads only for what it
+    // could be loading from the repository as code (see InstallOptions.classifyLoaderReads).
+    const loadable =
+      state.classifyLoaderReads &&
+      LOADABLE.test(absolute) &&
+      !absolute.includes(`${path.sep}node_modules${path.sep}`)
+    const classify = kind === 'read' && (state.runnerReaders.length > 0 || loadable || isManifest)
     const reader = classify ? classifyReader(isManifest) : 'other'
     state.sink.path(absolute, kind, typeOf(absolute), reader)
   } finally {
