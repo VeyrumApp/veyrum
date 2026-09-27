@@ -147,9 +147,21 @@ describe('code edits', () => {
       )
       const built = path.join(mono, 'packages', 'vitest')
       fs.cpSync(installed, built, { recursive: true })
-      // Its dependencies, where the workspace install would have put them.
+      // Its dependencies, where the workspace install would have put them: each where Node finds it
+      // from the installed copy, whatever the package manager's layout.
       fs.rmSync(path.join(built, 'node_modules'), { recursive: true, force: true })
-      fs.symlinkSync(path.dirname(installed), path.join(built, 'node_modules'), 'junction')
+      const manifest = JSON.parse(fs.readFileSync(path.join(installed, 'package.json'), 'utf8')) as {
+        dependencies?: Record<string, string>
+        peerDependencies?: Record<string, string>
+      }
+      const lookup = createRequire(path.join(installed, 'package.json')).resolve.paths('x') ?? []
+      for (const name of Object.keys({ ...manifest.dependencies, ...manifest.peerDependencies })) {
+        const found = lookup.map((dir) => path.join(dir, name)).find((dir) => fs.existsSync(dir))
+        if (!found) continue
+        const link = path.join(built, 'node_modules', name)
+        fs.mkdirSync(path.dirname(link), { recursive: true })
+        fs.symlinkSync(fs.realpathSync(found), link, 'junction')
+      }
       fs.mkdirSync(path.join(mono, 'apps'))
       sandbox = new Sandbox('linked-runner', { base: path.join(mono, 'apps') })
       fs.rmSync(path.join(sandbox.dir, 'node_modules', 'vitest'))
