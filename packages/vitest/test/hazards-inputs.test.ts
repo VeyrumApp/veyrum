@@ -94,34 +94,42 @@ describe('files and directories', () => {
   })
 
   test('a file the run created where capture could not see is, for the runner, absent at the start', () => {
-    // A program capture does not trace writes the product (nitro's examples, built by a test that
-    // runs without capture); the runner's main process reads it afterwards.
-    const write =
+    // As nitro's examples test: a program capture does not trace builds a module, which the test
+    // then imports through Vite, so the runner's main process reads it. The test uses an
+    // unobserved channel, so after a plan or two it runs without capture and nothing sees the build.
+    const build =
       process.platform === 'win32'
-        ? "execFileSync('cmd', ['/c', 'mkdir out & echo built> out\\\\product.txt'])"
-        : "execFileSync('sh', ['-c', 'mkdir -p out && echo built > out/product.txt'])"
+        ? "execFileSync('cmd', ['/c', 'mkdir out & echo export default 1 > out\\\\product.js'])"
+        : "execFileSync('sh', ['-c', 'mkdir -p out && echo \\'export default 1\\' > out/product.js'])"
     sandbox = new Sandbox('unseen-products')
       .write(
-        'setup/global.ts',
-        "import fs from 'node:fs'\nexport default () => () => {\n  if (fs.existsSync('out/product.txt')) fs.readFileSync('out/product.txt', 'utf8')\n}\n",
-      )
-      .write(
         'test/build.test.ts',
-        `import { execFileSync } from 'node:child_process'\nimport { test } from 'vitest'\ntest('builds', () => {\n  ${write}\n})\n`,
+        `import { execFileSync } from 'node:child_process'\nimport { expect, test } from 'vitest'\ntest('builds', async () => {\n  ${build}\n  expect((await import('../out/product.js')).default).toBe(1)\n})\n`,
       )
       .write(
         'test/plain.test.ts',
         "import { expect, test } from 'vitest'\ntest('plain', () => expect(1).toBe(1))\n",
       )
-      .edit('vitest.config.ts', 'test: {}', "test: { globalSetup: ['setup/global.ts'] }")
-    // Without native tracing the shell's writes go unseen.
+    // Without native tracing the shell and its writes go unseen.
     const env = { VEYRUM_NATIVE_TRACING: 'off' }
     sandbox.capture(env)
-    // A fresh checkout: the product is not there, as it was not when the run started.
+    // Each run starts from a clean checkout, without the product. By the second, the build runs
+    // without capture; then an edit makes the plain test run, and be recorded, beside it.
+    for (let i = 0; i < 2; i++) {
+      sandbox.remove('out')
+      expect(sandbox.cli(['run'], env).code).toBe(0)
+    }
+    sandbox.remove('out')
+    sandbox.edit('test/plain.test.ts', "test('plain'", "test('plain, edited'")
+    const last = sandbox.cli(['run'], env)
+    expect(last.outcomes.map((o) => [o.check.path, o.captured]).sort()).toEqual([
+      ['test/build.test.ts', false],
+      ['test/plain.test.ts', true],
+    ])
     sandbox.remove('out')
     expect(sandbox.actions(env)['test/plain.test.ts']).toBe('skip')
-    // One that is there at the start is another starting state.
-    sandbox.write('out/product.txt', 'stale\n')
+    // A product there at the start is another starting state.
+    sandbox.write('out/product.js', 'export default 2\n')
     expect(sandbox.actions(env)['test/plain.test.ts']).toBe('run')
   })
 
