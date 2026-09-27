@@ -267,6 +267,20 @@ closes after the file's tests finish.
   first, went from about twice plain Vitest's time to a fraction more). The modules the runner
   evaluated before coverage started are compared whole, by their source: coverage saw none of
   what they ran while loading.
+- **The runner's own code is a shared input, whenever it loaded.** Every file the main process
+  loads through Node's loader counts, from the moment Veyrum's recorder exists, before the runner
+  is imported: code decides outcomes whether it loaded before or during the run. A package from a
+  registry is recorded by its manifest; a file outside `node_modules` (a monorepo's own build of
+  its runner or bundler, linked into place, whose manifest does not change with its code) whole,
+  including one outside the project directory.
+- **Modules Node loads natively are compared by function only when loaded in the window.** A
+  repository module the test process loads through Node's own loader (an externalized workspace
+  package's build, a `require`d CommonJS file) is compared by the functions the file ran when Node
+  loaded it during the file's window, since nothing ran in it before. One loaded earlier in the
+  process is compared whole: Node's module cache keeps whatever earlier calls left in it (a
+  memoized result, a registry), which the file may read without running the code that produced it.
+  The main process loading or reading the same file stays an input as well, whole: its calls (a
+  project's global setup, module resolution for workers) are not in the test process's coverage.
 - **Custom environments are shared inputs.** Vitest loads them through a separate module runner
   whose code V8 cannot attribute to a file. Every module Vitest serves through its `__vitest__`
   environment (custom environments, global setup, the VCS provider) is recorded as a shared input

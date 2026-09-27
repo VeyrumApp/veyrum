@@ -74,7 +74,7 @@ export function simulateCapture(lines: readonly ResultLine[], capturePolicy?: Ca
     const execution = selectExecution(
       checks,
       decisions,
-      { mode: 'affected', store, ...(capturePolicy ? { capturePolicy } : {}) },
+      { mode: 'affected', store, overhead, ...(capturePolicy ? { capturePolicy } : {}) },
       c.sha,
     )
     const ms = (f: string): number => c.outcomes[f]?.[1] ?? 0

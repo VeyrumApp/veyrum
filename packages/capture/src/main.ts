@@ -86,6 +86,7 @@ export class MainRecorder implements HookSink {
   private readonly volatileEnv: RegExp
   private readonly baseline: Record<string, Digest | null>
   private active = false
+  private stopped = false
   /** While positive, reads and environment accesses are not inputs (see pause). */
   private paused = 0
 
@@ -99,18 +100,17 @@ export class MainRecorder implements HookSink {
         if (!this.volatileEnv.test(n)) out[n] = hashEnvValue(v)
       return out
     })
-  }
-
-  start(): void {
-    this.active = true
-    setSink(this)
+    // Loads are observed from here on, not from start: an adapter loads the runner (and through it
+    // Vite and plugins) before recording starts, and that code decides every outcome. A runner
+    // installed from a registry is recorded by its manifest; one a monorepo builds and links (a
+    // project testing its own runner or bundler) only by its files, which change without it.
     const register = (module as unknown as { registerHooks?: (hooks: object) => { deregister(): void } })
       .registerHooks
     this.loadsObserved = typeof register === 'function'
-    if (register && !this.hooks) {
+    if (register)
       this.hooks = register({
         load: (url: string, context: unknown, nextLoad: (url: string, context: unknown) => unknown) => {
-          if (this.active && url.startsWith('file:')) {
+          if (!this.stopped && url.startsWith('file:')) {
             const file = fileURLToPath(url)
             const root = packageRootOf(file)
             if (root) this.packages.add(path.join(root, 'package.json'))
@@ -119,7 +119,11 @@ export class MainRecorder implements HookSink {
           return nextLoad(url, context)
         },
       })
-    }
+  }
+
+  start(): void {
+    this.active = true
+    setSink(this)
   }
 
   /**
@@ -176,6 +180,7 @@ export class MainRecorder implements HookSink {
 
   stop(): MainObservations {
     this.active = false
+    this.stopped = true
     setSink(null)
     this.hooks?.deregister()
     this.hooks = null

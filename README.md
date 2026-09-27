@@ -78,8 +78,9 @@ evidence reports coverage of the files that ran; a full run reports everything.
 Recording is what costs time, so a full run records only where it is needed: a file whose
 evidence is still valid runs at full speed, and its existing record already describes that
 execution (`--record-all` records every file). Recording also stops where it would not pay off: a
-file whose evidence is rarely reused (for example an integration test that depends on most of the
-code, which almost every commit changes), or keeps being invalidated by something that changes on
+file whose evidence is reused too rarely to repay recording it (for example an integration test
+that depends on most of the code, which almost every commit changes; the bar rises with the
+recording overhead Veyrum measures on your suite), or keeps being invalidated by something that changes on
 its own (the environment, a directory listing, `.git`) or by a channel Veyrum cannot observe, runs
 at full speed. It is still recorded now and then (after 3 runs, then less often while that
 keeps finding nothing reusable), so it becomes reusable again once that changes. On a suite where nothing can be reused, Veyrum converges to the speed of running it

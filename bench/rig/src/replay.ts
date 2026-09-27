@@ -73,7 +73,13 @@ export interface CommitResult {
    * may skip them.
    */
   readonly veyrumUnobservable?: readonly string[]
-  readonly capture: { readonly runMs: number; readonly recordMs: number; readonly wallMs: number }
+  readonly capture: {
+    readonly runMs: number
+    readonly recordMs: number
+    readonly wallMs: number
+    /** Veyrum's own overhead estimate after this run (Store.overhead), to compare with the measured. */
+    readonly overheadEstimate?: number
+  }
   /** Wall time of an uninstrumented full run, measured on sampled commits for overhead. */
   readonly plainWallMs: number | null
 }
@@ -433,6 +439,7 @@ export async function replay(corpus: Corpus, benchRoot: string, options: ReplayO
           plainWallMs = runPlain()
         }
         const outcomes = capture.outcomes
+        const overheadEstimate = store.overhead()
         const {
           flaky,
           divergent,
@@ -488,7 +495,12 @@ export async function replay(corpus: Corpus, benchRoot: string, options: ReplayO
           ...(veyrumExtra ? { veyrumExtra } : {}),
           ...(veyrumWhy ? { veyrumWhy } : {}),
           ...(veyrumUnobservable ? { veyrumUnobservable } : {}),
-          capture: { runMs: capture.runMs, recordMs: capture.recordMs, wallMs: capture.wallMs },
+          capture: {
+            runMs: capture.runMs,
+            recordMs: capture.recordMs,
+            wallMs: capture.wallMs,
+            ...(overheadEstimate !== undefined ? { overheadEstimate } : {}),
+          },
           plainWallMs,
         }
         write(result)
@@ -566,20 +578,35 @@ function* runMutants(
           log(`  mutant ${m.file}:${m.line} ${m.kind}: does not build, skipped`)
           return null
         }
-        const plan = veyrumPlan(corpus, paths.testRoot, paths.store, paths.scratch)
-        const planChecks = plan.decisions.map((d) => d.check)
-        const veyrumSelection = new Set(
-          plan.decisions.filter((d) => d.action === 'run').map((d) => d.check.path),
-        )
-        const selections = await selectAll(
-          corpus,
-          paths,
-          store,
-          planChecks.length > 0 ? planChecks : checks,
-          [m.file],
-          null,
-          veyrumSelection,
-        )
+        let selections: Awaited<ReturnType<typeof selectAll>>
+        let plan: ReturnType<typeof veyrumPlan>
+        let veyrumSelection: Set<string>
+        try {
+          plan = veyrumPlan(corpus, paths.testRoot, paths.store, paths.scratch)
+          const planChecks = plan.decisions.map((d) => d.check)
+          veyrumSelection = new Set(plan.decisions.filter((d) => d.action === 'run').map((d) => d.check.path))
+          selections = await selectAll(
+            corpus,
+            paths,
+            store,
+            planChecks.length > 0 ? planChecks : checks,
+            [m.file],
+            null,
+            veyrumSelection,
+          )
+        } catch (error) {
+          // The mutant broke the toolchain itself (a repository that tests with its own build, such
+          // as vite): the runner cannot load its configuration, so every run fails at startup and no
+          // selection is in question, as with a mutant that does not build.
+          log(
+            `  mutant ${m.file}:${m.line} ${m.kind}: the runner cannot start, skipped (${
+              String(error)
+                .split('\n')
+                .find((l) => l.startsWith('Error: ') && !l.includes('produced no output')) ?? 'plan failed'
+            })`,
+          )
+          return null
+        }
         let timedOut = false
         let killed: string[] = []
         const why: Record<string, string> = {}

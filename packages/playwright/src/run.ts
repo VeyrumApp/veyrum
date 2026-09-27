@@ -304,74 +304,85 @@ export async function runPlaywright(options: PlaywrightRunOptions): Promise<RunR
     }))
 
     const recordStarted = performance.now()
-    const recording = recordEvidence(options.strict, () => {
-      const analysis = analyze({
-        root,
-        scratch,
-        ignored,
-        testFiles: new Set(specs.map((s) => path.resolve(s.file))),
-        compiler: playwrightCompiler,
-      })
-      const main = mergeMain(veyrumMain, analysis.main)
-      const common = {
-        root,
-        runId,
-        runtimeKey,
-        runtime: facts,
-        revision: options.revision ?? null,
-        createdAt,
-        main,
-        files,
-        store: options.store,
-        fs: rawFs,
-        runner: { name: 'playwright', version: install.version, isolate: true, pool: 'process' },
-        sharedWorkerProjects: new Set<string>(),
-        ignored,
-        configFiles,
-        manifestFiles,
-      }
-      const blobs = path.join(scratch, SCRATCH.capture, 'blobs')
-      // assemble reads one payload per test file: each project is assembled on its own.
-      const layout = (name: string, keys: readonly string[]): string => {
-        const dir = path.join(scratch, 'assemble', name)
-        fs.mkdirSync(path.join(dir, 'payloads'), { recursive: true })
-        if (fs.existsSync(blobs)) fs.symlinkSync(blobs, path.join(dir, 'blobs'), 'junction')
-        keys.forEach((key, i) => {
-          const payload = analysis.payloads.get(key)
-          if (payload) fs.writeFileSync(path.join(dir, 'payloads', `${i}.json`), JSON.stringify(payload))
+    const recording = recordEvidence(
+      options.strict,
+      () => {
+        const analysis = analyze({
+          root,
+          scratch,
+          ignored,
+          testFiles: new Set(specs.map((s) => path.resolve(s.file))),
+          compiler: playwrightCompiler,
         })
-        return dir
-      }
-      const toRecord = ranOutcomes.filter(({ spec }) => captured(spec.check))
-      const byProject = new Map<string, typeof toRecord>()
-      for (const entry of toRecord)
-        byProject.set(entry.spec.projectId, [...(byProject.get(entry.spec.projectId) ?? []), entry])
-      const records: EvidenceRecord[] = []
-      let index = 0
-      for (const [projectId, entries] of byProject) {
-        const dir = layout(
-          String(index++),
-          entries.map(({ spec }) => groupKey(projectId, spec.file)),
-        )
-        const { records: assembled } = options.store.transaction(() =>
-          assemble({ ...common, outDir: dir, outcomes: entries.map((e) => e.outcome) }),
-        )
-        for (const record of assembled) {
-          const entry = entries.find((e) => toRepoPath(root, e.spec.file) === record.check)
-          const extra = entry ? analysis.flags.get(groupKey(projectId, entry.spec.file)) : undefined
-          records.push(withFlags(record, extra))
+        const main = mergeMain(veyrumMain, analysis.main)
+        const common = {
+          root,
+          runId,
+          runtimeKey,
+          runtime: facts,
+          revision: options.revision ?? null,
+          createdAt,
+          main,
+          files,
+          store: options.store,
+          fs: rawFs,
+          runner: { name: 'playwright', version: install.version, isolate: true, pool: 'process' },
+          sharedWorkerProjects: new Set<string>(),
+          ignored,
+          configFiles,
+          manifestFiles,
         }
-      }
-      // The run's shared inputs and injected environment, from every payload.
-      const all = layout('run', [...analysis.payloads.keys()])
-      const { run } = options.store.transaction(() => assemble({ ...common, outDir: all, outcomes: [] }))
-      options.store.transaction(() => {
-        options.store.putRun(run)
-        for (const record of records) options.store.putRecord(record)
-      })
-      recordUncapturedFailures(options.store, runId, options.revision ?? null, decisions, outcomes)
-      return { records, verifications: recordVerifications(options.store, runId, execution, outcomes) }
-    })
+        const blobs = path.join(scratch, SCRATCH.capture, 'blobs')
+        // assemble reads one payload per test file: each project is assembled on its own.
+        const layout = (name: string, keys: readonly string[]): string => {
+          const dir = path.join(scratch, 'assemble', name)
+          fs.mkdirSync(path.join(dir, 'payloads'), { recursive: true })
+          if (fs.existsSync(blobs)) fs.symlinkSync(blobs, path.join(dir, 'blobs'), 'junction')
+          keys.forEach((key, i) => {
+            const payload = analysis.payloads.get(key)
+            if (payload) fs.writeFileSync(path.join(dir, 'payloads', `${i}.json`), JSON.stringify(payload))
+          })
+          return dir
+        }
+        const toRecord = ranOutcomes.filter(({ spec }) => captured(spec.check))
+        const byProject = new Map<string, typeof toRecord>()
+        for (const entry of toRecord)
+          byProject.set(entry.spec.projectId, [...(byProject.get(entry.spec.projectId) ?? []), entry])
+        const records: EvidenceRecord[] = []
+        const cost = { captureMs: 0, testMs: 0 }
+        let index = 0
+        for (const [projectId, entries] of byProject) {
+          const dir = layout(
+            String(index++),
+            entries.map(({ spec }) => groupKey(projectId, spec.file)),
+          )
+          const { records: assembled, cost: projectCost } = options.store.transaction(() =>
+            assemble({ ...common, outDir: dir, outcomes: entries.map((e) => e.outcome) }),
+          )
+          cost.captureMs += projectCost.captureMs
+          cost.testMs += projectCost.testMs
+          for (const record of assembled) {
+            const entry = entries.find((e) => toRepoPath(root, e.spec.file) === record.check)
+            const extra = entry ? analysis.flags.get(groupKey(projectId, entry.spec.file)) : undefined
+            records.push(withFlags(record, extra))
+          }
+        }
+        // The run's shared inputs and injected environment, from every payload.
+        const all = layout('run', [...analysis.payloads.keys()])
+        const { run } = options.store.transaction(() => assemble({ ...common, outDir: all, outcomes: [] }))
+        options.store.transaction(() => {
+          options.store.putRun(run)
+          for (const record of records) options.store.putRecord(record)
+        })
+        recordUncapturedFailures(options.store, runId, options.revision ?? null, decisions, outcomes)
+        return {
+          records,
+          verifications: recordVerifications(options.store, runId, execution, outcomes),
+          cost,
+        }
+      },
+      { store: options.store, runMs },
+    )
     const { records, verifications } = recording
     const recordMs = performance.now() - recordStarted
     const failed =

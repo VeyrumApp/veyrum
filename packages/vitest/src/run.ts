@@ -345,6 +345,7 @@ export async function runVitest(options: VitestRunOptions): Promise<VitestRunRes
     }
 
     const configFiles = new Set<string>()
+    const manifestFiles = new Set<string>()
     for (const project of vitest.projects) {
       const viteConfig = project.vite.config as unknown as {
         configFile?: string
@@ -366,10 +367,15 @@ export async function runVitest(options: VitestRunOptions): Promise<VitestRunRes
     const allProjectConfigs = configGraph
       .related(files.filter((f) => PROJECT_CONFIG.test(f)))
       .map((f) => path.join(root, f))
-    const projectConfigs = new Set(allProjectConfigs.filter((f) => !configFiles.has(f)))
+    // A package a configuration extends (`"extends": "pkg/tsconfig"`) is found through its manifest's
+    // resolution fields: its version or scripts change nothing (unless Vite's configuration imports
+    // the manifest itself, which makes it a configuration dependency, compared whole).
+    const isManifest = (f: string): boolean => path.basename(f) === 'package.json' && !configFiles.has(f)
+    for (const f of allProjectConfigs) if (isManifest(f)) manifestFiles.add(f)
+    const projectConfigs = new Set(allProjectConfigs.filter((f) => !configFiles.has(f) && !isManifest(f)))
     for (const f of configGraph.related(namedProjectConfigs(root, vitest)))
       projectConfigs.delete(path.join(root, f))
-    for (const f of allProjectConfigs) configFiles.add(f)
+    for (const f of allProjectConfigs) if (!manifestFiles.has(f)) configFiles.add(f)
 
     // Initializes reporters and the coverage provider without running.
     // Vitest 4.1 renamed init() to standalone().
@@ -472,44 +478,53 @@ export async function runVitest(options: VitestRunOptions): Promise<VitestRunRes
         ...(o.failure ? { failure: o.failure } : {}),
       }
     })
-    const recording = recordEvidence(options.strict, () => {
-      // One transaction: assembly caches a digest for every file it reads.
-      const { run, records } = options.store.transaction(() =>
-        assemble({
-          root,
-          runId,
-          runtimeKey,
-          runtime: facts,
-          revision: options.revision ?? null,
-          createdAt,
-          outDir: scratch,
-          outcomes: [...reporter.outcomes.values()].filter((o) =>
-            captured({ path: toRepoPath(root, o.file), project: o.project }),
-          ),
-          main,
-          files,
-          testFiles: allSpecs.map((s) => s.moduleId),
-          store: options.store,
-          fs: rawFs,
-          runner: {
-            name: 'vitest',
-            version: target.version,
-            isolate: sharedWorkerProjects.size === 0,
-            pool,
-          },
-          sharedWorkerProjects,
-          ignored,
-          configFiles: [...configFiles],
-          projectConfigs: [...projectConfigs],
-        }),
-      )
-      options.store.transaction(() => {
-        options.store.putRun(run)
-        for (const record of records) options.store.putRecord(record)
-      })
-      recordUncapturedFailures(options.store, runId, options.revision ?? null, decisions, outcomes)
-      return { records, verifications: recordVerifications(options.store, runId, execution, outcomes) }
-    })
+    const recording = recordEvidence(
+      options.strict,
+      () => {
+        // One transaction: assembly caches a digest for every file it reads.
+        const { run, records, cost } = options.store.transaction(() =>
+          assemble({
+            root,
+            runId,
+            runtimeKey,
+            runtime: facts,
+            revision: options.revision ?? null,
+            createdAt,
+            outDir: scratch,
+            outcomes: [...reporter.outcomes.values()].filter((o) =>
+              captured({ path: toRepoPath(root, o.file), project: o.project }),
+            ),
+            main,
+            files,
+            testFiles: allSpecs.map((s) => s.moduleId),
+            store: options.store,
+            fs: rawFs,
+            runner: {
+              name: 'vitest',
+              version: target.version,
+              isolate: sharedWorkerProjects.size === 0,
+              pool,
+            },
+            sharedWorkerProjects,
+            ignored,
+            configFiles: [...configFiles],
+            projectConfigs: [...projectConfigs],
+            manifestFiles: [...manifestFiles],
+          }),
+        )
+        options.store.transaction(() => {
+          options.store.putRun(run)
+          for (const record of records) options.store.putRecord(record)
+        })
+        recordUncapturedFailures(options.store, runId, options.revision ?? null, decisions, outcomes)
+        return {
+          records,
+          verifications: recordVerifications(options.store, runId, execution, outcomes),
+          cost,
+        }
+      },
+      { store: options.store, runMs },
+    )
     const { records, verifications } = recording
     const recordMs = performance.now() - recordStarted
     const failed =

@@ -372,6 +372,19 @@ export class Store {
    * reused, as a weighted average of recent plans (`reuse`), how many runs in a row it ran
    * without capture (`skipped`), and how many probes it had since it was last reused (`probes`).
    */
+  /** The capture overhead estimate (see noteOverhead), once a run has measured it. */
+  overhead(): number | undefined {
+    const row = this.sql('SELECT value FROM meta WHERE key = ?').get('overhead') as
+      | { value: string }
+      | undefined
+    const value = row ? Number(row.value) : Number.NaN
+    return Number.isFinite(value) ? value : undefined
+  }
+
+  setOverhead(value: number): void {
+    this.sql('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)').run('overhead', String(value))
+  }
+
   captureValue(check: CheckRef): CaptureValue {
     const row = this.sql(
       'SELECT streak, reuse, skipped, probes FROM churn WHERE check_path = ? AND project = ?',
@@ -593,6 +606,12 @@ export class Store {
           probes: number
         }[])
           churn.run(c.check_path, c.project, c.streak, c.reuse, c.skipped, c.probes)
+        // Parallel jobs measure the same suite's overhead on different files: their mean stands.
+        const overhead = other.overhead()
+        if (overhead !== undefined) {
+          const mine = this.overhead()
+          this.setOverhead(mine === undefined ? overhead : (mine + overhead) / 2)
+        }
         const generation = this.generation()
         const unit = this.sql('INSERT OR IGNORE INTO unit_cache (key, units, used) VALUES (?, ?, ?)')
         for (const u of other.sql('SELECT key, units FROM unit_cache').all() as {
