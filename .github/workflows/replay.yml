@@ -147,7 +147,7 @@ jobs:
         if: always()
         with:
           name: store-${{ matrix.corpus }}-${{ matrix.shard }}
-          path: ${{ runner.temp }}/bench/${{ matrix.corpus }}/**/store.sqlite
+          path: ${{ runner.temp }}/bench/${{ matrix.corpus }}/store.sqlite
           retention-days: 7
           if-no-files-found: warn
 
