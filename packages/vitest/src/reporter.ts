@@ -26,6 +26,7 @@ export class OutcomeReporter implements Reporter {
       })
     }
     const state = module.state()
+    const diagnostic = module.diagnostic()
     this.outcomes.set(`${module.project.name}\u0000${module.moduleId}`, {
       file: module.moduleId,
       project: module.project.name,
@@ -33,7 +34,13 @@ export class OutcomeReporter implements Reporter {
       env: module.viteEnvironment?.name ?? 'ssr',
       verdict: state === 'passed' || state === 'skipped' ? 'pass' : 'fail',
       tests,
-      durationMs: module.diagnostic().duration,
+      durationMs: diagnostic.duration,
+      busyMs:
+        diagnostic.environmentSetupDuration +
+        diagnostic.prepareDuration +
+        diagnostic.collectDuration +
+        diagnostic.setupDuration +
+        diagnostic.duration,
       retries,
       ...(state === 'failed' && failure ? { failure: failure.slice(0, 400) } : {}),
     })

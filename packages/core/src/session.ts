@@ -192,6 +192,12 @@ export interface CapturePolicy {
    */
   readonly overheadWeight: number
   readonly reuseWeight: number
+  /**
+   * The reuse average a check starts from, before any plan has shown whether it gets reused. Below
+   * certainty: where recording costs much, a check that is never reused stops being recorded after
+   * a few plans instead of a dozen, while one that is reused climbs back at once.
+   */
+  readonly freshReuse: number
   /** Runs in a row without capture before a probe records the check anyway... */
   readonly probeEvery: number
   /** ...multiplied by this for each probe since the check was last reused, up to probeMax. */
@@ -209,6 +215,7 @@ export const CAPTURE_POLICY: CapturePolicy = {
   blockedStreak: 1,
   minReuse: 0.05,
   overheadWeight: 1,
+  freshReuse: 0.35,
   reuseWeight: 0.1,
   probeEvery: 3,
   probeBackoff: 2,
@@ -253,6 +260,7 @@ export function selectExecution(
     minReuse,
     overheadWeight,
     reuseWeight,
+    freshReuse,
     probeEvery,
     probeBackoff,
     probeMax,
@@ -270,7 +278,8 @@ export function selectExecution(
           d.reason !== 'no-evidence' &&
           d.reason !== 'runtime-changed' &&
           d.reason !== 'forced'
-        let { streak, reuse, skipped, probes } = before
+        let { streak, skipped, probes } = before
+        let reuse = before.fresh ? freshReuse : before.reuse
         if (d.action === 'skip') {
           streak = 0
           probes = 0
@@ -381,7 +390,11 @@ export interface CaptureCost {
  */
 export function noteOverhead(store: Store, cost: CaptureCost, recordMs: number, runMs: number): void {
   if (cost.testMs <= 0 || runMs <= 0) return
-  const overhead = cost.captureMs / cost.testMs + recordMs / runMs
+  // Against at least OVERHEAD_FLOOR_MS: where the tests take seconds, capture's fixed costs make a
+  // large ratio of a small time, which CI's own fixed costs dwarf; giving up reuse to save it would
+  // not pay. Where overhead is real time the ratio stands.
+  const overhead =
+    cost.captureMs / Math.max(cost.testMs, OVERHEAD_FLOOR_MS) + recordMs / Math.max(runMs, OVERHEAD_FLOOR_MS)
   const before = store.overhead()
   store.setOverhead(
     before === undefined ? overhead : before * (1 - OVERHEAD_WEIGHT) + overhead * OVERHEAD_WEIGHT,
@@ -390,6 +403,8 @@ export function noteOverhead(store: Store, cost: CaptureCost, recordMs: number, 
 
 /** Weight of the latest run in the overhead estimate. */
 const OVERHEAD_WEIGHT = 0.3
+/** The least test time (summed over files) and run time an overhead is measured against. */
+const OVERHEAD_FLOOR_MS = 10_000
 
 export function recordEvidence(
   strict: boolean | undefined,

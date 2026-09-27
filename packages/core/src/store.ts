@@ -45,9 +45,11 @@ export interface CaptureValue {
   readonly skipped: number
   /** Probes since the check was last reused. */
   readonly probes: number
+  /** No plan has updated it yet (the capture policy chooses its starting reuse). */
+  readonly fresh?: true
 }
 
-const FRESH_CAPTURE_VALUE: CaptureValue = { streak: 0, reuse: 1, skipped: 0, probes: 0 }
+const FRESH_CAPTURE_VALUE: CaptureValue = { streak: 0, reuse: 1, skipped: 0, probes: 0, fresh: true }
 
 export class Store {
   readonly file: string

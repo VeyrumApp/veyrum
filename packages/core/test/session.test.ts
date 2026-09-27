@@ -2,7 +2,15 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { describe, expect, test } from 'vitest'
-import { checkKey, inShard, noteOverhead, parseShard, selectExecution, selectFiles } from '../src/session.ts'
+import {
+  CAPTURE_POLICY,
+  checkKey,
+  inShard,
+  noteOverhead,
+  parseShard,
+  selectExecution,
+  selectFiles,
+} from '../src/session.ts'
 import { Store } from '../src/store.ts'
 import type { Decision } from '../src/types.ts'
 
@@ -55,6 +63,7 @@ describe('capture skips churn', () => {
     blockedStreak: 3,
     minReuse: 0.05,
     overheadWeight: 1,
+    freshReuse: 1,
     reuseWeight: 0.3,
     probeEvery: 10,
     probeBackoff: 1,
@@ -119,17 +128,42 @@ describe('capture skips churn', () => {
     expect(seen).toEqual([t, t, t, t, t])
   })
 
+  test('by default a new check starts from modest reuse, so costly recording stops within a few plans', () => {
+    const code: Decision = { ...churn, churn: undefined, details: ['src/a.ts: add changed'] }
+    const store = Store.open(':memory:')
+    store.setOverhead(0.33)
+    // From 0.35, decaying by 0.9 per plan: below 0.33 / 1.33 on the fourth.
+    const seen = Array.from({ length: 4 }, () => captured(store, code, CAPTURE_POLICY))
+    expect(seen).toEqual([true, true, true, false])
+    // One that gets reused is recorded again right away, and keeps its climb.
+    const reused = Store.open(':memory:')
+    reused.setOverhead(0.33)
+    selectExecution(
+      [check],
+      [{ ...churn, action: 'skip', reason: 'reused', churn: undefined }],
+      { mode: 'affected', store: reused },
+      's',
+    )
+    expect(reused.captureValue(check).reuse).toBeCloseTo(0.35 * 0.9 + 0.1)
+    expect(captured(reused, code, CAPTURE_POLICY)).toBe(true)
+  })
+
   test('each run folds its measured overhead into the estimate, which merged stores average', () => {
     const store = Store.open(':memory:')
     expect(store.overhead()).toBeUndefined()
     // Capture work of 10% of test time, and recording of 5% of the run.
-    noteOverhead(store, { captureMs: 100, testMs: 1000 }, 50, 1000)
+    noteOverhead(store, { captureMs: 10_000, testMs: 100_000 }, 5000, 100_000)
     expect(store.overhead()).toBeCloseTo(0.15)
-    noteOverhead(store, { captureMs: 300, testMs: 1000 }, 50, 1000)
+    noteOverhead(store, { captureMs: 30_000, testMs: 100_000 }, 5000, 100_000)
     expect(store.overhead()).toBeCloseTo(0.15 * 0.7 + 0.35 * 0.3)
     // A run that measured nothing leaves it.
     noteOverhead(store, { captureMs: 0, testMs: 0 }, 50, 1000)
     expect(store.overhead()).toBeCloseTo(0.21)
+    // Seconds of tests: capture's fixed costs are measured against ten seconds, not a ratio of a
+    // small time.
+    const small = Store.open(':memory:')
+    noteOverhead(small, { captureMs: 300, testMs: 100 }, 400, 1000)
+    expect(small.overhead()).toBeCloseTo(0.03 + 0.04)
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'veyrum-overhead-'))
     try {
       const other = Store.open(path.join(dir, 'other.sqlite'))
