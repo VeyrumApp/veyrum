@@ -806,6 +806,10 @@ export async function beginWorkerCapture(options: WorkerCaptureOptions): Promise
       const modules: PayloadModule[] = []
       const wholeModules: string[] = []
       const natives = new Set<string>()
+      // A function's source text (Function.prototype.toString) is exactly its range in its script:
+      // functions by source length, to locate the texts read without searching every module.
+      const readTexts = recorder.observedSourcesOverflow ? new Set<string>() : recorder.observedSources
+      const byLength = new Map<number, { path: string; code: string; start: number }[]>()
       let evalScripts = 0
       let takeMs = 0
       try {
@@ -863,6 +867,18 @@ export async function beginWorkerCapture(options: WorkerCaptureOptions): Promise
             continue
           }
           const { code, offset } = found ?? { code: native!, offset: 0 }
+          if (readTexts.size > 0)
+            for (const fn of script.functions) {
+              const range = fn.ranges[0]
+              if (!range) continue
+              const start = range.startOffset - offset
+              const end = range.endOffset - offset
+              if (start < 0 || end > code.length) continue
+              const list = byLength.get(end - start)
+              const at = { path: absolute, code, start }
+              if (list) list.push(at)
+              else byLength.set(end - start, [at])
+            }
           const codeDigest = digest(code)
           const blob = path.join(blobDir, `${codeDigest}.js`)
           unobserved(() => {
@@ -914,6 +930,18 @@ export async function beginWorkerCapture(options: WorkerCaptureOptions): Promise
         layout === 'jest'
           ? new Set(compiled?.keys())
           : new Set([...modules.map((m) => m.path), ...wholeModules])
+      const locatedModules = new Set<string>()
+      const unlocatedTexts: string[] = []
+      for (const text of readTexts) {
+        let located = false
+        for (const at of byLength.get(text.length) ?? []) {
+          if (at.code.startsWith(text, at.start)) {
+            locatedModules.add(at.path)
+            located = true
+          }
+        }
+        if (!located) unlocatedTexts.push(text)
+      }
       const payload: WorkerPayload = {
         version: 1,
         testFile,
@@ -950,7 +978,7 @@ export async function beginWorkerCapture(options: WorkerCaptureOptions): Promise
         evalScripts,
         sourceObserved: recorder.sourceObservedFlag,
         ...(recorder.sourceObservedFlag && !recorder.observedSourcesOverflow
-          ? { observedSources: [...recorder.observedSources] }
+          ? { observedSources: unlocatedTexts, observedModules: [...locatedModules] }
           : {}),
         snapshot,
         toolchain: [...state.toolchain],

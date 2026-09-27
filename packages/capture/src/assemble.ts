@@ -316,6 +316,15 @@ export function assemble(input: AssembleInput): Assembled {
     if (obs.p.includes(`${path.sep}node_modules${path.sep}`)) return null
     if (testFiles.has(obs.p)) return null
     const p = toRepoPath(root, obs.p)
+    // What the run itself produced (global setup's output, or a test's that capture could not see:
+    // a program it does not trace, a file run without capture) did not exist when it started. The
+    // runner depended on that starting state, which a clean checkout reproduces; the producer's
+    // own inputs cover what went into the product.
+    if (obs.type !== 'absent' && newDuringRun(obs.p)) {
+      if (obs.kind === 'read' || obs.kind === 'manifest')
+        return { k: path.basename(p) === 'package.json' ? 'manifest' : 'file', p, h: null }
+      return { k: 'stat', p, t: 'absent' }
+    }
     if ((obs.kind === 'read' || obs.kind === 'manifest') && (obs.type === 'file' || obs.type === 'absent')) {
       // The toolchain reads manifests for module format, resolution and dependency names. A
       // configuration file that imports a manifest records its full content as well, below.
@@ -386,7 +395,8 @@ export function assemble(input: AssembleInput): Assembled {
       if (payload.sourceObserved) {
         const natives = new Set(payload.natives)
         const texts = payload.observedSources
-        let located = texts !== undefined && texts.length > 0
+        for (const absolute of payload.observedModules ?? []) rawModules.add(absolute)
+        let located = texts !== undefined && (texts.length > 0 || rawModules.size > 0)
         for (const text of texts ?? []) {
           let found = false
           for (const [absolute, versions] of modulesByPath) {

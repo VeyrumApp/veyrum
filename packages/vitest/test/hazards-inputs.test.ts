@@ -93,6 +93,38 @@ describe('files and directories', () => {
     expect(sandbox.actions()['test/listing.test.ts']).toBe('run')
   })
 
+  test('a file the run created where capture could not see is, for the runner, absent at the start', () => {
+    // A program capture does not trace writes the product (nitro's examples, built by a test that
+    // runs without capture); the runner's main process reads it afterwards.
+    const write =
+      process.platform === 'win32'
+        ? "execFileSync('cmd', ['/c', 'mkdir out & echo built> out\\\\product.txt'])"
+        : "execFileSync('sh', ['-c', 'mkdir -p out && echo built > out/product.txt'])"
+    sandbox = new Sandbox('unseen-products')
+      .write(
+        'setup/global.ts',
+        "import fs from 'node:fs'\nexport default () => () => {\n  if (fs.existsSync('out/product.txt')) fs.readFileSync('out/product.txt', 'utf8')\n}\n",
+      )
+      .write(
+        'test/build.test.ts',
+        `import { execFileSync } from 'node:child_process'\nimport { test } from 'vitest'\ntest('builds', () => {\n  ${write}\n})\n`,
+      )
+      .write(
+        'test/plain.test.ts',
+        "import { expect, test } from 'vitest'\ntest('plain', () => expect(1).toBe(1))\n",
+      )
+      .edit('vitest.config.ts', 'test: {}', "test: { globalSetup: ['setup/global.ts'] }")
+    // Without native tracing the shell's writes go unseen.
+    const env = { VEYRUM_NATIVE_TRACING: 'off' }
+    sandbox.capture(env)
+    // A fresh checkout: the product is not there, as it was not when the run started.
+    sandbox.remove('out')
+    expect(sandbox.actions(env)['test/plain.test.ts']).toBe('skip')
+    // One that is there at the start is another starting state.
+    sandbox.write('out/product.txt', 'stale\n')
+    expect(sandbox.actions(env)['test/plain.test.ts']).toBe('run')
+  })
+
   test("another test's output in a shared fixture is not an input of a listing; a new file is", () => {
     sandbox = new Sandbox('sibling-products')
       .write('fixtures/app/index.txt', 'app')
