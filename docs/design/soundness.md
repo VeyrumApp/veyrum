@@ -548,6 +548,11 @@ client file besides sending it (assumption 11).
   was written by a test (or lies under a directory it created) derives from that test's code,
   and from whatever the test read to produce it, which is recorded. Executing it as a module, or
   the runner's main process reading it afterwards, adds no input.
+- **What the run produced is absent at its start.** A file the runner's main process reads that
+  did not exist when the run started (global setup's output, or a test's that capture could not
+  see: a program it does not trace, a file run without capture) is recorded as absent, the
+  starting state a clean checkout reproduces. A file there at the start is another starting
+  state. The producer's own inputs cover what went into the product.
 
 ## Files that run without capture
 
@@ -621,6 +626,10 @@ variable, here) is in its closure like any input.
    Vite's and Vitest's options name. A plugin that hands a configuration path to native code
    itself (rolldown's transform with an explicit `tsconfig`) is not observed. Configurations
    outside the repository (above its root, or in a global install) are not inputs.
+13. **The runner's main process does not use the network to decide outcomes.** Its network
+   access is not observed. Global setup that downloads something tests then read in files is
+   covered by those reads; one that fetches data and hands it to tests directly (Vitest's
+   `provide`) is not.
 
 The audit (full runs on the main branch, plus sampled re-execution of reused files) is the
 backstop for every assumption. Its escape rate is the real safety number.

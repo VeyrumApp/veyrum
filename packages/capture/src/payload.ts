@@ -50,6 +50,11 @@ export interface WorkerPayload {
    * with sourceObserved set means every module of the file is compared by raw source.
    */
   readonly observedSources?: readonly string[]
+  /**
+   * Repository modules holding a function whose source was read, located in the test process by
+   * the functions' ranges; observedSources then holds only the texts not located this way.
+   */
+  readonly observedModules?: readonly string[]
   readonly snapshot: { readonly added: number; readonly updated: number }
   /**
    * Manifests of packages the worker loaded natively, outside the runner's module system. Under the

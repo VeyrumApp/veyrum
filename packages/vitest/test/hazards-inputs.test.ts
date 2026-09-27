@@ -93,6 +93,46 @@ describe('files and directories', () => {
     expect(sandbox.actions()['test/listing.test.ts']).toBe('run')
   })
 
+  test('a file the run created where capture could not see is, for the runner, absent at the start', () => {
+    // As nitro's examples test: a program capture does not trace builds a module, which the test
+    // then imports through Vite, so the runner's main process reads it. The test uses an
+    // unobserved channel, so after a plan or two it runs without capture and nothing sees the build.
+    const build =
+      process.platform === 'win32'
+        ? "execFileSync('cmd', ['/c', 'mkdir out & echo export default 1 > out\\\\product.js'])"
+        : "execFileSync('sh', ['-c', 'mkdir -p out && echo \\'export default 1\\' > out/product.js'])"
+    sandbox = new Sandbox('unseen-products')
+      .write(
+        'test/build.test.ts',
+        `import { execFileSync } from 'node:child_process'\nimport { expect, test } from 'vitest'\ntest('builds', async () => {\n  ${build}\n  expect((await import('../out/product.js')).default).toBe(1)\n})\n`,
+      )
+      .write(
+        'test/plain.test.ts',
+        "import { expect, test } from 'vitest'\ntest('plain', () => expect(1).toBe(1))\n",
+      )
+    // Without native tracing the shell and its writes go unseen.
+    const env = { VEYRUM_NATIVE_TRACING: 'off' }
+    sandbox.capture(env)
+    // Each run starts from a clean checkout, without the product. By the second, the build runs
+    // without capture; then an edit makes the plain test run, and be recorded, beside it.
+    for (let i = 0; i < 2; i++) {
+      sandbox.remove('out')
+      expect(sandbox.cli(['run'], env).code).toBe(0)
+    }
+    sandbox.remove('out')
+    sandbox.edit('test/plain.test.ts', "test('plain'", "test('plain, edited'")
+    const last = sandbox.cli(['run'], env)
+    expect(last.outcomes.map((o) => [o.check.path, o.captured]).sort()).toEqual([
+      ['test/build.test.ts', false],
+      ['test/plain.test.ts', true],
+    ])
+    sandbox.remove('out')
+    expect(sandbox.actions(env)['test/plain.test.ts']).toBe('skip')
+    // A product there at the start is another starting state.
+    sandbox.write('out/product.js', 'export default 2\n')
+    expect(sandbox.actions(env)['test/plain.test.ts']).toBe('run')
+  })
+
   test("another test's output in a shared fixture is not an input of a listing; a new file is", () => {
     sandbox = new Sandbox('sibling-products')
       .write('fixtures/app/index.txt', 'app')
