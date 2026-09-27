@@ -152,13 +152,18 @@ describe('capture skips churn', () => {
     const store = Store.open(':memory:')
     expect(store.overhead()).toBeUndefined()
     // Capture work of 10% of test time, and recording of 5% of the run.
-    noteOverhead(store, { captureMs: 100, testMs: 1000 }, 50, 1000)
+    noteOverhead(store, { captureMs: 10_000, testMs: 100_000 }, 5000, 100_000)
     expect(store.overhead()).toBeCloseTo(0.15)
-    noteOverhead(store, { captureMs: 300, testMs: 1000 }, 50, 1000)
+    noteOverhead(store, { captureMs: 30_000, testMs: 100_000 }, 5000, 100_000)
     expect(store.overhead()).toBeCloseTo(0.15 * 0.7 + 0.35 * 0.3)
     // A run that measured nothing leaves it.
     noteOverhead(store, { captureMs: 0, testMs: 0 }, 50, 1000)
     expect(store.overhead()).toBeCloseTo(0.21)
+    // Seconds of tests: capture's fixed costs are measured against ten seconds, not a ratio of a
+    // small time.
+    const small = Store.open(':memory:')
+    noteOverhead(small, { captureMs: 300, testMs: 100 }, 400, 1000)
+    expect(small.overhead()).toBeCloseTo(0.03 + 0.04)
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'veyrum-overhead-'))
     try {
       const other = Store.open(path.join(dir, 'other.sqlite'))

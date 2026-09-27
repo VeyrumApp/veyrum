@@ -390,7 +390,11 @@ export interface CaptureCost {
  */
 export function noteOverhead(store: Store, cost: CaptureCost, recordMs: number, runMs: number): void {
   if (cost.testMs <= 0 || runMs <= 0) return
-  const overhead = cost.captureMs / cost.testMs + recordMs / runMs
+  // Against at least OVERHEAD_FLOOR_MS: where the tests take seconds, capture's fixed costs make a
+  // large ratio of a small time, which CI's own fixed costs dwarf; giving up reuse to save it would
+  // not pay. Where overhead is real time the ratio stands.
+  const overhead =
+    cost.captureMs / Math.max(cost.testMs, OVERHEAD_FLOOR_MS) + recordMs / Math.max(runMs, OVERHEAD_FLOOR_MS)
   const before = store.overhead()
   store.setOverhead(
     before === undefined ? overhead : before * (1 - OVERHEAD_WEIGHT) + overhead * OVERHEAD_WEIGHT,
@@ -399,6 +403,8 @@ export function noteOverhead(store: Store, cost: CaptureCost, recordMs: number, 
 
 /** Weight of the latest run in the overhead estimate. */
 const OVERHEAD_WEIGHT = 0.3
+/** The least test time (summed over files) and run time an overhead is measured against. */
+const OVERHEAD_FLOOR_MS = 10_000
 
 export function recordEvidence(
   strict: boolean | undefined,
